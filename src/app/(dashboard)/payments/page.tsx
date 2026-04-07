@@ -328,7 +328,54 @@ export default function PaymentsPage() {
             </div>
           </div>
 
-          <div className="bg-white rounded-lg border">
+          {/* 모바일 카드 뷰 */}
+          <div className="md:hidden space-y-2">
+            {loading ? (
+              <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
+            ) : confirmedList.length === 0 ? (
+              <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">입금 내역이 없습니다.</div>
+            ) : confirmedList.map((p) => (
+              <div key={p.id} className={`bg-white rounded-lg border p-4 ${!p.matched ? 'border-l-4 border-l-blue-300' : ''}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-gray-900">{formatKRW(p.amount)}</span>
+                      <span className="text-xs text-gray-400">{p.payment_date}</span>
+                      {p.source === 'slack' && <Badge variant="outline" className="text-xs text-gray-400">Slack</Badge>}
+                    </div>
+                    <div className="text-sm text-gray-700 mt-0.5">
+                      {p.projects?.clients?.name ?? (p.client_name_raw ? <span className="text-blue-500">{p.client_name_raw}</span> : <span className="text-gray-300">-</span>)}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1 text-xs text-gray-500 flex-wrap">
+                      {p.projects?.name ? (
+                        <span>{p.projects.name}</span>
+                      ) : (
+                        <button onClick={() => openMatch(p)} className="text-blue-400 flex items-center gap-0.5">
+                          <Link2 size={11} />연결 필요
+                        </button>
+                      )}
+                      {p.payment_type && <span>{p.payment_type}</span>}
+                      {p.manager && <span>담당: {p.manager}</span>}
+                    </div>
+                  </div>
+                  <div className="flex gap-1 shrink-0">
+                    {!p.matched && (
+                      <Button size="sm" variant="ghost" className="text-blue-400" onClick={() => openMatch(p)}>
+                        <Link2 size={14} />
+                      </Button>
+                    )}
+                    <Button size="sm" variant="ghost" onClick={() => openEdit(p)}><Pencil size={14} /></Button>
+                    <Button size="sm" variant="ghost" className="text-red-400" onClick={() => setDeleteTarget(p.id)}>
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* 데스크톱 테이블 */}
+          <div className="hidden md:block bg-white rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -412,7 +459,7 @@ export default function PaymentsPage() {
                 return (
                   <div key={p.id} className={`bg-white rounded-lg border p-4 space-y-3 ${isJanggeum ? 'border-l-4 border-l-yellow-400' : 'border-l-4 border-l-red-400'}`}>
                     {/* 상단: 기본 정보 */}
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${isJanggeum ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
@@ -442,7 +489,7 @@ export default function PaymentsPage() {
                       </div>
 
                       {/* 액션 버튼 */}
-                      <div className="flex gap-2 flex-shrink-0">
+                      <div className="flex flex-wrap gap-2 shrink-0 mt-2 sm:mt-0 sm:flex-nowrap">
                         <Button
                           size="sm"
                           variant="outline"

@@ -125,7 +125,7 @@ export default function SettingsPage() {
           ))}
           <div className="border-t pt-4 space-y-3">
             <p className="text-sm font-medium text-gray-700">대표자 추가</p>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div className="space-y-1"><Label>이름</Label><Input value={repForm.name} onChange={(e) => setRepForm({ ...repForm, name: e.target.value })} /></div>
               <div className="space-y-1"><Label>이메일</Label><Input type="email" value={repForm.email} onChange={(e) => setRepForm({ ...repForm, email: e.target.value })} /></div>
             </div>

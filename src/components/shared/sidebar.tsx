@@ -17,6 +17,7 @@ import {
   FolderKanban,
   Settings,
   LogOut,
+  X,
 } from 'lucide-react'
 
 const navItems = [
@@ -33,7 +34,12 @@ const navItems = [
   { href: '/settings',          label: '설정',        icon: Settings },
 ]
 
-export function Sidebar() {
+interface SidebarProps {
+  open?: boolean
+  onClose?: () => void
+}
+
+export function Sidebar({ open = false, onClose }: SidebarProps) {
   const pathname = usePathname()
   const router = useRouter()
 
@@ -45,17 +51,34 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="w-60 min-h-screen bg-gray-900 text-white flex flex-col">
-      <div className="px-6 py-5 border-b border-gray-700">
-        <h1 className="text-lg font-bold">티엔샤 재무관리</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Tianxia Corporation</p>
+    <aside
+      className={cn(
+        'w-60 bg-gray-900 text-white flex flex-col',
+        'fixed inset-y-0 left-0 z-30 transition-transform duration-200',
+        'md:relative md:translate-x-0 md:z-auto',
+        open ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+      )}
+    >
+      <div className="px-6 py-5 border-b border-gray-700 flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-bold">티엔샤 재무관리</h1>
+          <p className="text-xs text-gray-400 mt-0.5">Tianxia Corporation</p>
+        </div>
+        <button
+          onClick={onClose}
+          className="md:hidden p-1 rounded hover:bg-gray-700 transition-colors text-gray-400"
+          aria-label="메뉴 닫기"
+        >
+          <X size={18} />
+        </button>
       </div>
 
-      <nav className="flex-1 px-3 py-4 space-y-1">
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
         {navItems.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}
+            onClick={onClose}
             className={cn(
               'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
               pathname === href

@@ -224,7 +224,48 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg border">
+      {/* 모바일 카드 뷰 */}
+      <div className="md:hidden space-y-2">
+        {loading ? (
+          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
+        ) : products.length === 0 ? (
+          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">등록된 상품이 없습니다.</div>
+        ) : products.map((p) => {
+          const supplyPrice = p.price_vat_incl / 1.1
+          const margin = supplyPrice > 0 ? ((supplyPrice - p.current_cost) / supplyPrice * 100).toFixed(1) : '0.0'
+          return (
+            <div key={p.id} className="bg-white rounded-lg border p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-gray-900">{p.category ?? p.name}</div>
+                  <div className="grid grid-cols-3 gap-2 mt-2 text-sm">
+                    <div>
+                      <div className="text-xs text-gray-400">단가(VAT)</div>
+                      <div className="font-medium">{formatKRW(p.price_vat_incl)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-400">원가</div>
+                      <div className="font-medium">{formatKRW(p.current_cost)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-400">마진율</div>
+                      <div className="font-medium">{margin}%</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <Button size="sm" variant="ghost" onClick={() => openHistory(p)}><History size={14} /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => openEdit(p)}><Pencil size={14} /></Button>
+                  <Button size="sm" variant="ghost" className="text-red-500" onClick={() => handleDeactivate(p.id)}>삭제</Button>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* 데스크톱 테이블 */}
+      <div className="hidden md:block bg-white rounded-lg border">
         <Table>
           <TableHeader>
             <TableRow>

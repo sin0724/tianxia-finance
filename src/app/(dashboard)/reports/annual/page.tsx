@@ -175,7 +175,7 @@ export default function AnnualReportPage() {
       </div>
 
       {/* 요약 카드 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
         <div className="bg-white rounded-lg border p-4">
           <p className="text-xs text-gray-500">연간 총매출</p>
           <p className="text-xl font-bold mt-1 text-blue-600">{formatKRW(Math.round(totalRevenue))}</p>

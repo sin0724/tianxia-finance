@@ -210,7 +210,7 @@ export default function PayrollPage() {
 
       {/* 요약 카드 */}
       {rows.length > 0 && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Card>
             <CardHeader className="pb-1"><CardTitle className="text-xs text-gray-500">기본급 합계</CardTitle></CardHeader>
             <CardContent><div className="text-xl font-bold">{formatKRW(totalBase)}</div></CardContent>
@@ -226,8 +226,78 @@ export default function PayrollPage() {
         </div>
       )}
 
-      {/* 급여 테이블 */}
-      <div className="bg-white rounded-lg border">
+      {/* 급여 테이블 - 모바일 카드 */}
+      <div className="md:hidden space-y-2">
+        {loading ? (
+          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
+        ) : rows.length === 0 ? (
+          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">
+            {year}년 {month}월 급여 데이터가 없습니다.<br />
+            <span className="text-xs">직원/급여 메뉴에서 급여를 입력해주세요.</span>
+          </div>
+        ) : (
+          <>
+            {rows.map((r) => (
+              <div key={r.employee_id} className="bg-white rounded-lg border p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-semibold text-gray-900">{r.name}</span>
+                  <span className="font-bold text-green-700">{formatKRW(r.total_pay)}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">기본급</span>
+                    <span>{formatKRW(r.base_salary)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">인센티브</span>
+                    {r.incentive > 0
+                      ? <span className="text-blue-600">{formatKRW(r.incentive)}</span>
+                      : <span className="text-gray-300">-</span>}
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">공제액</span>
+                    <span className="text-red-500">{r.deductions > 0 ? `- ${formatKRW(r.deductions)}` : '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">실수령</span>
+                    <span className="text-gray-600">{formatKRW(r.net_pay)}</span>
+                  </div>
+                </div>
+                {r.paid_at && (
+                  <div className="text-xs text-gray-400 mt-2">지급일: {new Date(r.paid_at).toLocaleDateString('ko-KR')}</div>
+                )}
+              </div>
+            ))}
+            <div className="bg-gray-50 rounded-lg border p-4">
+              <div className="flex items-center justify-between font-bold">
+                <span>합계</span>
+                <span className="text-green-700">{formatKRW(totalPay)}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm mt-2">
+                <div className="flex justify-between">
+                  <span className="text-gray-400">기본급</span>
+                  <span>{formatKRW(totalBase)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">인센티브</span>
+                  <span className="text-blue-600">{formatKRW(totalIncentive)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">공제액</span>
+                  <span className="text-red-500">- {formatKRW(totalDeduct)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">실수령</span>
+                  <span>{formatKRW(totalNet)}</span>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 급여 테이블 - 데스크톱 */}
+      <div className="hidden md:block bg-white rounded-lg border">
         <Table>
           <TableHeader>
             <TableRow>

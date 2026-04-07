@@ -238,72 +238,79 @@ export default function ExpensesPage() {
               {cats.map((cat) => {
                 const isSaved = !!existingIds[cat.id] && (parseFloat(amounts[cat.id] ?? '0') || 0) > 0
                 return (
-                  <div key={cat.id} className="flex items-center gap-2">
-                    {/* 항목명 */}
-                    <div className="w-36 shrink-0 flex items-center gap-1 text-sm font-medium text-gray-800">
-                      <span className="truncate">{cat.name}</span>
-                      {cat.is_recurring && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 shrink-0">반복</span>
-                      )}
+                  <div key={cat.id} className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    {/* 항목명 + 모바일 수정/삭제 */}
+                    <div className="flex items-center justify-between sm:justify-start gap-1">
+                      <div className="flex-1 sm:w-36 sm:flex-none flex items-center gap-1 text-sm font-medium text-gray-800">
+                        <span className="truncate">{cat.name}</span>
+                        {cat.is_recurring && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 shrink-0">반복</span>
+                        )}
+                      </div>
+                      <div className="flex sm:hidden gap-1">
+                        <button onClick={() => openEdit(cat)} className="text-gray-300 hover:text-gray-600 transition-colors" title="항목 수정">
+                          <Pencil size={14} />
+                        </button>
+                        <button onClick={() => handleDelete(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="항목 삭제">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
 
-                    {/* 금액 */}
-                    <Input
-                      type="number"
-                      className="w-36 h-8 text-sm text-right bg-white"
-                      placeholder="0"
-                      value={amounts[cat.id] ?? ''}
-                      onChange={(e) => setAmounts((prev) => ({ ...prev, [cat.id]: e.target.value }))}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveSingle(cat.id) }}
-                    />
+                    {/* 금액 + 메모 + 저장 */}
+                    <div className="flex items-center gap-2 flex-1">
+                      {/* 금액 */}
+                      <Input
+                        type="number"
+                        className="w-28 sm:w-36 h-8 text-sm text-right bg-white shrink-0"
+                        placeholder="0"
+                        value={amounts[cat.id] ?? ''}
+                        onChange={(e) => setAmounts((prev) => ({ ...prev, [cat.id]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === 'Enter') saveSingle(cat.id) }}
+                      />
 
-                    {/* 메모 */}
-                    <Input
-                      className="flex-1 h-8 text-sm bg-white"
-                      placeholder="메모 (선택)"
-                      value={memos[cat.id] ?? ''}
-                      onChange={(e) => setMemos((prev) => ({ ...prev, [cat.id]: e.target.value }))}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveSingle(cat.id) }}
-                    />
+                      {/* 메모 */}
+                      <Input
+                        className="flex-1 min-w-0 h-8 text-sm bg-white"
+                        placeholder="메모 (선택)"
+                        value={memos[cat.id] ?? ''}
+                        onChange={(e) => setMemos((prev) => ({ ...prev, [cat.id]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === 'Enter') saveSingle(cat.id) }}
+                      />
 
-                    {/* 저장 버튼 */}
-                    <Button
-                      size="sm"
-                      variant={isSaved ? 'outline' : 'default'}
-                      className="h-8 w-14 text-xs shrink-0"
-                      onClick={() => saveSingle(cat.id)}
-                      disabled={savingId === cat.id}
-                    >
-                      {savingId === cat.id
-                        ? <RefreshCw size={12} className="animate-spin" />
-                        : isSaved ? <><Check size={11} className="mr-0.5" />저장</>
-                        : '저장'}
-                    </Button>
+                      {/* 저장 버튼 */}
+                      <Button
+                        size="sm"
+                        variant={isSaved ? 'outline' : 'default'}
+                        className="h-8 w-14 text-xs shrink-0"
+                        onClick={() => saveSingle(cat.id)}
+                        disabled={savingId === cat.id}
+                      >
+                        {savingId === cat.id
+                          ? <RefreshCw size={12} className="animate-spin" />
+                          : isSaved ? <><Check size={11} className="mr-0.5" />저장</>
+                          : '저장'}
+                      </Button>
+                    </div>
 
-                    {/* 수정/삭제 */}
-                    <button
-                      onClick={() => openEdit(cat)}
-                      className="text-gray-300 hover:text-gray-600 transition-colors"
-                      title="항목 수정"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(cat)}
-                      className="text-gray-300 hover:text-red-500 transition-colors"
-                      title="항목 삭제"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {/* 수정/삭제 - 데스크톱만 */}
+                    <div className="hidden sm:flex gap-1">
+                      <button onClick={() => openEdit(cat)} className="text-gray-300 hover:text-gray-600 transition-colors" title="항목 수정">
+                        <Pencil size={14} />
+                      </button>
+                      <button onClick={() => handleDelete(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="항목 삭제">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                 )
               })}
 
               {/* 신규 항목 입력 행 */}
               {newRow && (
-                <div className="flex items-center gap-2 pt-1 border-t border-dashed border-gray-200">
+                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-dashed border-gray-200">
                   <Input
-                    className="w-36 h-8 text-sm bg-white"
+                    className="flex-1 min-w-[140px] h-8 text-sm bg-white"
                     placeholder="항목명"
                     value={newRow.name}
                     onChange={(e) => setNewRows((prev) => ({ ...prev, [type]: { ...prev[type], name: e.target.value } }))}

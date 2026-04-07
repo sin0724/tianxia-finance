@@ -181,8 +181,49 @@ export default function EmployeesPage() {
         <Button onClick={openAdd}><Plus size={16} className="mr-1" />직원 추가</Button>
       </div>
 
-      {/* 직원 목록 */}
-      <div className="bg-white rounded-lg border">
+      {/* 직원 목록 - 모바일 카드 */}
+      <div className="md:hidden space-y-2">
+        {loading ? (
+          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
+        ) : employees.length === 0 ? (
+          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">등록된 직원이 없습니다.</div>
+        ) : employees.map((e) => (
+          <div key={e.id} className="bg-white rounded-lg border p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-gray-900">{e.name}</span>
+                  {e.position && <span className="text-sm text-gray-500">{e.position}</span>}
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-2 text-sm">
+                  <div>
+                    <div className="text-xs text-gray-400">기본급</div>
+                    <div className="font-medium">{formatKRW(e.base_salary)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-400">인센티브</div>
+                    <div>
+                      {e.incentive_type ? (
+                        <Badge variant="outline" className="text-xs">
+                          {e.incentive_type === 'percent' ? `${e.incentive_value}%` : formatKRW(e.incentive_value)}
+                        </Badge>
+                      ) : <span className="text-gray-400">-</span>}
+                    </div>
+                  </div>
+                </div>
+                {e.hired_at && <div className="text-xs text-gray-400 mt-1">입사일: {e.hired_at}</div>}
+              </div>
+              <div className="flex gap-1 shrink-0">
+                <Button size="sm" variant="ghost" onClick={() => openEdit(e)}><Pencil size={14} /></Button>
+                <Button size="sm" variant="ghost" className="text-red-500" onClick={() => handleDeactivate(e.id)}>삭제</Button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* 직원 목록 - 데스크톱 테이블 */}
+      <div className="hidden md:block bg-white rounded-lg border">
         <Table>
           <TableHeader>
             <TableRow>
@@ -226,7 +267,7 @@ export default function EmployeesPage() {
 
       {/* 월별 급여 입력 */}
       <div className="bg-white rounded-lg border">
-        <div className="flex items-center justify-between px-4 py-3 border-b">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b">
           <h2 className="font-semibold text-gray-800">월별 급여 입력</h2>
           <div className="flex items-center gap-2">
             <select className="border rounded-md px-2 py-1.5 text-sm" value={payYear} onChange={(e) => setPayYear(Number(e.target.value))}>

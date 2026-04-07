@@ -108,7 +108,34 @@ export default function ClientsPage() {
         <Button onClick={openAdd}><Plus size={16} className="mr-1" />클라이언트 추가</Button>
       </div>
 
-      <div className="bg-white rounded-lg border">
+      {/* 모바일 카드 뷰 */}
+      <div className="md:hidden space-y-2">
+        {loading ? (
+          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
+        ) : clients.length === 0 ? (
+          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">등록된 클라이언트가 없습니다.</div>
+        ) : clients.map((c) => (
+          <div key={c.id} className="bg-white rounded-lg border p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-gray-900">{c.name}</div>
+                {c.manager && <div className="text-sm text-gray-500 mt-0.5">{c.manager}</div>}
+                {c.contact && <div className="text-sm text-gray-400">{c.contact}</div>}
+                {c.memo && <div className="text-xs text-gray-400 mt-1 truncate">{c.memo}</div>}
+              </div>
+              <div className="flex gap-1 shrink-0">
+                <Button size="sm" variant="ghost" onClick={() => openEdit(c)}><Pencil size={14} /></Button>
+                <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-600" onClick={() => setDeleteTarget(c)}>
+                  <Trash2 size={14} />
+                </Button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* 데스크톱 테이블 */}
+      <div className="hidden md:block bg-white rounded-lg border">
         <Table>
           <TableHeader>
             <TableRow>

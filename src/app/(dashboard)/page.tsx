@@ -161,8 +161,8 @@ export default function DashboardPage() {
     <div className="space-y-6">
 
       {/* ── 헤더 ── */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-bold">대시보드</h1>
           {/* 월 네비게이터 */}
           <div className="flex items-center gap-1 bg-gray-100 rounded-lg px-1 py-1">
@@ -205,7 +205,7 @@ export default function DashboardPage() {
         </div>
 
         {/* 동기화 */}
-        <div className="flex items-center gap-2 relative">
+        <div className="flex items-center gap-2 relative self-start sm:self-auto">
           {lastSyncTime && <span className="text-xs text-gray-400">마지막 동기화: {lastSyncTime}</span>}
           <div className="relative">
             <div className="flex items-center border rounded-md overflow-hidden">
@@ -284,7 +284,7 @@ export default function DashboardPage() {
       )}
 
       {/* ── 지표 카드 ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <Card className="border-green-200">
           <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">{selMonth}월 입금액</CardTitle></CardHeader>
           <CardContent>
@@ -308,7 +308,7 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Card>
           <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">영업이익</CardTitle></CardHeader>
           <CardContent>
