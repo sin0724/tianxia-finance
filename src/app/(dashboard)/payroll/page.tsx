@@ -49,7 +49,7 @@ export default function PayrollPage() {
       supabase.from('employees').select('id, name, incentive_type, incentive_value').eq('active', true),
       supabase.from('monthly_incentives').select('*').eq('year', year).eq('month', month),
       supabase.from('payments').select('amount, manager, memo')
-        .gte('payment_date', start).lte('payment_date', end).eq('matched', true),
+        .gte('payment_date', start).lte('payment_date', end),
       supabase.from('settings').select('*'),
     ])
 

@@ -12,7 +12,10 @@ export async function POST(request: Request) {
   const lastDay = new Date(year, month, 0).getDate()
   const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 
-  // 입금 확정 결제만 (수금 예정 제외)
+  const isPendingMemo = (memo: string | null) =>
+    !!(memo?.includes('⚠ 잔금 처리 요망') || memo?.includes('🔴 미입금'))
+
+  // 매출/원가 계산: 프로젝트 연결된 입금 완료 결제
   const { data: rawPayments } = await supabase
     .from('payments')
     .select('*')
@@ -20,9 +23,16 @@ export async function POST(request: Request) {
     .lte('payment_date', end)
     .eq('matched', true)
 
-  const payments = (rawPayments ?? []).filter(
-    (p) => !p.memo?.includes('⚠ 잔금 처리 요망') && !p.memo?.includes('🔴 미입금')
-  )
+  const payments = (rawPayments ?? []).filter((p) => !isPendingMemo(p.memo))
+
+  // 인센티브 계산: 프로젝트 연결 여부와 무관하게 입금 완료된 전체 결제
+  const { data: rawAllPayments } = await supabase
+    .from('payments')
+    .select('id, amount, manager, memo')
+    .gte('payment_date', start)
+    .lte('payment_date', end)
+
+  const confirmedPayments = (rawAllPayments ?? []).filter((p) => !isPendingMemo(p.memo))
 
   // 프로젝트 구성 상품 (원가 계산용)
   const projectIds = [...new Set(payments.map((p) => p.project_id).filter((id): id is string => id !== null))]
@@ -70,8 +80,8 @@ export async function POST(request: Request) {
   const autoIncentives = (employees ?? [])
     .filter((e) => e.incentive_type && e.incentive_value > 0)
     .map((e) => {
-      // 해당 직원이 담당한 결제건만 필터
-      const myPayments = payments.filter(
+      // 해당 직원이 담당한 입금 완료 결제건 (프로젝트 연결 여부 무관)
+      const myPayments = confirmedPayments.filter(
         (p) => p.manager?.trim().toLowerCase() === e.name.trim().toLowerCase()
       )
       if (myPayments.length === 0) return null
