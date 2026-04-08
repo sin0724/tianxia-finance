@@ -35,9 +35,35 @@ export async function POST(request: Request) {
   const confirmedPayments = (rawAllPayments ?? []).filter((p) => !isPendingMemo(p.memo))
 
   // 프로젝트 구성 상품 (원가 계산용)
+  // 실행비는 프로젝트별로 최초 입금월에만 1회 계산 (중복 방지)
   const projectIds = [...new Set(payments.map((p) => p.project_id).filter((id): id is string => id !== null))]
-  const { data: projectItems } = projectIds.length > 0
-    ? await supabase.from('project_items').select('*').in('project_id', projectIds)
+
+  // 해당 프로젝트들의 전체 입금 완료 이력 조회 (오래된 순)
+  const { data: allProjectPaymentHistory } = projectIds.length > 0
+    ? await supabase
+        .from('payments')
+        .select('project_id, payment_date, memo')
+        .in('project_id', projectIds)
+        .eq('matched', true)
+        .order('payment_date', { ascending: true })
+    : { data: [] }
+
+  const currentYearMonth = `${year}-${String(month).padStart(2, '0')}`
+
+  // 각 프로젝트의 최초 입금 완료월 산출 (pending 제외)
+  const firstPaymentMonthMap: Record<string, string> = {}
+  for (const p of allProjectPaymentHistory ?? []) {
+    if (!p.project_id || isPendingMemo(p.memo)) continue
+    if (!firstPaymentMonthMap[p.project_id]) {
+      firstPaymentMonthMap[p.project_id] = p.payment_date.slice(0, 7) // 'YYYY-MM'
+    }
+  }
+
+  // 이번 달이 최초 입금월인 프로젝트만 실행비에 포함
+  const newProjectIds = projectIds.filter((id) => firstPaymentMonthMap[id] === currentYearMonth)
+
+  const { data: projectItems } = newProjectIds.length > 0
+    ? await supabase.from('project_items').select('*').in('project_id', newProjectIds)
     : { data: [] }
 
   // 지출
