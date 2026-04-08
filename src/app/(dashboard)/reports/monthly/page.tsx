@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { toast } from 'sonner'
 import { formatKRW } from '@/lib/calculations/settlement'
-import { RefreshCw, Trash2 } from 'lucide-react'
+import { RefreshCw, Trash2, AlertTriangle } from 'lucide-react'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -24,6 +24,7 @@ export default function MonthlyReportPage() {
   const [calculating, setCalculating] = useState(false)
   const [resetting, setResetting]     = useState(false)
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
+  const [noItemsProjects, setNoItemsProjects] = useState<string[]>([])
 
   async function load() {
     const { data } = await supabase
@@ -32,7 +33,42 @@ export default function MonthlyReportPage() {
     setSettlement(data)
   }
 
-  useEffect(() => { load() }, [year, month])
+  async function loadWarnings() {
+    const start = `${year}-${String(month).padStart(2, '0')}-01`
+    const lastDay = new Date(year, month, 0).getDate()
+    const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+
+    // 해당 월 입금 완료된 결제의 프로젝트 목록
+    const { data: payments } = await supabase
+      .from('payments')
+      .select('project_id, projects(name)')
+      .gte('payment_date', start)
+      .lte('payment_date', end)
+      .eq('matched', true)
+      .not('memo', 'ilike', '%⚠ 잔금 처리 요망%')
+      .not('memo', 'ilike', '%🔴 미입금%')
+
+    const projectMap: Record<string, string> = {}
+    for (const p of payments ?? []) {
+      if (!p.project_id) continue
+      const proj = p.projects as unknown as { name: string } | null
+      projectMap[p.project_id] = proj?.name ?? p.project_id
+    }
+    const projectIds = Object.keys(projectMap)
+    if (projectIds.length === 0) { setNoItemsProjects([]); return }
+
+    // 구성 상품이 있는 프로젝트 확인
+    const { data: items } = await supabase
+      .from('project_items')
+      .select('project_id')
+      .in('project_id', projectIds)
+
+    const hasItems = new Set((items ?? []).map((i) => i.project_id))
+    const missing = projectIds.filter((id) => !hasItems.has(id)).map((id) => projectMap[id])
+    setNoItemsProjects(missing)
+  }
+
+  useEffect(() => { load(); loadWarnings() }, [year, month])
 
   async function handleCalculate() {
     setCalculating(true)
@@ -112,6 +148,22 @@ export default function MonthlyReportPage() {
           </Button>
         </div>
       </div>
+
+      {/* 구성 상품 미입력 경고 */}
+      {noItemsProjects.length > 0 && (
+        <div className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-md px-3 py-2.5">
+          <AlertTriangle size={15} className="text-orange-500 mt-0.5 shrink-0" />
+          <div className="text-xs text-orange-700 space-y-0.5">
+            <p className="font-semibold">구성 상품 미입력 프로젝트가 있습니다 — 상품 실행비가 ₩0으로 계산됩니다.</p>
+            <p>
+              {noItemsProjects.map((name, i) => (
+                <span key={i} className="inline-block bg-orange-100 text-orange-800 rounded px-1.5 py-0.5 mr-1 mb-0.5">{name}</span>
+              ))}
+            </p>
+            <p className="text-orange-500">프로젝트 메뉴에서 구성 상품을 입력한 후 정산을 재계산해 주세요.</p>
+          </div>
+        </div>
+      )}
 
       {/* 인센티브 안내 */}
       <div className="text-xs text-gray-400 bg-gray-50 border rounded-md px-3 py-2">
