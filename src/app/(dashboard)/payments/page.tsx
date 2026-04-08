@@ -58,6 +58,7 @@ export default function PaymentsPage() {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [confirmTarget, setConfirmTarget] = useState<PaymentWithRelations | null>(null)
   const [confirmAmount, setConfirmAmount] = useState('')
+  const [confirmDate, setConfirmDate] = useState('')
   const [confirmProjectId, setConfirmProjectId] = useState('')
 
   async function load() {
@@ -187,6 +188,7 @@ export default function PaymentsPage() {
   function openConfirm(p: PaymentWithRelations) {
     setConfirmTarget(p)
     setConfirmAmount(String(p.amount))
+    setConfirmDate(new Date().toISOString().split('T')[0])
     setConfirmProjectId(p.project_id ?? '')
     setConfirmOpen(true)
   }
@@ -204,12 +206,13 @@ export default function PaymentsPage() {
       .replace(/\s*\|\s*$/, '')
       .trim() || null
 
-    // 원본 레코드를 입금 확정 처리
+    // 원본 레코드를 입금 확정 처리 (실제 입금일로 날짜 업데이트)
     const { error } = await supabase
       .from('payments')
       .update({
         amount,
         memo: cleanMemo,
+        payment_date: confirmDate || new Date().toISOString().split('T')[0],
         project_id: confirmProjectId || null,
         matched: !!confirmProjectId,
       })
@@ -608,7 +611,7 @@ export default function PaymentsPage() {
       </Dialog>
 
       {/* ══════════ 입금 확정 다이얼로그 ══════════ */}
-      <Dialog open={confirmOpen} onOpenChange={(v) => { setConfirmOpen(v); if (!v) setConfirmTarget(null) }}>
+      <Dialog open={confirmOpen} onOpenChange={(v) => { setConfirmOpen(v); if (!v) { setConfirmTarget(null); setConfirmDate('') } }}>
         <DialogContent>
           <DialogHeader><DialogTitle>입금 확정</DialogTitle></DialogHeader>
           {confirmTarget && (
@@ -616,6 +619,15 @@ export default function PaymentsPage() {
               <div className="rounded-md bg-green-50 border border-green-200 p-3 text-sm">
                 <p className="font-medium text-green-800">{confirmTarget.client_name_raw}</p>
                 <p className="text-green-600 text-xs mt-0.5">입금 확정 시 입금 내역으로 이동되고 대시보드 입금액에 반영됩니다.</p>
+              </div>
+              <div className="space-y-1">
+                <Label>실제 입금일 *</Label>
+                <Input
+                  type="date"
+                  value={confirmDate}
+                  onChange={(e) => setConfirmDate(e.target.value)}
+                />
+                <div className="text-xs text-gray-400">해당 월의 인센티브·정산 기준이 됩니다.</div>
               </div>
               <div className="space-y-1">
                 <Label>실제 입금액 *</Label>
