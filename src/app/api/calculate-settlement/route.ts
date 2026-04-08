@@ -15,20 +15,13 @@ export async function POST(request: Request) {
   const isPendingMemo = (memo: string | null) =>
     !!(memo?.includes('⚠ 잔금 처리 요망') || memo?.includes('🔴 미입금'))
 
-  // 매출/원가 계산: 프로젝트 연결된 입금 완료 결제
-  const { data: rawPayments } = await supabase
-    .from('payments')
-    .select('*')
-    .gte('payment_date', start)
-    .lte('payment_date', end)
-    .eq('matched', true)
-
-  const payments = (rawPayments ?? []).filter((p) => !isPendingMemo(p.memo))
-
-  // 인센티브 계산: 프로젝트 연결 여부와 무관하게 입금 완료된 전체 결제
+  // 입금 완료 결제 전체 (프로젝트 연결 여부 무관)
+  // - 매출: 프로젝트 미연결도 실제 수취 금액이므로 포함
+  // - 인센티브: 담당자 일치 여부로만 판단 (matched 조건 제거)
+  // - 원가: project_id 있는 건만 project_items와 매칭되므로 자동 필터됨
   const { data: rawAllPayments } = await supabase
     .from('payments')
-    .select('id, amount, manager, memo')
+    .select('*')
     .gte('payment_date', start)
     .lte('payment_date', end)
 
@@ -36,7 +29,7 @@ export async function POST(request: Request) {
 
   // 프로젝트 구성 상품 (원가 계산용)
   // 실행비는 프로젝트별로 최초 입금월에만 1회 계산 (중복 방지)
-  const projectIds = [...new Set(payments.map((p) => p.project_id).filter((id): id is string => id !== null))]
+  const projectIds = [...new Set(confirmedPayments.map((p) => p.project_id).filter((id): id is string => id !== null))]
 
   // 해당 프로젝트들의 전체 입금 완료 이력 조회 (오래된 순)
   const { data: allProjectPaymentHistory } = projectIds.length > 0
@@ -106,7 +99,7 @@ export async function POST(request: Request) {
   const autoIncentives = (employees ?? [])
     .filter((e) => e.incentive_type && e.incentive_value > 0)
     .map((e) => {
-      // 해당 직원이 담당한 입금 완료 결제건 (프로젝트 연결 여부 무관)
+      // 해당 직원이 담당한 입금 완료 결제건
       const myPayments = confirmedPayments.filter(
         (p) => p.manager?.trim().toLowerCase() === e.name.trim().toLowerCase()
       )
@@ -149,7 +142,7 @@ export async function POST(request: Request) {
   const result = calculateMonthlySettlement({
     year,
     month,
-    payments,
+    payments: confirmedPayments,
     projectItems: projectItems ?? [],
     expenses,
     incentives,
