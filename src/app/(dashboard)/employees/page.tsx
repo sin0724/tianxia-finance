@@ -15,6 +15,14 @@ import type { Employee, MonthlyPayroll } from '@/types/database'
 
 type PayrollRow = MonthlyPayroll & { employees: { name: string } | null }
 
+type PayFormEntry = {
+  base_salary: string
+  deductions: string
+  net_pay: string
+  work_hours: string
+  paid_at: string
+}
+
 export default function EmployeesPage() {
   const supabase = createClient()
   const now = new Date()
@@ -23,16 +31,21 @@ export default function EmployeesPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Employee | null>(null)
   const [form, setForm] = useState({
-    name: '', position: '', base_salary: '',
+    name: '',
+    position: '',
+    employee_type: 'full_time' as 'full_time' | 'part_time',
+    base_salary: '',
+    hourly_wage: '',
     incentive_type: '' as '' | 'percent' | 'fixed',
-    incentive_value: '', hired_at: '',
+    incentive_value: '',
+    hired_at: '',
   })
 
   // 월별 급여
   const [payYear, setPayYear] = useState(now.getFullYear())
   const [payMonth, setPayMonth] = useState(now.getMonth() + 1)
   const [payrollRows, setPayrollRows] = useState<PayrollRow[]>([])
-  const [payForms, setPayForms] = useState<Record<string, { base_salary: string; deductions: string; net_pay: string; paid_at: string }>>({})
+  const [payForms, setPayForms] = useState<Record<string, PayFormEntry>>({})
 
   async function load() {
     const { data } = await supabase.from('employees').select('*').eq('active', true).order('name')
@@ -48,7 +61,6 @@ export default function EmployeesPage() {
       .eq('month', payMonth)
     setPayrollRows((data as unknown as PayrollRow[]) ?? [])
 
-    // 폼 초기값: 이미 입력된 데이터 or 직원 기본급
     const { data: emps } = await supabase.from('employees').select('*').eq('active', true).order('name')
     const empList = emps ?? []
     const existingMap: Record<string, PayrollRow> = {}
@@ -56,22 +68,34 @@ export default function EmployeesPage() {
       if (r.employee_id) existingMap[r.employee_id] = r
     }
 
-    const forms: typeof payForms = {}
+    const forms: Record<string, PayFormEntry> = {}
     for (const emp of empList) {
       const existing = existingMap[emp.id]
-      forms[emp.id] = existing
-        ? {
-            base_salary: String(existing.base_salary),
-            deductions: String(existing.deductions),
-            net_pay: String(existing.net_pay),
-            paid_at: existing.paid_at ?? '',
-          }
-        : {
-            base_salary: String(emp.base_salary),
-            deductions: '0',
-            net_pay: String(emp.base_salary),
-            paid_at: '',
-          }
+      if (existing) {
+        forms[emp.id] = {
+          base_salary: String(existing.base_salary),
+          deductions: String(existing.deductions),
+          net_pay: String(existing.net_pay),
+          work_hours: String(existing.work_hours ?? 0),
+          paid_at: existing.paid_at ?? '',
+        }
+      } else if (emp.employee_type === 'part_time') {
+        forms[emp.id] = {
+          base_salary: '0',
+          deductions: '0',
+          net_pay: '0',
+          work_hours: '0',
+          paid_at: '',
+        }
+      } else {
+        forms[emp.id] = {
+          base_salary: String(emp.base_salary),
+          deductions: '0',
+          net_pay: String(emp.base_salary),
+          work_hours: '0',
+          paid_at: '',
+        }
+      }
     }
     setPayForms(forms)
     setEmployees(empList)
@@ -83,15 +107,21 @@ export default function EmployeesPage() {
 
   function openAdd() {
     setEditing(null)
-    setForm({ name: '', position: '', base_salary: '', incentive_type: '', incentive_value: '', hired_at: '' })
+    setForm({ name: '', position: '', employee_type: 'full_time', base_salary: '', hourly_wage: '', incentive_type: '', incentive_value: '', hired_at: '' })
     setDialogOpen(true)
   }
 
   function openEdit(e: Employee) {
     setEditing(e)
     setForm({
-      name: e.name, position: e.position ?? '', base_salary: String(e.base_salary),
-      incentive_type: e.incentive_type ?? '', incentive_value: String(e.incentive_value), hired_at: e.hired_at ?? '',
+      name: e.name,
+      position: e.position ?? '',
+      employee_type: e.employee_type ?? 'full_time',
+      base_salary: String(e.base_salary),
+      hourly_wage: String(e.hourly_wage ?? 0),
+      incentive_type: e.incentive_type ?? '',
+      incentive_value: String(e.incentive_value),
+      hired_at: e.hired_at ?? '',
     })
     setDialogOpen(true)
   }
@@ -101,7 +131,9 @@ export default function EmployeesPage() {
     const payload = {
       name: form.name,
       position: form.position || null,
-      base_salary: parseFloat(form.base_salary) || 0,
+      employee_type: form.employee_type,
+      base_salary: form.employee_type === 'full_time' ? (parseFloat(form.base_salary) || 0) : 0,
+      hourly_wage: form.employee_type === 'part_time' ? (parseInt(form.hourly_wage) || 0) : 0,
       incentive_type: form.incentive_type || null,
       incentive_value: parseFloat(form.incentive_value) || 0,
       hired_at: form.hired_at || null,
@@ -125,15 +157,28 @@ export default function EmployeesPage() {
     loadPayroll()
   }
 
-  function updatePayForm(empId: string, field: string, value: string) {
+  function updatePayForm(empId: string, field: keyof PayFormEntry, value: string) {
     setPayForms((prev) => {
+      const emp = employees.find((e) => e.id === empId)
       const row = { ...prev[empId], [field]: value }
-      // 기본급 또는 공제액 변경 시 실수령액 자동 계산
-      if (field === 'base_salary' || field === 'deductions') {
-        const base = parseFloat(field === 'base_salary' ? value : row.base_salary) || 0
-        const ded = parseFloat(field === 'deductions' ? value : row.deductions) || 0
-        row.net_pay = String(Math.max(0, base - ded))
+
+      if (emp?.employee_type === 'part_time') {
+        // 아르바이트: 시간수 변경 시 기본급 자동 계산
+        const hours = parseFloat(field === 'work_hours' ? value : row.work_hours) || 0
+        const wage = emp.hourly_wage ?? 0
+        const computed = Math.round(hours * wage)
+        row.base_salary = String(computed)
+        const ded = parseFloat(row.deductions) || 0
+        row.net_pay = String(Math.max(0, computed - ded))
+      } else {
+        // 정직원: 기본급 또는 공제액 변경 시 실수령액 자동 계산
+        if (field === 'base_salary' || field === 'deductions') {
+          const base = parseFloat(field === 'base_salary' ? value : row.base_salary) || 0
+          const ded = parseFloat(field === 'deductions' ? value : row.deductions) || 0
+          row.net_pay = String(Math.max(0, base - ded))
+        }
       }
+
       return { ...prev, [empId]: row }
     })
   }
@@ -144,17 +189,18 @@ export default function EmployeesPage() {
     const base = parseFloat(f.base_salary) || 0
     const ded = parseFloat(f.deductions) || 0
     const net = parseFloat(f.net_pay) || 0
+    const hours = parseFloat(f.work_hours) || 0
 
     const existing = payrollRows.find((r) => r.employee_id === empId)
     if (existing) {
       const { error } = await supabase.from('monthly_payroll').update({
-        base_salary: base, deductions: ded, net_pay: net, paid_at: f.paid_at || null,
+        base_salary: base, deductions: ded, net_pay: net, work_hours: hours, paid_at: f.paid_at || null,
       }).eq('id', existing.id)
       if (error) { toast.error('수정 실패'); return }
     } else {
       const { error } = await supabase.from('monthly_payroll').insert({
         year: payYear, month: payMonth, employee_id: empId,
-        base_salary: base, deductions: ded, net_pay: net, paid_at: f.paid_at || null,
+        base_salary: base, deductions: ded, net_pay: net, work_hours: hours, paid_at: f.paid_at || null,
       })
       if (error) { toast.error('저장 실패'); return }
     }
@@ -194,12 +240,22 @@ export default function EmployeesPage() {
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-gray-900">{e.name}</span>
                   {e.position && <span className="text-sm text-gray-500">{e.position}</span>}
+                  <Badge variant={e.employee_type === 'part_time' ? 'secondary' : 'outline'} className="text-xs">
+                    {e.employee_type === 'part_time' ? '아르바이트' : '정직원'}
+                  </Badge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 mt-2 text-sm">
-                  <div>
-                    <div className="text-xs text-gray-400">기본급</div>
-                    <div className="font-medium">{formatKRW(e.base_salary)}</div>
-                  </div>
+                  {e.employee_type === 'part_time' ? (
+                    <div>
+                      <div className="text-xs text-gray-400">시급</div>
+                      <div className="font-medium">{formatKRW(e.hourly_wage ?? 0)}/h</div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="text-xs text-gray-400">기본급</div>
+                      <div className="font-medium">{formatKRW(e.base_salary)}</div>
+                    </div>
+                  )}
                   <div>
                     <div className="text-xs text-gray-400">인센티브</div>
                     <div>
@@ -228,8 +284,9 @@ export default function EmployeesPage() {
           <TableHeader>
             <TableRow>
               <TableHead>이름</TableHead>
+              <TableHead>구분</TableHead>
               <TableHead>직책</TableHead>
-              <TableHead className="text-right">기본급</TableHead>
+              <TableHead className="text-right">기본급 / 시급</TableHead>
               <TableHead>인센티브</TableHead>
               <TableHead>입사일</TableHead>
               <TableHead></TableHead>
@@ -237,14 +294,23 @@ export default function EmployeesPage() {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={6} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
             ) : employees.length === 0 ? (
-              <TableRow><TableCell colSpan={6} className="text-center py-8 text-gray-400">등록된 직원이 없습니다.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">등록된 직원이 없습니다.</TableCell></TableRow>
             ) : employees.map((e) => (
               <TableRow key={e.id}>
                 <TableCell className="font-medium">{e.name}</TableCell>
+                <TableCell>
+                  <Badge variant={e.employee_type === 'part_time' ? 'secondary' : 'outline'} className="text-xs">
+                    {e.employee_type === 'part_time' ? '아르바이트' : '정직원'}
+                  </Badge>
+                </TableCell>
                 <TableCell>{e.position ?? '-'}</TableCell>
-                <TableCell className="text-right">{formatKRW(e.base_salary)}</TableCell>
+                <TableCell className="text-right">
+                  {e.employee_type === 'part_time'
+                    ? <span className="text-purple-700">{formatKRW(e.hourly_wage ?? 0)}/h</span>
+                    : formatKRW(e.base_salary)}
+                </TableCell>
                 <TableCell>
                   {e.incentive_type ? (
                     <Badge variant="outline">
@@ -287,7 +353,7 @@ export default function EmployeesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>직원</TableHead>
-                <TableHead className="text-right">기본급</TableHead>
+                <TableHead className="text-right">근무시간 / 기본급</TableHead>
                 <TableHead className="text-right">공제액</TableHead>
                 <TableHead className="text-right">실수령액</TableHead>
                 <TableHead>지급일</TableHead>
@@ -296,21 +362,52 @@ export default function EmployeesPage() {
             </TableHeader>
             <TableBody>
               {employees.map((emp) => {
-                const f = payForms[emp.id] ?? { base_salary: String(emp.base_salary), deductions: '0', net_pay: String(emp.base_salary), paid_at: '' }
+                const f = payForms[emp.id] ?? {
+                  base_salary: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary),
+                  deductions: '0',
+                  net_pay: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary),
+                  work_hours: '0',
+                  paid_at: '',
+                }
                 const isSaved = payrollMap[emp.id]
+                const isPartTime = emp.employee_type === 'part_time'
+
                 return (
                   <TableRow key={emp.id} className={isSaved ? 'bg-green-50/40' : ''}>
                     <TableCell className="font-medium">
-                      {emp.name}
-                      {isSaved && <Check size={13} className="inline ml-1 text-green-500" />}
+                      <div className="flex items-center gap-1.5">
+                        {emp.name}
+                        {isSaved && <Check size={13} className="text-green-500" />}
+                        {isPartTime && (
+                          <Badge variant="secondary" className="text-xs py-0">
+                            {formatKRW(emp.hourly_wage ?? 0)}/h
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
-                      <Input
-                        type="number"
-                        className="h-8 text-sm text-right"
-                        value={f.base_salary}
-                        onChange={(e) => updatePayForm(emp.id, 'base_salary', e.target.value)}
-                      />
+                      {isPartTime ? (
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number"
+                            className="h-8 text-sm text-right w-20"
+                            placeholder="시간"
+                            value={f.work_hours}
+                            onChange={(e) => updatePayForm(emp.id, 'work_hours', e.target.value)}
+                          />
+                          <span className="text-xs text-gray-400 whitespace-nowrap">h</span>
+                          <span className="text-xs text-gray-500 whitespace-nowrap">
+                            = {formatKRW(parseFloat(f.base_salary) || 0)}
+                          </span>
+                        </div>
+                      ) : (
+                        <Input
+                          type="number"
+                          className="h-8 text-sm text-right"
+                          value={f.base_salary}
+                          onChange={(e) => updatePayForm(emp.id, 'base_salary', e.target.value)}
+                        />
+                      )}
                     </TableCell>
                     <TableCell>
                       <Input
@@ -356,7 +453,26 @@ export default function EmployeesPage() {
           <div className="space-y-3 py-2">
             <div className="space-y-1"><Label>이름 *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
             <div className="space-y-1"><Label>직책</Label><Input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} /></div>
-            <div className="space-y-1"><Label>기본급 (월)</Label><Input type="number" value={form.base_salary} onChange={(e) => setForm({ ...form, base_salary: e.target.value })} /></div>
+            <div className="space-y-1">
+              <Label>직원 구분</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={form.employee_type}
+                onChange={(e) => setForm({ ...form, employee_type: e.target.value as 'full_time' | 'part_time' })}
+              >
+                <option value="full_time">정직원 (월급)</option>
+                <option value="part_time">아르바이트 (시급)</option>
+              </select>
+            </div>
+            {form.employee_type === 'full_time' ? (
+              <div className="space-y-1"><Label>기본급 (월)</Label><Input type="number" value={form.base_salary} onChange={(e) => setForm({ ...form, base_salary: e.target.value })} /></div>
+            ) : (
+              <div className="space-y-1">
+                <Label>시급 (원/시간)</Label>
+                <Input type="number" placeholder="예: 10030" value={form.hourly_wage} onChange={(e) => setForm({ ...form, hourly_wage: e.target.value })} />
+                <p className="text-xs text-gray-400">2025년 최저임금: 10,030원/h</p>
+              </div>
+            )}
             <div className="space-y-1">
               <Label>인센티브 방식</Label>
               <select className="w-full border rounded-md px-3 py-2 text-sm" value={form.incentive_type} onChange={(e) => setForm({ ...form, incentive_type: e.target.value as '' | 'percent' | 'fixed' })}>

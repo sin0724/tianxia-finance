@@ -16,9 +16,9 @@ export interface Database {
         Relationships: []
       }
       employees: {
-        Row: { id: string; name: string; position: string | null; base_salary: number; incentive_type: 'percent' | 'fixed' | null; incentive_value: number; active: boolean; hired_at: string | null; created_at: string; updated_at: string }
-        Insert: { id?: string; name: string; position?: string | null; base_salary?: number; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
-        Update: { id?: string; name?: string; position?: string | null; base_salary?: number; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
+        Row: { id: string; name: string; position: string | null; employee_type: 'full_time' | 'part_time'; base_salary: number; hourly_wage: number; incentive_type: 'percent' | 'fixed' | null; incentive_value: number; active: boolean; hired_at: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; name: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; base_salary?: number; hourly_wage?: number; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; name?: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; base_salary?: number; hourly_wage?: number; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
       clients: {
@@ -76,9 +76,9 @@ export interface Database {
         Relationships: []
       }
       monthly_payroll: {
-        Row: { id: string; year: number; month: number; employee_id: string | null; base_salary: number; deductions: number; net_pay: number; paid_at: string | null; created_at: string }
-        Insert: { id?: string; year: number; month: number; employee_id?: string | null; base_salary: number; deductions?: number; net_pay: number; paid_at?: string | null; created_at?: string }
-        Update: { id?: string; year?: number; month?: number; employee_id?: string | null; base_salary?: number; deductions?: number; net_pay?: number; paid_at?: string | null; created_at?: string }
+        Row: { id: string; year: number; month: number; employee_id: string | null; base_salary: number; deductions: number; net_pay: number; work_hours: number; paid_at: string | null; created_at: string }
+        Insert: { id?: string; year: number; month: number; employee_id?: string | null; base_salary: number; deductions?: number; net_pay: number; work_hours?: number; paid_at?: string | null; created_at?: string }
+        Update: { id?: string; year?: number; month?: number; employee_id?: string | null; base_salary?: number; deductions?: number; net_pay?: number; work_hours?: number; paid_at?: string | null; created_at?: string }
         Relationships: []
       }
       monthly_settlements: {
