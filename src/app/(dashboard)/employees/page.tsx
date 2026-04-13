@@ -23,6 +23,13 @@ type PayFormEntry = {
   paid_at: string
 }
 
+function calcPartTimePay(hours: number, hourlyWage: number) {
+  const hourlyPay = Math.round(hours * hourlyWage)
+  const weeklyAvgHours = hours / 4.345
+  const weeklyHolidayPay = weeklyAvgHours >= 15 ? Math.round(hourlyPay * 0.2) : 0
+  return { hourlyPay, weeklyHolidayPay, total: hourlyPay + weeklyHolidayPay, eligible: weeklyAvgHours >= 15 }
+}
+
 export default function EmployeesPage() {
   const supabase = createClient()
   const now = new Date()
@@ -163,13 +170,12 @@ export default function EmployeesPage() {
       const row = { ...prev[empId], [field]: value }
 
       if (emp?.employee_type === 'part_time') {
-        // 아르바이트: 시간수 변경 시 기본급 자동 계산
+        // 아르바이트: 시간수 또는 공제액 변경 시 재계산
         const hours = parseFloat(field === 'work_hours' ? value : row.work_hours) || 0
-        const wage = emp.hourly_wage ?? 0
-        const computed = Math.round(hours * wage)
-        row.base_salary = String(computed)
-        const ded = parseFloat(row.deductions) || 0
-        row.net_pay = String(Math.max(0, computed - ded))
+        const { total } = calcPartTimePay(hours, emp.hourly_wage ?? 0)
+        row.base_salary = String(total)
+        const ded = parseFloat(field === 'deductions' ? value : row.deductions) || 0
+        row.net_pay = String(Math.max(0, total - ded))
       } else {
         // 정직원: 기본급 또는 공제액 변경 시 실수령액 자동 계산
         if (field === 'base_salary' || field === 'deductions') {
@@ -386,21 +392,33 @@ export default function EmployeesPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      {isPartTime ? (
-                        <div className="flex items-center gap-1">
-                          <Input
-                            type="number"
-                            className="h-8 text-sm text-right w-20"
-                            placeholder="시간"
-                            value={f.work_hours}
-                            onChange={(e) => updatePayForm(emp.id, 'work_hours', e.target.value)}
-                          />
-                          <span className="text-xs text-gray-400 whitespace-nowrap">h</span>
-                          <span className="text-xs text-gray-500 whitespace-nowrap">
-                            = {formatKRW(parseFloat(f.base_salary) || 0)}
-                          </span>
-                        </div>
-                      ) : (
+                      {isPartTime ? (() => {
+                        const hours = parseFloat(f.work_hours) || 0
+                        const { hourlyPay, weeklyHolidayPay, total, eligible } = calcPartTimePay(hours, emp.hourly_wage ?? 0)
+                        return (
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1">
+                              <Input
+                                type="number"
+                                className="h-8 text-sm text-right w-20"
+                                placeholder="0"
+                                value={f.work_hours}
+                                onChange={(e) => updatePayForm(emp.id, 'work_hours', e.target.value)}
+                              />
+                              <span className="text-xs text-gray-400">h</span>
+                            </div>
+                            {hours > 0 && (
+                              <div className="text-xs text-gray-500 space-y-0.5 pl-1">
+                                <div>시급: {formatKRW(hourlyPay)}</div>
+                                <div className={eligible ? 'text-blue-600' : 'text-gray-300'}>
+                                  주휴: {eligible ? formatKRW(weeklyHolidayPay) : '미해당 (주 15h 미만)'}
+                                </div>
+                                <div className="font-medium text-gray-700">합계: {formatKRW(total)}</div>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })() : (
                         <Input
                           type="number"
                           className="h-8 text-sm text-right"
