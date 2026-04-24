@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -15,16 +15,44 @@ import type { MonthlySettlement } from '@/types/database'
 
 interface Row { label: string; value: number; indent?: boolean; highlight?: boolean; type?: 'deduct' | 'result' }
 
+type SettlementData = Omit<MonthlySettlement, 'id' | 'year' | 'month' | 'calculated_at'>
+
+function makeRows(s: SettlementData): Row[] {
+  return [
+    { label: '총 매출 (VAT 포함)',         value: s.total_revenue },
+    { label: '공급가액 (÷1.1)',             value: s.supply_value, indent: true },
+    { label: '- 인센티브',                 value: -s.total_incentive, indent: true, type: 'deduct' },
+    { label: '- 상품 실행비',              value: -s.total_product_cost, indent: true, type: 'deduct' },
+    { label: '매출총이익',                 value: s.gross_profit, highlight: true, type: 'result' },
+    { label: '- 고정비',                  value: -s.total_fixed_cost, indent: true, type: 'deduct' },
+    { label: '- 변동비',                  value: -s.total_variable_cost, indent: true, type: 'deduct' },
+    { label: '- 특수비용',                value: -s.total_special_cost, indent: true, type: 'deduct' },
+    { label: '- 직원 급여',               value: -s.total_payroll, indent: true, type: 'deduct' },
+    { label: '영업이익',                  value: s.operating_profit, highlight: true, type: 'result' },
+    { label: '- 법인세 적립 (10%)',        value: -s.corporate_tax_reserve, indent: true, type: 'deduct' },
+    { label: '- 유보금 적립 (8%)',         value: -s.retained_earnings, indent: true, type: 'deduct' },
+    { label: '분배 가능 이익',            value: s.distributable_profit, highlight: true, type: 'result' },
+    { label: '대표자 1인당 정산액 (50%)', value: s.representative_share, highlight: true },
+  ]
+}
+
 export default function MonthlyReportPage() {
   const supabase = createClient()
   const now = new Date()
   const [year, setYear]   = useState(now.getFullYear())
   const [month, setMonth] = useState(now.getMonth() + 1)
-  const [settlement, setSettlement] = useState<MonthlySettlement | null>(null)
-  const [calculating, setCalculating] = useState(false)
-  const [resetting, setResetting]     = useState(false)
+
+  const [settlement, setSettlement]               = useState<MonthlySettlement | null>(null)
+  const [projectedSettlement, setProjectedSettlement] = useState<SettlementData | null>(null)
+  const [pendingTotal, setPendingTotal]           = useState(0)
+  const [pendingCount, setPendingCount]           = useState(0)
+  const [activeView, setActiveView]               = useState<'confirmed' | 'projected'>('confirmed')
+
+  const [calculating, setCalculating]   = useState(false)
+  const [loadingProjected, setLoadingProjected] = useState(false)
+  const [resetting, setResetting]       = useState(false)
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
-  const [noItemsProjects, setNoItemsProjects] = useState<string[]>([])
+  const [noItemsProjects, setNoItemsProjects]   = useState<string[]>([])
 
   async function load() {
     const { data } = await supabase
@@ -33,12 +61,26 @@ export default function MonthlyReportPage() {
     setSettlement(data)
   }
 
+  const loadProjected = useCallback(async () => {
+    setLoadingProjected(true)
+    try {
+      const res = await fetch(`/api/calculate-settlement?year=${year}&month=${month}`)
+      if (res.ok) {
+        const json = await res.json()
+        setProjectedSettlement(json.projectedResult)
+        setPendingTotal(json.pendingTotal ?? 0)
+        setPendingCount(json.pendingCount ?? 0)
+      }
+    } finally {
+      setLoadingProjected(false)
+    }
+  }, [year, month])
+
   async function loadWarnings() {
     const start = `${year}-${String(month).padStart(2, '0')}-01`
     const lastDay = new Date(year, month, 0).getDate()
     const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 
-    // 해당 월 입금 완료된 결제의 프로젝트 목록
     const { data: payments } = await supabase
       .from('payments')
       .select('project_id, projects(name)')
@@ -57,7 +99,6 @@ export default function MonthlyReportPage() {
     const projectIds = Object.keys(projectMap)
     if (projectIds.length === 0) { setNoItemsProjects([]); return }
 
-    // 구성 상품이 있는 프로젝트 확인
     const { data: items } = await supabase
       .from('project_items')
       .select('project_id')
@@ -68,7 +109,13 @@ export default function MonthlyReportPage() {
     setNoItemsProjects(missing)
   }
 
-  useEffect(() => { load(); loadWarnings() }, [year, month])
+  useEffect(() => {
+    setProjectedSettlement(null)
+    setActiveView('confirmed')
+    load()
+    loadWarnings()
+    loadProjected()
+  }, [year, month])
 
   async function handleCalculate() {
     setCalculating(true)
@@ -81,6 +128,9 @@ export default function MonthlyReportPage() {
     if (!res.ok) { toast.error(json.error ?? '계산 실패'); setCalculating(false); return }
     toast.success('정산이 계산되었습니다.')
     setCalculating(false)
+    setProjectedSettlement(json.projectedResult)
+    setPendingTotal(json.pendingTotal ?? 0)
+    setPendingCount(json.pendingCount ?? 0)
     load()
   }
 
@@ -98,22 +148,11 @@ export default function MonthlyReportPage() {
     setSettlement(null)
   }
 
-  const rows: Row[] = settlement ? [
-    { label: '총 매출 (VAT 포함)',          value: settlement.total_revenue },
-    { label: '공급가액 (÷1.1)',              value: settlement.supply_value, indent: true },
-    { label: '- 인센티브',                  value: -settlement.total_incentive, indent: true, type: 'deduct' },
-    { label: '- 상품 실행비',               value: -settlement.total_product_cost, indent: true, type: 'deduct' },
-    { label: '매출총이익',                  value: settlement.gross_profit, highlight: true, type: 'result' },
-    { label: '- 고정비',                   value: -settlement.total_fixed_cost, indent: true, type: 'deduct' },
-    { label: '- 변동비',                   value: -settlement.total_variable_cost, indent: true, type: 'deduct' },
-    { label: '- 특수비용',                 value: -settlement.total_special_cost, indent: true, type: 'deduct' },
-    { label: '- 직원 급여',                value: -settlement.total_payroll, indent: true, type: 'deduct' },
-    { label: '영업이익',                   value: settlement.operating_profit, highlight: true, type: 'result' },
-    { label: '- 법인세 적립 (10%)',         value: -settlement.corporate_tax_reserve, indent: true, type: 'deduct' },
-    { label: '- 유보금 적립 (8%)',          value: -settlement.retained_earnings, indent: true, type: 'deduct' },
-    { label: '분배 가능 이익',             value: settlement.distributable_profit, highlight: true, type: 'result' },
-    { label: '대표자 1인당 정산액 (50%)',   value: settlement.representative_share, highlight: true },
-  ] : []
+  const activeData: SettlementData | null = activeView === 'confirmed'
+    ? settlement
+    : projectedSettlement
+
+  const rows: Row[] = activeData ? makeRows(activeData) : []
 
   return (
     <div className="space-y-4">
@@ -179,60 +218,138 @@ export default function MonthlyReportPage() {
         </Card>
       ) : (
         <div className="space-y-4">
-          <div className="text-xs text-gray-400">
-            계산 시각: {new Date(settlement.calculated_at).toLocaleString('ko-KR')}
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-gray-400">
+              계산 시각: {new Date(settlement.calculated_at).toLocaleString('ko-KR')}
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <Card className="border-blue-200 bg-blue-50">
-              <CardHeader className="pb-1">
-                <CardTitle className="text-sm text-blue-700">대표자 1인당 정산액</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold text-blue-900">{formatKRW(settlement.representative_share)}</div>
-              </CardContent>
-            </Card>
-            <Card className={settlement.operating_profit >= 0 ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}>
-              <CardHeader className="pb-1">
-                <CardTitle className="text-sm text-gray-600">영업이익</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className={`text-3xl font-bold ${settlement.operating_profit >= 0 ? 'text-green-900' : 'text-red-900'}`}>
-                  {formatKRW(settlement.operating_profit)}
-                </div>
-              </CardContent>
-            </Card>
+          {/* 보기 전환 탭 */}
+          <div className="flex gap-1 p-1 bg-gray-100 rounded-lg w-fit">
+            <button
+              onClick={() => setActiveView('confirmed')}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                activeView === 'confirmed'
+                  ? 'bg-white shadow-sm text-gray-900'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              입금 완료 기준
+            </button>
+            <button
+              onClick={() => setActiveView('projected')}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                activeView === 'projected'
+                  ? 'bg-white shadow-sm text-gray-900'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              미수금 전액 수취 시
+              {pendingCount > 0 && (
+                <span className="inline-flex items-center justify-center bg-amber-100 text-amber-700 text-xs rounded-full px-1.5 py-0.5 min-w-[18px]">
+                  {pendingCount}
+                </span>
+              )}
+            </button>
           </div>
 
-          <Card>
-            <CardHeader><CardTitle>정산 상세</CardTitle></CardHeader>
-            <CardContent>
-              <div className="space-y-1">
-                {rows.map((row, i) => (
-                  <div
-                    key={i}
-                    className={`flex justify-between items-center py-2 ${
-                      row.highlight ? 'border-t border-b font-bold bg-gray-50 px-2 rounded' : 'text-sm'
-                    } ${row.indent ? 'pl-4 text-gray-500' : ''}`}
-                  >
-                    <span>{row.label}</span>
-                    <span className={
-                      row.value < 0 ? 'text-red-500' :
-                      row.highlight ? 'text-blue-700' : 'text-gray-800'
-                    }>
-                      {row.value < 0 ? `- ${formatKRW(Math.abs(row.value))}` : formatKRW(row.value)}
-                    </span>
-                  </div>
-                ))}
+          {/* 미수금 포함 안내 배너 */}
+          {activeView === 'projected' && pendingCount > 0 && (
+            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs text-amber-800">
+              <AlertTriangle size={13} className="text-amber-500 shrink-0" />
+              미수금 <strong>{pendingCount}건 ({formatKRW(pendingTotal)})</strong>이 전액 입금됐을 때의 예상 정산입니다.
+            </div>
+          )}
+
+          {activeView === 'projected' && pendingCount === 0 && (
+            <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-md px-3 py-2 text-xs text-green-800">
+              이번 달 미수금이 없어 입금 완료 기준과 동일합니다.
+            </div>
+          )}
+
+          {activeView === 'projected' && loadingProjected && (
+            <Card>
+              <CardContent className="py-12 text-center text-gray-400">
+                미수금 포함 정산 계산 중...
+              </CardContent>
+            </Card>
+          )}
+
+          {(!loadingProjected || activeView === 'confirmed') && activeData && (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <Card className="border-blue-200 bg-blue-50">
+                  <CardHeader className="pb-1">
+                    <CardTitle className="text-sm text-blue-700">대표자 1인당 정산액</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-3xl font-bold text-blue-900">{formatKRW(activeData.representative_share)}</div>
+                    {activeView === 'projected' && settlement && activeData.representative_share !== settlement.representative_share && (
+                      <div className="text-xs text-amber-600 mt-1">
+                        입금 완료 기준 대비 {activeData.representative_share >= settlement.representative_share ? '+' : ''}
+                        {formatKRW(activeData.representative_share - settlement.representative_share)}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card className={activeData.operating_profit >= 0 ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}>
+                  <CardHeader className="pb-1">
+                    <CardTitle className="text-sm text-gray-600">영업이익</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className={`text-3xl font-bold ${activeData.operating_profit >= 0 ? 'text-green-900' : 'text-red-900'}`}>
+                      {formatKRW(activeData.operating_profit)}
+                    </div>
+                    {activeView === 'projected' && settlement && activeData.operating_profit !== settlement.operating_profit && (
+                      <div className="text-xs text-amber-600 mt-1">
+                        입금 완료 기준 대비 {activeData.operating_profit >= settlement.operating_profit ? '+' : ''}
+                        {formatKRW(activeData.operating_profit - settlement.operating_profit)}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
 
-              {settlement.total_incentive > 0 && (
-                <div className="mt-4 pt-3 border-t text-xs text-gray-400">
-                  * 인센티브 {formatKRW(settlement.total_incentive)} = 직원 담당 계약건의 공급가액 × 인센티브 요율 합산
-                </div>
-              )}
-            </CardContent>
-          </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>
+                    정산 상세
+                    {activeView === 'projected' && (
+                      <span className="ml-2 text-xs font-normal text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">
+                        미수금 전액 수취 가정
+                      </span>
+                    )}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-1">
+                    {rows.map((row, i) => (
+                      <div
+                        key={i}
+                        className={`flex justify-between items-center py-2 ${
+                          row.highlight ? 'border-t border-b font-bold bg-gray-50 px-2 rounded' : 'text-sm'
+                        } ${row.indent ? 'pl-4 text-gray-500' : ''}`}
+                      >
+                        <span>{row.label}</span>
+                        <span className={
+                          row.value < 0 ? 'text-red-500' :
+                          row.highlight ? 'text-blue-700' : 'text-gray-800'
+                        }>
+                          {row.value < 0 ? `- ${formatKRW(Math.abs(row.value))}` : formatKRW(row.value)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {activeData.total_incentive > 0 && (
+                    <div className="mt-4 pt-3 border-t text-xs text-gray-400">
+                      * 인센티브 {formatKRW(activeData.total_incentive)} = 직원 담당 계약건의 공급가액 × 인센티브 요율 합산
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
         </div>
       )}
 

@@ -1,65 +1,161 @@
 import { createClient } from '@/lib/supabase/server'
-import { calculateMonthlySettlement } from '@/lib/calculations/settlement'
+import { calculateMonthlySettlement, type SettlementResult } from '@/lib/calculations/settlement'
 import { NextResponse } from 'next/server'
 
-export async function POST(request: Request) {
-  const { year, month } = await request.json()
-  if (!year || !month) return NextResponse.json({ error: 'year, month 필수' }, { status: 400 })
+const isPendingMemo = (memo: string | null) =>
+  !!(memo?.includes('⚠ 잔금 처리 요망') || memo?.includes('🔴 미입금'))
 
+type EmployeeRow = { id: string; name: string; incentive_type: string | null; incentive_value: number }
+type PaymentRow = { manager?: string | null; amount: number }
+
+function computeAutoIncentives(
+  employees: EmployeeRow[],
+  payments: PaymentRow[],
+  vatRate: number,
+  year: number,
+  month: number,
+  prefix: string
+) {
+  return employees
+    .filter((e) => e.incentive_type && e.incentive_value > 0)
+    .map((e) => {
+      const myPayments = payments.filter(
+        (p) => p.manager?.trim().toLowerCase() === e.name.trim().toLowerCase()
+      )
+      if (myPayments.length === 0) return null
+      const myRevenue = myPayments.reduce((sum, p) => sum + p.amount, 0)
+      const mySupplyValue = myRevenue / (1 + vatRate)
+      const amount =
+        e.incentive_type === 'percent'
+          ? Math.round((mySupplyValue * e.incentive_value) / 100)
+          : e.incentive_value
+      return {
+        id: `${prefix}_${e.id}`,
+        year,
+        month,
+        employee_id: e.id,
+        amount,
+        basis: e.incentive_type === 'percent' ? mySupplyValue : null,
+        memo: `담당계약 공급가액 ${Math.round(mySupplyValue).toLocaleString()}원 기준`,
+        created_at: new Date().toISOString(),
+      }
+    })
+    .filter((i): i is NonNullable<typeof i> => i !== null)
+}
+
+function toSnakeCase(r: SettlementResult) {
+  return {
+    total_revenue: r.totalRevenue,
+    supply_value: r.supplyValue,
+    total_incentive: r.totalIncentive,
+    total_product_cost: r.totalProductCost,
+    gross_profit: r.grossProfit,
+    total_fixed_cost: r.totalFixedCost,
+    total_variable_cost: r.totalVariableCost,
+    total_special_cost: r.totalSpecialCost,
+    total_payroll: r.totalPayroll,
+    operating_profit: r.operatingProfit,
+    corporate_tax_reserve: r.corporateTaxReserve,
+    retained_earnings: r.retainedEarnings,
+    distributable_profit: r.distributableProfit,
+    representative_share: r.representativeShare,
+  }
+}
+
+async function computeBothSettlements(year: number, month: number) {
   const supabase = await createClient()
 
   const start = `${year}-${String(month).padStart(2, '0')}-01`
   const lastDay = new Date(year, month, 0).getDate()
   const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 
-  const isPendingMemo = (memo: string | null) =>
-    !!(memo?.includes('⚠ 잔금 처리 요망') || memo?.includes('🔴 미입금'))
-
-  // 입금 완료 결제 전체 (프로젝트 연결 여부 무관)
-  // - 매출: 프로젝트 미연결도 실제 수취 금액이므로 포함
-  // - 인센티브: 담당자 일치 여부로만 판단 (matched 조건 제거)
-  // - 원가: project_id 있는 건만 project_items와 매칭되므로 자동 필터됨
   const { data: rawAllPayments } = await supabase
     .from('payments')
     .select('*')
     .gte('payment_date', start)
     .lte('payment_date', end)
 
-  const confirmedPayments = (rawAllPayments ?? []).filter((p) => !isPendingMemo(p.memo))
-
-  // 프로젝트 구성 상품 (원가 계산용)
-  // 실행비는 프로젝트별로 최초 입금월에만 1회 계산 (중복 방지)
-  const projectIds = [...new Set(confirmedPayments.map((p) => p.project_id).filter((id): id is string => id !== null))]
-
-  // 해당 프로젝트들의 전체 입금 완료 이력 조회 (오래된 순)
-  const { data: allProjectPaymentHistory } = projectIds.length > 0
-    ? await supabase
-        .from('payments')
-        .select('project_id, payment_date, memo')
-        .in('project_id', projectIds)
-        .eq('matched', true)
-        .order('payment_date', { ascending: true })
-    : { data: [] }
+  const allPaymentsInMonth = rawAllPayments ?? []
+  const confirmedPayments = allPaymentsInMonth.filter((p) => !isPendingMemo(p.memo))
+  const pendingPayments = allPaymentsInMonth.filter((p) => isPendingMemo(p.memo))
 
   const currentYearMonth = `${year}-${String(month).padStart(2, '0')}`
 
-  // 각 프로젝트의 최초 입금 완료월 산출 (pending 제외)
+  // ── 확정 결제 기준 프로젝트 실행비 ──────────────────────────────
+  const projectIds = [
+    ...new Set(confirmedPayments.map((p) => p.project_id).filter((id): id is string => id !== null)),
+  ]
+
+  const { data: allProjectPaymentHistory } =
+    projectIds.length > 0
+      ? await supabase
+          .from('payments')
+          .select('project_id, payment_date, memo')
+          .in('project_id', projectIds)
+          .eq('matched', true)
+          .order('payment_date', { ascending: true })
+      : { data: [] }
+
   const firstPaymentMonthMap: Record<string, string> = {}
   for (const p of allProjectPaymentHistory ?? []) {
     if (!p.project_id || isPendingMemo(p.memo)) continue
     if (!firstPaymentMonthMap[p.project_id]) {
-      firstPaymentMonthMap[p.project_id] = p.payment_date.slice(0, 7) // 'YYYY-MM'
+      firstPaymentMonthMap[p.project_id] = p.payment_date.slice(0, 7)
     }
   }
 
-  // 이번 달이 최초 입금월인 프로젝트만 실행비에 포함
   const newProjectIds = projectIds.filter((id) => firstPaymentMonthMap[id] === currentYearMonth)
 
-  const { data: projectItems } = newProjectIds.length > 0
-    ? await supabase.from('project_items').select('*').in('project_id', newProjectIds)
-    : { data: [] }
+  const { data: projectItems } =
+    newProjectIds.length > 0
+      ? await supabase.from('project_items').select('*').in('project_id', newProjectIds)
+      : { data: [] }
 
-  // 지출
+  // ── 미수금 포함 기준 프로젝트 실행비 ──────────────────────────────
+  const allProjectIds = [
+    ...new Set(allPaymentsInMonth.map((p) => p.project_id).filter((id): id is string => id !== null)),
+  ]
+
+  const confirmedProjectIdSet = new Set(projectIds)
+  const pendingOnlyProjectIds = allProjectIds.filter((id) => !confirmedProjectIdSet.has(id))
+
+  const { data: pendingOnlyHistory } =
+    pendingOnlyProjectIds.length > 0
+      ? await supabase
+          .from('payments')
+          .select('project_id, payment_date, memo')
+          .in('project_id', pendingOnlyProjectIds)
+          .eq('matched', true)
+          .order('payment_date', { ascending: true })
+      : { data: [] }
+
+  const extendedFirstPaymentMonthMap = { ...firstPaymentMonthMap }
+  for (const p of pendingOnlyHistory ?? []) {
+    if (!p.project_id || isPendingMemo(p.memo)) continue
+    if (!extendedFirstPaymentMonthMap[p.project_id]) {
+      extendedFirstPaymentMonthMap[p.project_id] = p.payment_date.slice(0, 7)
+    }
+  }
+  for (const id of allProjectIds) {
+    if (!extendedFirstPaymentMonthMap[id]) {
+      extendedFirstPaymentMonthMap[id] = currentYearMonth
+    }
+  }
+
+  const projectedNewProjectIds = allProjectIds.filter(
+    (id) => extendedFirstPaymentMonthMap[id] === currentYearMonth
+  )
+  const newProjectIdSet = new Set(newProjectIds)
+  const additionalProjectIds = projectedNewProjectIds.filter((id) => !newProjectIdSet.has(id))
+
+  const { data: additionalProjectItems } =
+    additionalProjectIds.length > 0
+      ? await supabase.from('project_items').select('*').in('project_id', additionalProjectIds)
+      : { data: [] }
+
+  const allProjectItems = [...(projectItems ?? []), ...(additionalProjectItems ?? [])]
+
+  // ── 공통 데이터 ───────────────────────────────────────────────
   const { data: rawExpenses } = await supabase
     .from('monthly_expenses')
     .select('*, expense_categories(parent_type)')
@@ -71,14 +167,12 @@ export async function POST(request: Request) {
     category_type: (e.expense_categories as unknown as { parent_type: string } | null)?.parent_type,
   }))
 
-  // 급여
   const { data: payroll } = await supabase
     .from('monthly_payroll')
     .select('*')
     .eq('year', year)
     .eq('month', month)
 
-  // 시스템 설정
   const { data: settingsRows } = await supabase.from('settings').select('*')
   const settings = Object.fromEntries((settingsRows ?? []).map((s) => [s.key, Number(s.value)])) as {
     vat_rate: number
@@ -87,45 +181,11 @@ export async function POST(request: Request) {
   }
   const vatRate = settings.vat_rate ?? 0.1
 
-  // ── 인센티브 자동 계산 ──────────────────────────────────────
-  // 직원별로 본인이 담당한 계약건(payment.manager === 직원명)의
-  // 공급가액에만 인센티브 적용. 담당자가 없거나 직원 목록에 없으면 대표자 계약건.
-
   const { data: employees } = await supabase
     .from('employees')
     .select('id, name, incentive_type, incentive_value')
     .eq('active', true)
 
-  const autoIncentives = (employees ?? [])
-    .filter((e) => e.incentive_type && e.incentive_value > 0)
-    .map((e) => {
-      // 해당 직원이 담당한 입금 완료 결제건
-      const myPayments = confirmedPayments.filter(
-        (p) => p.manager?.trim().toLowerCase() === e.name.trim().toLowerCase()
-      )
-      if (myPayments.length === 0) return null
-
-      const myRevenue     = myPayments.reduce((sum, p) => sum + p.amount, 0)
-      const mySupplyValue = myRevenue / (1 + vatRate)
-
-      const amount = e.incentive_type === 'percent'
-        ? Math.round(mySupplyValue * e.incentive_value / 100)
-        : e.incentive_value
-
-      return {
-        id: `auto_${e.id}`,
-        year,
-        month,
-        employee_id: e.id,
-        amount,
-        basis: e.incentive_type === 'percent' ? mySupplyValue : null,
-        memo: `담당계약 공급가액 ${Math.round(mySupplyValue).toLocaleString()}원 기준`,
-        created_at: new Date().toISOString(),
-      }
-    })
-    .filter((i): i is NonNullable<typeof i> => i !== null)
-
-  // 수동 입력된 monthly_incentives가 있으면 해당 직원 건은 수동 값 우선
   const { data: manualIncentives } = await supabase
     .from('monthly_incentives')
     .select('*')
@@ -133,53 +193,96 @@ export async function POST(request: Request) {
     .eq('month', month)
 
   const manualEmployeeIds = new Set((manualIncentives ?? []).map((i) => i.employee_id))
+
+  // ── 인센티브 계산 ────────────────────────────────────────────
+  const autoIncentives = computeAutoIncentives(employees ?? [], confirmedPayments, vatRate, year, month, 'auto')
   const incentives = [
     ...autoIncentives.filter((i) => !manualEmployeeIds.has(i.employee_id)),
     ...(manualIncentives ?? []),
   ]
-  // ─────────────────────────────────────────────────────────────
+
+  const projectedAutoIncentives = computeAutoIncentives(employees ?? [], allPaymentsInMonth, vatRate, year, month, 'proj')
+  const projectedIncentives = [
+    ...projectedAutoIncentives.filter((i) => !manualEmployeeIds.has(i.employee_id)),
+    ...(manualIncentives ?? []),
+  ]
+
+  const settlementSettings = {
+    vat_rate: vatRate,
+    corporate_tax_reserve: settings.corporate_tax_reserve ?? 0.1,
+    retained_earnings_reserve: settings.retained_earnings_reserve ?? 0.08,
+  }
 
   const result = calculateMonthlySettlement({
-    year,
-    month,
+    year, month,
     payments: confirmedPayments,
     projectItems: projectItems ?? [],
     expenses,
     incentives,
     payroll: payroll ?? [],
-    settings: {
-      vat_rate: vatRate,
-      corporate_tax_reserve: settings.corporate_tax_reserve ?? 0.1,
-      retained_earnings_reserve: settings.retained_earnings_reserve ?? 0.08,
-    },
+    settings: settlementSettings,
   })
 
-  const { error } = await supabase.from('monthly_settlements').upsert({
-    year,
-    month,
-    total_revenue: result.totalRevenue,
-    supply_value: result.supplyValue,
-    total_incentive: result.totalIncentive,
-    total_product_cost: result.totalProductCost,
-    gross_profit: result.grossProfit,
-    total_fixed_cost: result.totalFixedCost,
-    total_variable_cost: result.totalVariableCost,
-    total_special_cost: result.totalSpecialCost,
-    total_payroll: result.totalPayroll,
-    operating_profit: result.operatingProfit,
-    corporate_tax_reserve: result.corporateTaxReserve,
-    retained_earnings: result.retainedEarnings,
-    distributable_profit: result.distributableProfit,
-    representative_share: result.representativeShare,
-    calculated_at: new Date().toISOString(),
-  }, { onConflict: 'year,month' })
+  const projectedResult = calculateMonthlySettlement({
+    year, month,
+    payments: allPaymentsInMonth,
+    projectItems: allProjectItems,
+    expenses,
+    incentives: projectedIncentives,
+    payroll: payroll ?? [],
+    settings: settlementSettings,
+  })
+
+  const pendingTotal = pendingPayments.reduce((sum, p) => sum + p.amount, 0)
+  const pendingCount = pendingPayments.length
+
+  return { supabase, result, projectedResult, pendingTotal, pendingCount }
+}
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  const year = Number(searchParams.get('year'))
+  const month = Number(searchParams.get('month'))
+  if (!year || !month) return NextResponse.json({ error: 'year, month 필수' }, { status: 400 })
+
+  const { result, projectedResult, pendingTotal, pendingCount } = await computeBothSettlements(year, month)
+
+  return NextResponse.json({
+    success: true,
+    result: toSnakeCase(result),
+    projectedResult: toSnakeCase(projectedResult),
+    pendingTotal,
+    pendingCount,
+  })
+}
+
+export async function POST(request: Request) {
+  const { year, month } = await request.json()
+  if (!year || !month) return NextResponse.json({ error: 'year, month 필수' }, { status: 400 })
+
+  const { supabase, result, projectedResult, pendingTotal, pendingCount } = await computeBothSettlements(year, month)
+
+  const { error } = await supabase.from('monthly_settlements').upsert(
+    {
+      year,
+      month,
+      ...toSnakeCase(result),
+      calculated_at: new Date().toISOString(),
+    },
+    { onConflict: 'year,month' }
+  )
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  return NextResponse.json({ success: true, result })
+  return NextResponse.json({
+    success: true,
+    result: toSnakeCase(result),
+    projectedResult: toSnakeCase(projectedResult),
+    pendingTotal,
+    pendingCount,
+  })
 }
 
-// 정산 초기화
 export async function DELETE(request: Request) {
   const { year, month } = await request.json()
   if (!year || !month) return NextResponse.json({ error: 'year, month 필수' }, { status: 400 })
