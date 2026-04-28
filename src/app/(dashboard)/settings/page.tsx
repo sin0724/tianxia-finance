@@ -33,17 +33,25 @@ export default function SettingsPage() {
   useEffect(() => { load() }, [])
 
   async function saveSettings() {
+    const vat = parseFloat(settings.vat_rate)
+    const tax = parseFloat(settings.corporate_tax_reserve)
+    const ret = parseFloat(settings.retained_earnings_reserve)
+    if ([vat, tax, ret].some(isNaN)) { toast.error('숫자를 올바르게 입력해주세요.'); return }
+
     setSaving(true)
     const updates = [
-      { key: 'vat_rate', value: String(parseFloat(settings.vat_rate) / 100) },
-      { key: 'corporate_tax_reserve', value: String(parseFloat(settings.corporate_tax_reserve) / 100) },
-      { key: 'retained_earnings_reserve', value: String(parseFloat(settings.retained_earnings_reserve) / 100) },
+      { key: 'vat_rate',                  value: vat / 100 },
+      { key: 'corporate_tax_reserve',     value: tax / 100 },
+      { key: 'retained_earnings_reserve', value: ret / 100 },
     ]
     for (const u of updates) {
-      await supabase.from('settings').upsert({ key: u.key, value: u.value })
+      const { error } = await supabase
+        .from('settings')
+        .upsert({ key: u.key, value: u.value }, { onConflict: 'key' })
+      if (error) { toast.error(`저장 실패: ${error.message}`); setSaving(false); return }
     }
     setSaving(false)
-    toast.success('설정이 저장되었습니다.')
+    toast.success('설정이 저장되었습니다. 월별 정산을 재계산하면 새 요율이 반영됩니다.')
   }
 
   async function addRep() {

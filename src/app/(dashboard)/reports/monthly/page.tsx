@@ -17,22 +17,27 @@ interface Row { label: string; value: number; indent?: boolean; highlight?: bool
 
 type SettlementData = Omit<MonthlySettlement, 'id' | 'year' | 'month' | 'calculated_at'>
 
-function makeRows(s: SettlementData): Row[] {
+interface SettlementRates { vatRate: number; taxRate: number; retainedRate: number }
+
+function makeRows(s: SettlementData, rates: SettlementRates): Row[] {
+  const vatPct  = Math.round(rates.vatRate * 100)
+  const taxPct  = Math.round(rates.taxRate * 100)
+  const retPct  = Math.round(rates.retainedRate * 100)
   return [
-    { label: '총 매출 (VAT 포함)',         value: s.total_revenue },
-    { label: '공급가액 (÷1.1)',             value: s.supply_value, indent: true },
-    { label: '- 인센티브',                 value: -s.total_incentive, indent: true, type: 'deduct' },
-    { label: '- 상품 실행비',              value: -s.total_product_cost, indent: true, type: 'deduct' },
-    { label: '매출총이익',                 value: s.gross_profit, highlight: true, type: 'result' },
-    { label: '- 고정비',                  value: -s.total_fixed_cost, indent: true, type: 'deduct' },
-    { label: '- 변동비',                  value: -s.total_variable_cost, indent: true, type: 'deduct' },
-    { label: '- 특수비용',                value: -s.total_special_cost, indent: true, type: 'deduct' },
-    { label: '- 직원 급여',               value: -s.total_payroll, indent: true, type: 'deduct' },
-    { label: '영업이익',                  value: s.operating_profit, highlight: true, type: 'result' },
-    { label: '- 법인세 적립 (10%)',        value: -s.corporate_tax_reserve, indent: true, type: 'deduct' },
-    { label: '- 유보금 적립 (8%)',         value: -s.retained_earnings, indent: true, type: 'deduct' },
-    { label: '분배 가능 이익',            value: s.distributable_profit, highlight: true, type: 'result' },
-    { label: '대표자 1인당 정산액 (50%)', value: s.representative_share, highlight: true },
+    { label: `총 매출 (VAT ${vatPct}% 포함)`,      value: s.total_revenue },
+    { label: `공급가액 (÷${1 + vatPct / 100})`,    value: s.supply_value, indent: true },
+    { label: '- 인센티브',                          value: -s.total_incentive, indent: true, type: 'deduct' },
+    { label: '- 상품 실행비',                       value: -s.total_product_cost, indent: true, type: 'deduct' },
+    { label: '매출총이익',                          value: s.gross_profit, highlight: true, type: 'result' },
+    { label: '- 고정비',                            value: -s.total_fixed_cost, indent: true, type: 'deduct' },
+    { label: '- 변동비',                            value: -s.total_variable_cost, indent: true, type: 'deduct' },
+    { label: '- 특수비용',                          value: -s.total_special_cost, indent: true, type: 'deduct' },
+    { label: '- 직원 급여',                         value: -s.total_payroll, indent: true, type: 'deduct' },
+    { label: '영업이익',                            value: s.operating_profit, highlight: true, type: 'result' },
+    { label: `- 법인세 적립 (${taxPct}%)`,          value: -s.corporate_tax_reserve, indent: true, type: 'deduct' },
+    { label: `- 유보금 적립 (${retPct}%)`,          value: -s.retained_earnings, indent: true, type: 'deduct' },
+    { label: '분배 가능 이익',                      value: s.distributable_profit, highlight: true, type: 'result' },
+    { label: '대표자 1인당 정산액 (50%)',            value: s.representative_share, highlight: true },
   ]
 }
 
@@ -48,6 +53,8 @@ export default function MonthlyReportPage() {
   const [pendingCount, setPendingCount]           = useState(0)
   const [activeView, setActiveView]               = useState<'confirmed' | 'projected'>('confirmed')
 
+  const [rates, setRates] = useState<SettlementRates>({ vatRate: 0.1, taxRate: 0.1, retainedRate: 0.08 })
+
   const [calculating, setCalculating]   = useState(false)
   const [loadingProjected, setLoadingProjected] = useState(false)
   const [resetting, setResetting]       = useState(false)
@@ -59,6 +66,14 @@ export default function MonthlyReportPage() {
       .from('monthly_settlements').select('*')
       .eq('year', year).eq('month', month).single()
     setSettlement(data)
+
+    const { data: settingsRows } = await supabase.from('settings').select('*')
+    const map = Object.fromEntries((settingsRows ?? []).map((s) => [s.key, Number(s.value)]))
+    setRates({
+      vatRate:      map.vat_rate                  ?? 0.1,
+      taxRate:      map.corporate_tax_reserve      ?? 0.1,
+      retainedRate: map.retained_earnings_reserve  ?? 0.08,
+    })
   }
 
   const loadProjected = useCallback(async () => {
@@ -152,7 +167,7 @@ export default function MonthlyReportPage() {
     ? settlement
     : projectedSettlement
 
-  const rows: Row[] = activeData ? makeRows(activeData) : []
+  const rows: Row[] = activeData ? makeRows(activeData, rates) : []
 
   return (
     <div className="space-y-4">
