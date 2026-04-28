@@ -61,6 +61,19 @@ export default function PaymentsPage() {
   const [confirmDate, setConfirmDate] = useState('')
   const [confirmProjectId, setConfirmProjectId] = useState('')
 
+  // 수금 예정 추가 다이얼로그
+  const [addPendingOpen, setAddPendingOpen] = useState(false)
+  const [pendingForm, setPendingForm] = useState({
+    client_name_raw: '',
+    amount: '',
+    payment_date: '',
+    payment_type: '' as Payment['payment_type'],
+    pendingStatus: '미입금' as '미입금' | '잔금 처리 요망',
+    manager: '',
+    project_id: '',
+    memo: '',
+  })
+
   async function load() {
     setLoading(true)
     const start = `${year}-${String(month).padStart(2, '0')}-01`
@@ -245,6 +258,46 @@ export default function PaymentsPage() {
 
     setConfirmOpen(false)
     setConfirmTarget(null)
+    load()
+  }
+
+  // ─── 수금 예정 추가 ───────────────────────────────────
+  function openAddPending() {
+    setPendingForm({
+      client_name_raw: '',
+      amount: '',
+      payment_date: new Date().toISOString().split('T')[0],
+      payment_type: null,
+      pendingStatus: '미입금',
+      manager: '',
+      project_id: '',
+      memo: '',
+    })
+    setAddPendingOpen(true)
+  }
+
+  async function handleSavePending() {
+    const amount = parseFloat(pendingForm.amount)
+    if (!pendingForm.client_name_raw.trim() || !pendingForm.payment_date || isNaN(amount)) {
+      toast.error('상호명, 날짜, 금액은 필수입니다.')
+      return
+    }
+    const tag = pendingForm.pendingStatus === '잔금 처리 요망' ? '⚠ 잔금 처리 요망' : '🔴 미입금'
+    const memo = [tag, pendingForm.memo.trim()].filter(Boolean).join(' | ')
+    const { error } = await supabase.from('payments').insert({
+      client_name_raw: pendingForm.client_name_raw.trim(),
+      amount,
+      payment_date: pendingForm.payment_date,
+      payment_type: pendingForm.payment_type || null,
+      manager: pendingForm.manager || null,
+      project_id: pendingForm.project_id || null,
+      memo,
+      source: 'manual' as const,
+      matched: !!pendingForm.project_id,
+    })
+    if (error) { toast.error(error.message); return }
+    toast.success('수금 예정건이 추가되었습니다.')
+    setAddPendingOpen(false)
     load()
   }
 
@@ -442,10 +495,13 @@ export default function PaymentsPage() {
       {/* ══════════ 수금 관리 탭 ══════════ */}
       {tab === 'pending' && (
         <>
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-between">
             <div className="text-sm text-gray-600">
               수금 예정 <strong className="text-orange-600">{formatKRW(pendingTotal)}</strong> ({pendingList.length}건)
             </div>
+            <Button size="sm" onClick={openAddPending}>
+              <Plus size={14} className="mr-1" />수금 예정 추가
+            </Button>
           </div>
 
           {pendingList.length === 0 ? (
@@ -667,6 +723,92 @@ export default function PaymentsPage() {
             <Button className="bg-green-600 hover:bg-green-700" onClick={handleConfirm}>
               <CheckCircle size={14} className="mr-1" />입금 확정
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ══════════ 수금 예정 추가 다이얼로그 ══════════ */}
+      <Dialog open={addPendingOpen} onOpenChange={setAddPendingOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>수금 예정 추가</DialogTitle></DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1">
+              <Label>상호명 *</Label>
+              <Input
+                placeholder="클라이언트명 입력"
+                value={pendingForm.client_name_raw}
+                onChange={(e) => setPendingForm({ ...pendingForm, client_name_raw: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>금액 *</Label>
+              <Input
+                type="number"
+                placeholder="0"
+                value={pendingForm.amount}
+                onChange={(e) => setPendingForm({ ...pendingForm, amount: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>예정일 *</Label>
+              <Input
+                type="date"
+                value={pendingForm.payment_date}
+                onChange={(e) => setPendingForm({ ...pendingForm, payment_date: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>수금 상태</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={pendingForm.pendingStatus}
+                onChange={(e) => setPendingForm({ ...pendingForm, pendingStatus: e.target.value as '미입금' | '잔금 처리 요망' })}
+              >
+                <option value="미입금">🔴 미입금</option>
+                <option value="잔금 처리 요망">⚠ 잔금 처리 요망</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>결제 유형</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={pendingForm.payment_type ?? ''}
+                onChange={(e) => setPendingForm({ ...pendingForm, payment_type: e.target.value as Payment['payment_type'] })}
+              >
+                <option value="">선택 안함</option>
+                {['계약금', '중도금', '잔금', '기타'].map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>담당자</Label>
+              <Input
+                value={pendingForm.manager}
+                onChange={(e) => setPendingForm({ ...pendingForm, manager: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>프로젝트 연결 (선택)</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={pendingForm.project_id}
+                onChange={(e) => setPendingForm({ ...pendingForm, project_id: e.target.value })}
+              >
+                <option value="">연결 안함</option>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>메모</Label>
+              <Input
+                placeholder="특이사항, 계약 내용 등"
+                value={pendingForm.memo}
+                onChange={(e) => setPendingForm({ ...pendingForm, memo: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddPendingOpen(false)}>취소</Button>
+            <Button onClick={handleSavePending}>추가</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
