@@ -74,7 +74,7 @@ export default function DashboardPage() {
       profit: r.operating_profit,
     })))
 
-    // 결제
+    // 결제 (이번 달 — 확정 입금액·미매칭 알림용)
     const { data: payments } = await supabase
       .from('payments')
       .select('amount, matched, memo')
@@ -85,11 +85,16 @@ export default function DashboardPage() {
       !!(p.memo?.includes('⚠ 잔금 처리 요망') || p.memo?.includes('🔴 미입금'))
 
     const confirmed = (payments ?? []).filter((p) => !isPending(p))
-    const pending   = (payments ?? []).filter((p) =>  isPending(p))
     const unmatched = (payments ?? []).filter((p) => !p.matched)
 
+    // 수금 예정 — 수금 관리 탭과 동일하게 전체 기간 미수금 합산
+    const { data: allPending } = await supabase
+      .from('payments')
+      .select('amount')
+      .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
+
     setPaymentTotal(confirmed.reduce((s, p) => s + p.amount, 0))
-    setPendingTotal(pending.reduce((s, p) => s + p.amount, 0))
+    setPendingTotal((allPending ?? []).reduce((s, p) => s + p.amount, 0))
 
 
     // 알림 (현재 월일 때만)

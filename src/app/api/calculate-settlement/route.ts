@@ -77,7 +77,16 @@ async function computeBothSettlements(year: number, month: number) {
 
   const allPaymentsInMonth = rawAllPayments ?? []
   const confirmedPayments = allPaymentsInMonth.filter((p) => !isPendingMemo(p.memo))
-  const pendingPayments = allPaymentsInMonth.filter((p) => isPendingMemo(p.memo))
+
+  // 전체 기간 미수금 (날짜 무관) — 수금 관리 탭·대시보드와 동일 기준
+  const { data: rawAllPending } = await supabase
+    .from('payments')
+    .select('*')
+    .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
+
+  const allPendingPayments = rawAllPending ?? []
+  // 예상 정산: 이번 달 확정 + 전체 미수금 전액 수취 가정
+  const paymentsForProjected = [...confirmedPayments, ...allPendingPayments]
 
   const currentYearMonth = `${year}-${String(month).padStart(2, '0')}`
 
@@ -113,7 +122,7 @@ async function computeBothSettlements(year: number, month: number) {
 
   // ── 미수금 포함 기준 프로젝트 실행비 ──────────────────────────────
   const allProjectIds = [
-    ...new Set(allPaymentsInMonth.map((p) => p.project_id).filter((id): id is string => id !== null)),
+    ...new Set(paymentsForProjected.map((p) => p.project_id).filter((id): id is string => id !== null)),
   ]
 
   const confirmedProjectIdSet = new Set(projectIds)
@@ -201,7 +210,7 @@ async function computeBothSettlements(year: number, month: number) {
     ...(manualIncentives ?? []),
   ]
 
-  const projectedAutoIncentives = computeAutoIncentives(employees ?? [], allPaymentsInMonth, vatRate, year, month, 'proj')
+  const projectedAutoIncentives = computeAutoIncentives(employees ?? [], paymentsForProjected, vatRate, year, month, 'proj')
   const projectedIncentives = [
     ...projectedAutoIncentives.filter((i) => !manualEmployeeIds.has(i.employee_id)),
     ...(manualIncentives ?? []),
@@ -225,7 +234,7 @@ async function computeBothSettlements(year: number, month: number) {
 
   const projectedResult = calculateMonthlySettlement({
     year, month,
-    payments: allPaymentsInMonth,
+    payments: paymentsForProjected,
     projectItems: allProjectItems,
     expenses,
     incentives: projectedIncentives,
@@ -233,8 +242,8 @@ async function computeBothSettlements(year: number, month: number) {
     settings: settlementSettings,
   })
 
-  const pendingTotal = pendingPayments.reduce((sum, p) => sum + p.amount, 0)
-  const pendingCount = pendingPayments.length
+  const pendingTotal = allPendingPayments.reduce((sum, p) => sum + p.amount, 0)
+  const pendingCount = allPendingPayments.length
 
   return { supabase, result, projectedResult, pendingTotal, pendingCount }
 }
