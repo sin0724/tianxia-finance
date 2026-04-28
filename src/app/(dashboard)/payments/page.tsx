@@ -61,6 +61,20 @@ export default function PaymentsPage() {
   const [confirmDate, setConfirmDate] = useState('')
   const [confirmProjectId, setConfirmProjectId] = useState('')
 
+  // 수금 예정 수정 다이얼로그
+  const [editPendingOpen, setEditPendingOpen] = useState(false)
+  const [editPendingTarget, setEditPendingTarget] = useState<PaymentWithRelations | null>(null)
+  const [editPendingForm, setEditPendingForm] = useState({
+    client_name_raw: '',
+    amount: '',
+    payment_date: '',
+    payment_type: '' as Payment['payment_type'],
+    pendingStatus: '미입금' as '미입금' | '잔금 처리 요망',
+    manager: '',
+    project_id: '',
+    memo: '',
+  })
+
   // 수금 예정 추가 다이얼로그
   const [addPendingOpen, setAddPendingOpen] = useState(false)
   const [pendingForm, setPendingForm] = useState({
@@ -258,6 +272,55 @@ export default function PaymentsPage() {
 
     setConfirmOpen(false)
     setConfirmTarget(null)
+    load()
+  }
+
+  // ─── 수금 예정 수정 ───────────────────────────────────
+  function openEditPending(p: PaymentWithRelations) {
+    const isJanggeum = p.memo?.includes('⚠ 잔금 처리 요망')
+    const cleanMemo = (p.memo ?? '')
+      .replace('⚠ 잔금 처리 요망', '')
+      .replace('🔴 미입금', '')
+      .replace(/^\s*\|\s*/, '')
+      .replace(/\s*\|\s*$/, '')
+      .trim()
+    setEditPendingTarget(p)
+    setEditPendingForm({
+      client_name_raw: p.client_name_raw ?? '',
+      amount: String(p.amount),
+      payment_date: p.payment_date,
+      payment_type: p.payment_type,
+      pendingStatus: isJanggeum ? '잔금 처리 요망' : '미입금',
+      manager: p.manager ?? '',
+      project_id: p.project_id ?? '',
+      memo: cleanMemo,
+    })
+    setEditPendingOpen(true)
+  }
+
+  async function handleSavePendingEdit() {
+    if (!editPendingTarget) return
+    const amount = parseFloat(editPendingForm.amount)
+    if (!editPendingForm.client_name_raw.trim() || !editPendingForm.payment_date || isNaN(amount)) {
+      toast.error('상호명, 날짜, 금액은 필수입니다.')
+      return
+    }
+    const tag = editPendingForm.pendingStatus === '잔금 처리 요망' ? '⚠ 잔금 처리 요망' : '🔴 미입금'
+    const memo = [tag, editPendingForm.memo.trim()].filter(Boolean).join(' | ')
+    const { error } = await supabase.from('payments').update({
+      client_name_raw: editPendingForm.client_name_raw.trim(),
+      amount,
+      payment_date: editPendingForm.payment_date,
+      payment_type: editPendingForm.payment_type || null,
+      manager: editPendingForm.manager || null,
+      project_id: editPendingForm.project_id || null,
+      memo,
+      matched: !!editPendingForm.project_id,
+    }).eq('id', editPendingTarget.id)
+    if (error) { toast.error(error.message); return }
+    toast.success('수정되었습니다.')
+    setEditPendingOpen(false)
+    setEditPendingTarget(null)
     load()
   }
 
@@ -564,6 +627,9 @@ export default function PaymentsPage() {
                         >
                           <CheckCircle size={13} className="mr-1" />입금 확정
                         </Button>
+                        <Button size="sm" variant="ghost" onClick={() => openEditPending(p)}>
+                          <Pencil size={14} />
+                        </Button>
                         <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-600"
                           onClick={() => setDeleteTarget(p.id)}>
                           <Trash2 size={14} />
@@ -723,6 +789,90 @@ export default function PaymentsPage() {
             <Button className="bg-green-600 hover:bg-green-700" onClick={handleConfirm}>
               <CheckCircle size={14} className="mr-1" />입금 확정
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ══════════ 수금 예정 수정 다이얼로그 ══════════ */}
+      <Dialog open={editPendingOpen} onOpenChange={(v) => { setEditPendingOpen(v); if (!v) setEditPendingTarget(null) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>수금 예정 수정</DialogTitle></DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1">
+              <Label>상호명 *</Label>
+              <Input
+                value={editPendingForm.client_name_raw}
+                onChange={(e) => setEditPendingForm({ ...editPendingForm, client_name_raw: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>금액 *</Label>
+              <Input
+                type="number"
+                value={editPendingForm.amount}
+                onChange={(e) => setEditPendingForm({ ...editPendingForm, amount: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>예정일 *</Label>
+              <Input
+                type="date"
+                value={editPendingForm.payment_date}
+                onChange={(e) => setEditPendingForm({ ...editPendingForm, payment_date: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>수금 상태</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={editPendingForm.pendingStatus}
+                onChange={(e) => setEditPendingForm({ ...editPendingForm, pendingStatus: e.target.value as '미입금' | '잔금 처리 요망' })}
+              >
+                <option value="미입금">🔴 미입금</option>
+                <option value="잔금 처리 요망">⚠ 잔금 처리 요망</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>결제 유형</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={editPendingForm.payment_type ?? ''}
+                onChange={(e) => setEditPendingForm({ ...editPendingForm, payment_type: e.target.value as Payment['payment_type'] })}
+              >
+                <option value="">선택 안함</option>
+                {['계약금', '중도금', '잔금', '기타'].map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>담당자</Label>
+              <Input
+                value={editPendingForm.manager}
+                onChange={(e) => setEditPendingForm({ ...editPendingForm, manager: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>프로젝트 연결 (선택)</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={editPendingForm.project_id}
+                onChange={(e) => setEditPendingForm({ ...editPendingForm, project_id: e.target.value })}
+              >
+                <option value="">연결 안함</option>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>메모</Label>
+              <Input
+                placeholder="특이사항, 계약 내용 등"
+                value={editPendingForm.memo}
+                onChange={(e) => setEditPendingForm({ ...editPendingForm, memo: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setEditPendingOpen(false); setEditPendingTarget(null) }}>취소</Button>
+            <Button onClick={handleSavePendingEdit}>저장</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
