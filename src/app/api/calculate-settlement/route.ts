@@ -222,7 +222,7 @@ async function computeBothSettlements(year: number, month: number) {
     retained_earnings_reserve: settings.retained_earnings_reserve ?? 0.08,
   }
 
-  const result = calculateMonthlySettlement({
+  const baseResult = calculateMonthlySettlement({
     year, month,
     payments: confirmedPayments,
     projectItems: projectItems ?? [],
@@ -232,7 +232,7 @@ async function computeBothSettlements(year: number, month: number) {
     settings: settlementSettings,
   })
 
-  const projectedResult = calculateMonthlySettlement({
+  const baseProjectedResult = calculateMonthlySettlement({
     year, month,
     payments: paymentsForProjected,
     projectItems: allProjectItems,
@@ -241,6 +241,20 @@ async function computeBothSettlements(year: number, month: number) {
     payroll: payroll ?? [],
     settings: settlementSettings,
   })
+
+  // 대표자 실제 분배율 적용 (첫 번째 대표자 기준)
+  const { data: repsForShare } = await supabase
+    .from('representatives').select('share_ratio').order('created_at').limit(1)
+  const primaryRatio = (repsForShare?.[0]?.share_ratio ?? 50) / 100
+
+  const result = {
+    ...baseResult,
+    representativeShare: Math.floor(baseResult.distributableProfit * primaryRatio),
+  }
+  const projectedResult = {
+    ...baseProjectedResult,
+    representativeShare: Math.floor(baseProjectedResult.distributableProfit * primaryRatio),
+  }
 
   const pendingTotal = allPendingPayments.reduce((sum, p) => sum + p.amount, 0)
   const pendingCount = allPendingPayments.length

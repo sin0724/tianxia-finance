@@ -11,7 +11,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import type { MonthlySettlement } from '@/types/database'
+import type { MonthlySettlement, Representative } from '@/types/database'
 
 interface Row { label: string; value: number; indent?: boolean; highlight?: boolean; type?: 'deduct' | 'result' }
 
@@ -19,10 +19,17 @@ type SettlementData = Omit<MonthlySettlement, 'id' | 'year' | 'month' | 'calcula
 
 interface SettlementRates { vatRate: number; taxRate: number; retainedRate: number }
 
-function makeRows(s: SettlementData, rates: SettlementRates): Row[] {
+function makeRows(s: SettlementData, rates: SettlementRates, reps: Representative[]): Row[] {
   const vatPct  = Math.round(rates.vatRate * 100)
   const taxPct  = Math.round(rates.taxRate * 100)
   const retPct  = Math.round(rates.retainedRate * 100)
+  const repRows: Row[] = reps.length > 0
+    ? reps.map((rep) => ({
+        label: `${rep.name} 정산액 (${rep.share_ratio}%)`,
+        value: Math.floor(s.distributable_profit * rep.share_ratio / 100),
+        highlight: true,
+      }))
+    : [{ label: '대표자 1인당 정산액 (50%)', value: s.representative_share, highlight: true }]
   return [
     { label: `총 매출 (VAT ${vatPct}% 포함)`,      value: s.total_revenue },
     { label: `공급가액 (÷${1 + vatPct / 100})`,    value: s.supply_value, indent: true },
@@ -37,7 +44,7 @@ function makeRows(s: SettlementData, rates: SettlementRates): Row[] {
     { label: `- 법인세 적립 (${taxPct}%)`,          value: -s.corporate_tax_reserve, indent: true, type: 'deduct' },
     { label: `- 유보금 적립 (${retPct}%)`,          value: -s.retained_earnings, indent: true, type: 'deduct' },
     { label: '분배 가능 이익',                      value: s.distributable_profit, highlight: true, type: 'result' },
-    { label: '대표자 1인당 정산액 (50%)',            value: s.representative_share, highlight: true },
+    ...repRows,
   ]
 }
 
@@ -54,6 +61,7 @@ export default function MonthlyReportPage() {
   const [activeView, setActiveView]               = useState<'confirmed' | 'projected'>('confirmed')
 
   const [rates, setRates] = useState<SettlementRates>({ vatRate: 0.1, taxRate: 0.1, retainedRate: 0.08 })
+  const [reps, setReps] = useState<Representative[]>([])
 
   const [calculating, setCalculating]   = useState(false)
   const [loadingProjected, setLoadingProjected] = useState(false)
@@ -74,6 +82,9 @@ export default function MonthlyReportPage() {
       taxRate:      map.corporate_tax_reserve      ?? 0.1,
       retainedRate: map.retained_earnings_reserve  ?? 0.08,
     })
+
+    const { data: repData } = await supabase.from('representatives').select('*').order('created_at')
+    setReps(repData ?? [])
   }
 
   const loadProjected = useCallback(async () => {
@@ -167,7 +178,7 @@ export default function MonthlyReportPage() {
     ? settlement
     : projectedSettlement
 
-  const rows: Row[] = activeData ? makeRows(activeData, rates) : []
+  const rows: Row[] = activeData ? makeRows(activeData, rates, reps) : []
 
   return (
     <div className="space-y-4">
@@ -295,15 +306,39 @@ export default function MonthlyReportPage() {
               <div className="grid grid-cols-2 gap-4">
                 <Card className="border-blue-200 bg-blue-50">
                   <CardHeader className="pb-1">
-                    <CardTitle className="text-sm text-blue-700">대표자 1인당 정산액</CardTitle>
+                    <CardTitle className="text-sm text-blue-700">대표자 정산액</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className="text-3xl font-bold text-blue-900">{formatKRW(activeData.representative_share)}</div>
-                    {activeView === 'projected' && settlement && activeData.representative_share !== settlement.representative_share && (
-                      <div className="text-xs text-amber-600 mt-1">
-                        입금 완료 기준 대비 {activeData.representative_share >= settlement.representative_share ? '+' : ''}
-                        {formatKRW(activeData.representative_share - settlement.representative_share)}
+                    {reps.length > 0 ? (
+                      <div className="space-y-3">
+                        {reps.map((rep) => {
+                          const amount = Math.floor(activeData.distributable_profit * rep.share_ratio / 100)
+                          const confirmedAmount = settlement
+                            ? Math.floor(settlement.distributable_profit * rep.share_ratio / 100)
+                            : null
+                          return (
+                            <div key={rep.id}>
+                              <div className="text-xs text-blue-500 mb-0.5">{rep.name} ({rep.share_ratio}%)</div>
+                              <div className="text-2xl font-bold text-blue-900">{formatKRW(amount)}</div>
+                              {activeView === 'projected' && confirmedAmount !== null && amount !== confirmedAmount && (
+                                <div className="text-xs text-amber-600">
+                                  확정 대비 {amount >= confirmedAmount ? '+' : ''}{formatKRW(amount - confirmedAmount)}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
+                    ) : (
+                      <>
+                        <div className="text-3xl font-bold text-blue-900">{formatKRW(activeData.representative_share)}</div>
+                        {activeView === 'projected' && settlement && activeData.representative_share !== settlement.representative_share && (
+                          <div className="text-xs text-amber-600 mt-1">
+                            입금 완료 기준 대비 {activeData.representative_share >= settlement.representative_share ? '+' : ''}
+                            {formatKRW(activeData.representative_share - settlement.representative_share)}
+                          </div>
+                        )}
+                      </>
                     )}
                   </CardContent>
                 </Card>

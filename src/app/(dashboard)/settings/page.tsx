@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { toast } from 'sonner'
+import { Pencil } from 'lucide-react'
 import type { Representative } from '@/types/database'
 
 export default function SettingsPage() {
@@ -15,6 +16,8 @@ export default function SettingsPage() {
   const [reps, setReps] = useState<Representative[]>([])
   const [repForm, setRepForm] = useState({ name: '', email: '', share_ratio: '50' })
   const [saving, setSaving] = useState(false)
+  const [editingRepId, setEditingRepId] = useState<string | null>(null)
+  const [editRepForm, setEditRepForm] = useState({ name: '', email: '', share_ratio: '' })
 
   async function load() {
     const { data } = await supabase.from('settings').select('*')
@@ -52,6 +55,23 @@ export default function SettingsPage() {
     }
     setSaving(false)
     toast.success('설정이 저장되었습니다. 월별 정산을 재계산하면 새 요율이 반영됩니다.')
+  }
+
+  async function saveRep() {
+    if (!editingRepId) return
+    const ratio = parseFloat(editRepForm.share_ratio)
+    if (isNaN(ratio) || ratio <= 0 || ratio > 100) {
+      toast.error('분배율은 1~100 사이 숫자여야 합니다.')
+      return
+    }
+    const { error } = await supabase
+      .from('representatives')
+      .update({ name: editRepForm.name, email: editRepForm.email, share_ratio: ratio })
+      .eq('id', editingRepId)
+    if (error) { toast.error(error.message); return }
+    setEditingRepId(null)
+    toast.success('수정되었습니다. 정산을 재계산하면 새 분배율이 반영됩니다.')
+    load()
   }
 
   async function addRep() {
@@ -124,11 +144,43 @@ export default function SettingsPage() {
         <CardHeader><CardTitle>대표자 관리</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           {reps.map((r) => (
-            <div key={r.id} className="flex justify-between items-center p-3 border rounded-md">
-              <div>
-                <div className="font-medium">{r.name}</div>
-                <div className="text-sm text-gray-500">{r.email} · 분배율 {r.share_ratio}%</div>
-              </div>
+            <div key={r.id} className="border rounded-md p-3">
+              {editingRepId === r.id ? (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label>이름</Label>
+                      <Input value={editRepForm.name} onChange={(e) => setEditRepForm({ ...editRepForm, name: e.target.value })} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>이메일</Label>
+                      <Input type="email" value={editRepForm.email} onChange={(e) => setEditRepForm({ ...editRepForm, email: e.target.value })} />
+                    </div>
+                  </div>
+                  <div className="space-y-1 w-32">
+                    <Label>분배율 (%)</Label>
+                    <Input type="number" min="1" max="100" value={editRepForm.share_ratio}
+                      onChange={(e) => setEditRepForm({ ...editRepForm, share_ratio: e.target.value })} />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={saveRep}>저장</Button>
+                    <Button size="sm" variant="outline" onClick={() => setEditingRepId(null)}>취소</Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className="font-medium">{r.name}</div>
+                    <div className="text-sm text-gray-500">{r.email} · 분배율 {r.share_ratio}%</div>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => {
+                    setEditingRepId(r.id)
+                    setEditRepForm({ name: r.name, email: r.email, share_ratio: String(r.share_ratio) })
+                  }}>
+                    <Pencil size={14} />
+                  </Button>
+                </div>
+              )}
             </div>
           ))}
           <div className="border-t pt-4 space-y-3">
