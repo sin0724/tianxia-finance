@@ -5,6 +5,9 @@ import { NextResponse } from 'next/server'
 const isPendingMemo = (memo: string | null) =>
   !!(memo?.includes('⚠ 잔금 처리 요망') || memo?.includes('🔴 미입금'))
 
+const isExcludedMemo = (memo: string | null) =>
+  !!(memo?.includes('🚫 집계 제외'))
+
 type EmployeeRow = { id: string; name: string; incentive_type: string | null; incentive_value: number }
 type PaymentRow = { manager?: string | null; amount: number }
 
@@ -84,7 +87,7 @@ async function computeBothSettlements(year: number, month: number) {
 
   const allPaymentsInMonth = rawAllPayments ?? []
   const confirmedPayments = allPaymentsInMonth.filter(
-    (p) => !isPendingMemo(p.memo) && !(p.project_id && cancelledIds.has(p.project_id))
+    (p) => !isPendingMemo(p.memo) && !isExcludedMemo(p.memo) && !(p.project_id && cancelledIds.has(p.project_id))
   )
 
   // 전체 기간 미수금 (날짜 무관) — 수금 관리 탭·대시보드와 동일 기준

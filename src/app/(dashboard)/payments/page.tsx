@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, Link2, CheckCircle, FolderOpen } from 'lucide-react'
+import { Plus, Pencil, Trash2, Link2, CheckCircle, FolderOpen, EyeOff } from 'lucide-react'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -25,6 +25,9 @@ type PaymentWithRelations = Payment & {
 // 정확한 상태 태그 문자열로만 판별 (일반 메모의 ⚠/🔴 오탐 방지)
 const isPendingPayment = (p: { memo: string | null }) =>
   !!(p.memo?.includes('⚠ 잔금 처리 요망') || p.memo?.includes('🔴 미입금'))
+
+const isExcludedPayment = (p: { memo: string | null }) =>
+  !!(p.memo?.includes('🚫 집계 제외'))
 
 export default function PaymentsPage() {
   const supabase = createClient()
@@ -188,6 +191,25 @@ export default function PaymentsPage() {
     const { error } = await supabase.from('payments').delete().eq('id', id)
     if (error) { toast.error('삭제 실패'); return }
     toast.success('삭제되었습니다.')
+    load()
+  }
+
+  // ─── 집계 제외 토글 ──────────────────────────────────
+  async function handleToggleExclude(p: PaymentWithRelations) {
+    const excluded = isExcludedPayment(p)
+    let newMemo: string | null
+    if (excluded) {
+      newMemo = (p.memo ?? '')
+        .replace('🚫 집계 제외', '')
+        .replace(/^\s*\|\s*/, '')
+        .replace(/\s*\|\s*$/, '')
+        .trim() || null
+    } else {
+      newMemo = p.memo ? `🚫 집계 제외 | ${p.memo}` : '🚫 집계 제외'
+    }
+    const { error } = await supabase.from('payments').update({ memo: newMemo }).eq('id', p.id)
+    if (error) { toast.error(error.message); return }
+    toast.success(excluded ? '집계에 다시 포함됩니다.' : '집계에서 제외됩니다.')
     load()
   }
 
@@ -386,7 +408,10 @@ export default function PaymentsPage() {
   // ─── 분류 ─────────────────────────────────────────────
   const confirmedList = payments.filter((p) => !isPendingPayment(p))
   const pendingList = allPending // 수금 관리: 월 필터 없이 전체
-  const confirmedTotal = confirmedList.reduce((s, p) => s + p.amount, 0)
+  const activeConfirmed = confirmedList.filter((p) => !isExcludedPayment(p))
+  const excludedList = confirmedList.filter((p) => isExcludedPayment(p))
+  const confirmedTotal = activeConfirmed.reduce((s, p) => s + p.amount, 0)
+  const excludedTotal = excludedList.reduce((s, p) => s + p.amount, 0)
   const pendingTotal = pendingList.reduce((s, p) => s + p.amount, 0)
 
   const yearOptions = [2023, 2024, 2025, 2026]
@@ -444,9 +469,14 @@ export default function PaymentsPage() {
       {/* ══════════ 입금 내역 탭 ══════════ */}
       {tab === 'confirmed' && (
         <>
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-end gap-4">
+            {excludedList.length > 0 && (
+              <div className="text-xs text-gray-400">
+                집계 제외 {excludedList.length}건 (<span className="line-through">{formatKRW(excludedTotal)}</span>)
+              </div>
+            )}
             <div className="text-sm text-gray-600">
-              총 <strong className="text-gray-900">{formatKRW(confirmedTotal)}</strong> ({confirmedList.length}건)
+              총 <strong className="text-gray-900">{formatKRW(confirmedTotal)}</strong> ({activeConfirmed.length}건)
             </div>
           </div>
 
@@ -457,11 +487,11 @@ export default function PaymentsPage() {
             ) : confirmedList.length === 0 ? (
               <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">입금 내역이 없습니다.</div>
             ) : confirmedList.map((p) => (
-              <div key={p.id} className={`bg-white rounded-lg border p-4 ${!p.matched ? 'border-l-4 border-l-blue-300' : ''}`}>
+              <div key={p.id} className={`bg-white rounded-lg border p-4 ${!p.matched ? 'border-l-4 border-l-blue-300' : ''} ${isExcludedPayment(p) ? 'opacity-50' : ''}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-bold text-gray-900">{formatKRW(p.amount)}</span>
+                      <span className={`font-bold ${isExcludedPayment(p) ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{formatKRW(p.amount)}</span>
                       <span className="text-xs text-gray-400">{p.payment_date}</span>
                       {p.source === 'slack' && <Badge variant="outline" className="text-xs text-gray-400">Slack</Badge>}
                     </div>
@@ -486,6 +516,14 @@ export default function PaymentsPage() {
                         <Link2 size={14} />
                       </Button>
                     )}
+                    <Button
+                      size="sm" variant="ghost"
+                      className={isExcludedPayment(p) ? 'text-orange-400' : 'text-gray-300 hover:text-orange-400'}
+                      title={isExcludedPayment(p) ? '집계 제외 중 — 클릭하여 포함' : '집계에서 제외'}
+                      onClick={() => handleToggleExclude(p)}
+                    >
+                      <EyeOff size={14} />
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => openEdit(p)}><Pencil size={14} /></Button>
                     <Button size="sm" variant="ghost" className="text-red-400" onClick={() => setDeleteTarget(p.id)}>
                       <Trash2 size={14} />
@@ -516,7 +554,7 @@ export default function PaymentsPage() {
                 ) : confirmedList.length === 0 ? (
                   <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">입금 내역이 없습니다.</TableCell></TableRow>
                 ) : confirmedList.map((p) => (
-                  <TableRow key={p.id} className={!p.matched ? 'bg-blue-50/30' : ''}>
+                  <TableRow key={p.id} className={`${!p.matched ? 'bg-blue-50/30' : ''}${isExcludedPayment(p) ? ' opacity-50' : ''}`}>
                     <TableCell>{p.payment_date}</TableCell>
                     <TableCell>
                       {p.projects?.clients?.name ?? (
@@ -535,7 +573,12 @@ export default function PaymentsPage() {
                     </TableCell>
                     <TableCell>{p.payment_type ?? '-'}</TableCell>
                     <TableCell>{p.manager ?? '-'}</TableCell>
-                    <TableCell className="text-right font-medium">{formatKRW(p.amount)}</TableCell>
+                    <TableCell className="text-right font-medium">
+                      {isExcludedPayment(p)
+                        ? <span className="line-through text-gray-400">{formatKRW(p.amount)}</span>
+                        : formatKRW(p.amount)
+                      }
+                    </TableCell>
                     <TableCell>
                       <div className="flex gap-1 justify-end">
                         {!p.matched && (
@@ -543,6 +586,14 @@ export default function PaymentsPage() {
                             <Link2 size={14} />
                           </Button>
                         )}
+                        <Button
+                          size="sm" variant="ghost"
+                          className={isExcludedPayment(p) ? 'text-orange-400 hover:text-orange-600' : 'text-gray-300 hover:text-orange-400'}
+                          title={isExcludedPayment(p) ? '집계 제외 중 — 클릭하여 포함' : '집계에서 제외'}
+                          onClick={() => handleToggleExclude(p)}
+                        >
+                          <EyeOff size={14} />
+                        </Button>
                         <Button size="sm" variant="ghost" onClick={() => openEdit(p)}><Pencil size={14} /></Button>
                         <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-600"
                           onClick={() => setDeleteTarget(p.id)}>

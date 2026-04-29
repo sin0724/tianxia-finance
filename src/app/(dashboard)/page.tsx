@@ -84,10 +84,13 @@ export default function DashboardPage() {
     const isPending = (p: { memo: string | null }) =>
       !!(p.memo?.includes('⚠ 잔금 처리 요망') || p.memo?.includes('🔴 미입금'))
 
+    const isExcluded = (p: { memo: string | null }) =>
+      !!(p.memo?.includes('🚫 집계 제외'))
+
     type PaymentRow = { amount: number; matched: boolean; memo: string | null; projects: { status: string } | null }
     const paymentRows = (payments as unknown as PaymentRow[]) ?? []
 
-    const confirmed = paymentRows.filter((p) => !isPending(p) && p.projects?.status !== 'cancelled')
+    const confirmed = paymentRows.filter((p) => !isPending(p) && !isExcluded(p) && p.projects?.status !== 'cancelled')
     const unmatched = paymentRows.filter((p) => !p.matched)
 
     // 수금 예정 — 수금 관리 탭과 동일하게 전체 기간 미수금 합산 (취소 프로젝트 제외)
