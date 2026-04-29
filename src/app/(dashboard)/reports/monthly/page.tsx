@@ -109,7 +109,7 @@ export default function MonthlyReportPage() {
 
     const { data: payments } = await supabase
       .from('payments')
-      .select('project_id, projects(name)')
+      .select('project_id, projects(name, status)')
       .gte('payment_date', start)
       .lte('payment_date', end)
       .eq('matched', true)
@@ -119,7 +119,8 @@ export default function MonthlyReportPage() {
     const projectMap: Record<string, string> = {}
     for (const p of payments ?? []) {
       if (!p.project_id) continue
-      const proj = p.projects as unknown as { name: string } | null
+      const proj = p.projects as unknown as { name: string; status: string } | null
+      if (proj?.status === 'cancelled') continue
       projectMap[p.project_id] = proj?.name ?? p.project_id
     }
     const projectIds = Object.keys(projectMap)

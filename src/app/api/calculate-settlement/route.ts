@@ -75,8 +75,17 @@ async function computeBothSettlements(year: number, month: number) {
     .gte('payment_date', start)
     .lte('payment_date', end)
 
+  // 취소된 프로젝트는 매출·실행비 계산에서 제외
+  const { data: cancelledProjects } = await supabase
+    .from('projects')
+    .select('id')
+    .eq('status', 'cancelled')
+  const cancelledIds = new Set((cancelledProjects ?? []).map((p) => p.id))
+
   const allPaymentsInMonth = rawAllPayments ?? []
-  const confirmedPayments = allPaymentsInMonth.filter((p) => !isPendingMemo(p.memo))
+  const confirmedPayments = allPaymentsInMonth.filter(
+    (p) => !isPendingMemo(p.memo) && !(p.project_id && cancelledIds.has(p.project_id))
+  )
 
   // 전체 기간 미수금 (날짜 무관) — 수금 관리 탭·대시보드와 동일 기준
   const { data: rawAllPending } = await supabase
@@ -84,7 +93,9 @@ async function computeBothSettlements(year: number, month: number) {
     .select('*')
     .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
 
-  const allPendingPayments = rawAllPending ?? []
+  const allPendingPayments = (rawAllPending ?? []).filter(
+    (p) => !(p.project_id && cancelledIds.has(p.project_id))
+  )
   // 예상 정산: 이번 달 확정 + 전체 미수금 전액 수취 가정
   const paymentsForProjected = [...confirmedPayments, ...allPendingPayments]
 

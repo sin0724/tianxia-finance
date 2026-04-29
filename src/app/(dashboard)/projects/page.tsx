@@ -10,11 +10,15 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { toast } from 'sonner'
 import { formatKRW } from '@/lib/calculations/settlement'
-import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, Check, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, Check, X, Ban } from 'lucide-react'
 import type { Project, Client, Product, ProjectItem } from '@/types/database'
 
 type ProjectWithRelations = Project & {
@@ -216,9 +220,19 @@ export default function ProjectsPage() {
     load()
   }
 
-  async function handleDelete(id: string) {
+  async function handleCancel(id: string) {
     await supabase.from('projects').update({ status: 'cancelled' }).eq('id', id)
     toast.success('프로젝트가 취소 처리되었습니다.')
+    load()
+  }
+
+  async function handleDelete(id: string) {
+    await supabase.from('project_items').delete().eq('project_id', id)
+    await supabase.from('payments').update({ project_id: null, matched: false }).eq('project_id', id)
+    const { error } = await supabase.from('projects').delete().eq('id', id)
+    if (error) { toast.error('삭제 실패: ' + error.message); return }
+    toast.success('프로젝트가 삭제되었습니다.')
+    setDeleteTarget(null)
     load()
   }
 
@@ -270,6 +284,7 @@ export default function ProjectsPage() {
     if (selectedProject) openItems(selectedProject)
   }
 
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [newItem, setNewItem] = useState<ItemForm>({ item_name: '', product_id: '', quantity: '1', unit_price_snapshot: '', unit_cost_snapshot: '' })
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
   const [editingItemForm, setEditingItemForm] = useState<ItemForm>({ item_name: '', product_id: '', quantity: '1', unit_price_snapshot: '', unit_cost_snapshot: '' })
@@ -436,7 +451,12 @@ export default function ProjectsPage() {
                   <TableCell>
                     <div className="flex gap-1 justify-end">
                       <Button size="sm" variant="ghost" onClick={() => openEdit(p)}><Pencil size={14} /></Button>
-                      <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-600" onClick={() => handleDelete(p.id)}>
+                      {p.status !== 'cancelled' && (
+                        <Button size="sm" variant="ghost" className="text-orange-400 hover:text-orange-600" title="취소 처리" onClick={() => handleCancel(p.id)}>
+                          <Ban size={14} />
+                        </Button>
+                      )}
+                      <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-600" title="영구 삭제" onClick={() => setDeleteTarget(p.id)}>
                         <Trash2 size={14} />
                       </Button>
                     </div>
@@ -719,6 +739,27 @@ export default function ProjectsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <AlertDialog open={!!deleteTarget} onOpenChange={(v) => { if (!v) setDeleteTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>프로젝트 영구 삭제</AlertDialogTitle>
+            <AlertDialogDescription>
+              이 프로젝트를 완전히 삭제하시겠습니까?<br />
+              연결된 구성 상품이 함께 삭제되고, 연결된 결제는 미매칭 상태로 변경됩니다.<br />
+              이 작업은 되돌릴 수 없습니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>취소</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => { if (deleteTarget) handleDelete(deleteTarget) }}
+            >
+              삭제
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
