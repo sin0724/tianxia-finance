@@ -74,27 +74,33 @@ export default function DashboardPage() {
       profit: r.operating_profit,
     })))
 
-    // 결제 (이번 달 — 확정 입금액·미매칭 알림용)
+    // 결제 (이번 달 — 확정 입금액·미매칭 알림용, 취소 프로젝트 제외)
     const { data: payments } = await supabase
       .from('payments')
-      .select('amount, matched, memo')
+      .select('amount, matched, memo, projects(status)')
       .gte('payment_date', start)
       .lte('payment_date', end)
 
     const isPending = (p: { memo: string | null }) =>
       !!(p.memo?.includes('⚠ 잔금 처리 요망') || p.memo?.includes('🔴 미입금'))
 
-    const confirmed = (payments ?? []).filter((p) => !isPending(p))
-    const unmatched = (payments ?? []).filter((p) => !p.matched)
+    type PaymentRow = { amount: number; matched: boolean; memo: string | null; projects: { status: string } | null }
+    const paymentRows = (payments as unknown as PaymentRow[]) ?? []
 
-    // 수금 예정 — 수금 관리 탭과 동일하게 전체 기간 미수금 합산
+    const confirmed = paymentRows.filter((p) => !isPending(p) && p.projects?.status !== 'cancelled')
+    const unmatched = paymentRows.filter((p) => !p.matched)
+
+    // 수금 예정 — 수금 관리 탭과 동일하게 전체 기간 미수금 합산 (취소 프로젝트 제외)
     const { data: allPending } = await supabase
       .from('payments')
-      .select('amount')
+      .select('amount, projects(status)')
       .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
 
+    type PendingRow = { amount: number; projects: { status: string } | null }
     setPaymentTotal(confirmed.reduce((s, p) => s + p.amount, 0))
-    setPendingTotal((allPending ?? []).reduce((s, p) => s + p.amount, 0))
+    setPendingTotal(((allPending as unknown as PendingRow[]) ?? [])
+      .filter((p) => p.projects?.status !== 'cancelled')
+      .reduce((s, p) => s + p.amount, 0))
 
 
     // 알림 (현재 월일 때만)

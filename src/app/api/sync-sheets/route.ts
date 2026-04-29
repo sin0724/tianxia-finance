@@ -47,13 +47,20 @@ export async function POST(request: Request) {
       return Response.json({ synced: 0, skipped: 0, unmatched: 0, pending: 0, created: 0 })
     }
 
-    // 기존 external_id 목록 조회 (중복 방지)
+    // 기존 결제 조회 — external_id 중복 방지 + 날짜·상호명·금액 soft 중복 방지 (수기 입력 포함)
     const { data: existingPayments } = await supabase
       .from('payments')
-      .select('external_id')
-      .not('external_id', 'is', null)
+      .select('external_id, payment_date, client_name_raw, amount')
 
-    const existingIds = new Set((existingPayments ?? []).map((p) => p.external_id))
+    const existingIds = new Set(
+      (existingPayments ?? []).filter((p) => p.external_id).map((p) => p.external_id)
+    )
+    // 날짜+상호명+금액 기준으로 이미 존재하는 레코드 식별 (external_id 없는 수기 추가분 포함)
+    const softDupSet = new Set(
+      (existingPayments ?? [])
+        .filter((p) => p.client_name_raw)
+        .map((p) => `${p.payment_date}|${(p.client_name_raw ?? '').toLowerCase().replace(/\s+/g, '')}|${p.amount}`)
+    )
 
     // 클라이언트 목록 (매칭·자동생성용) — 동기화 중 생성된 항목도 누적
     const { data: clients } = await supabase
@@ -71,7 +78,10 @@ export async function POST(request: Request) {
     for (const row of rows) {
       const externalId = makeExternalId(row)
 
-      if (existingIds.has(externalId)) {
+      const softKey = row.clientName
+        ? `${row.date}|${row.clientName.toLowerCase().replace(/\s+/g, '')}|${row.amount}`
+        : null
+      if (existingIds.has(externalId) || (softKey && softDupSet.has(softKey))) {
         skipped++
         continue
       }

@@ -19,7 +19,7 @@ import { findSimilar } from '@/lib/utils/levenshtein'
 import type { Payment, Project, Client } from '@/types/database'
 
 type PaymentWithRelations = Payment & {
-  projects: { name: string; clients: { name: string } | null } | null
+  projects: { name: string; status: string; clients: { name: string } | null } | null
 }
 
 // 정확한 상태 태그 문자열로만 판별 (일반 메모의 ⚠/🔴 오탐 방지)
@@ -105,13 +105,16 @@ export default function PaymentsPage() {
     if (error) toast.error('데이터 로드 실패: ' + error.message)
     setPayments((data as unknown as PaymentWithRelations[]) ?? [])
 
-    // 수금 관리: 월 필터 없이 전체 미수금 항목
+    // 수금 관리: 월 필터 없이 전체 미수금 항목 (취소 프로젝트 제외)
     const { data: pendingData } = await supabase
       .from('payments')
-      .select('*, projects(name, clients(name))')
+      .select('*, projects(name, status, clients(name))')
       .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
       .order('payment_date', { ascending: false })
-    setAllPending((pendingData as unknown as PaymentWithRelations[]) ?? [])
+    setAllPending(
+      ((pendingData as unknown as PaymentWithRelations[]) ?? [])
+        .filter((p) => p.projects?.status !== 'cancelled')
+    )
 
     const { data: proj } = await supabase
       .from('projects')
