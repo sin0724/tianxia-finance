@@ -11,7 +11,7 @@ import {
 } from 'recharts'
 import type { MonthlySettlement } from '@/types/database'
 import Link from 'next/link'
-import { AlertTriangle, RefreshCw, X, ChevronLeft, ChevronRight, Calendar } from 'lucide-react'
+import { Bell, RefreshCw, X, ChevronLeft, ChevronRight, Calendar, ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
 
 const MONTH_LABELS = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
@@ -27,7 +27,6 @@ export default function DashboardPage() {
   const [selYear, setSelYear]   = useState(now.getFullYear())
   const [selMonth, setSelMonth] = useState(now.getMonth() + 1)
   const isCurrentMonth = selYear === now.getFullYear() && selMonth === now.getMonth() + 1
-  const isMonthEnd = isCurrentMonth && now.getDate() >= 25
 
   // ── 데이터 ────────────────────────────────────────────────
   const [settlement, setSettlement]   = useState<MonthlySettlement | null>(null)
@@ -36,6 +35,8 @@ export default function DashboardPage() {
   const [pendingTotal, setPendingTotal]   = useState(0)
   const [alerts, setAlerts]               = useState<DashAlert[]>([])
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
+  const [permanentDismissed, setPermanentDismissed] = useState<Set<string>>(new Set())
+  const [alertsOpen, setAlertsOpen] = useState(true)
 
   // ── 동기화 ────────────────────────────────────────────────
   const [syncing, setSyncing]             = useState(false)
@@ -47,9 +48,16 @@ export default function DashboardPage() {
   })
   const [showSyncOptions, setShowSyncOptions] = useState(false)
 
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('dash_alerts_dismissed') ?? '[]')
+      setPermanentDismissed(new Set(stored as string[]))
+    } catch { /* ignore */ }
+  }, [])
+
   useEffect(() => { load() }, [selYear, selMonth])
 
-  // 선택 월 변경 시 알림 초기화
+  // 선택 월 변경 시 세션 알림 초기화
   useEffect(() => { setDismissedAlerts(new Set()) }, [selYear, selMonth])
 
   async function load() {
@@ -106,9 +114,16 @@ export default function DashboardPage() {
       .reduce((s, p) => s + p.amount, 0))
 
 
-    // 알림 (현재 월일 때만)
+    // 알림 (현재 월일 때만) — ID에 연월 포함해 월별 영구 닫기 구분
+    const ym = `${selYear}_${selMonth}`
     const newAlerts: DashAlert[] = []
     if (isCurrentMonth) {
+      const nowDate = new Date()
+      if (nowDate.getDate() >= 25) {
+        newAlerts.push({ id: `monthend_${ym}`, level: 'info',
+          message: '월말입니다. 지출·급여를 입력하고 정산을 완료해주세요.',
+          href: '/reports/monthly' })
+      }
       if (unmatched.length > 0) {
         newAlerts.push({ id: 'unmatched', level: 'warn',
           message: `미연결 결제 ${unmatched.length}건 — 프로젝트를 연결해주세요.`,
@@ -117,7 +132,7 @@ export default function DashboardPage() {
       const { data: exp } = await supabase.from('monthly_expenses').select('id')
         .eq('year', selYear).eq('month', selMonth).limit(1)
       if (!exp || exp.length === 0)
-        newAlerts.push({ id: 'expenses', level: 'info',
+        newAlerts.push({ id: `expenses_${ym}`, level: 'info',
           message: `${selMonth}월 지출이 아직 입력되지 않았습니다.`, href: '/expenses' })
 
       const { data: emps } = await supabase.from('employees').select('id').eq('active', true).limit(1)
@@ -125,11 +140,11 @@ export default function DashboardPage() {
         const { data: pay } = await supabase.from('monthly_payroll').select('id')
           .eq('year', selYear).eq('month', selMonth).limit(1)
         if (!pay || pay.length === 0)
-          newAlerts.push({ id: 'payroll', level: 'info',
+          newAlerts.push({ id: `payroll_${ym}`, level: 'info',
             message: `${selMonth}월 급여가 입력되지 않았습니다.`, href: '/employees' })
       }
       if (!s)
-        newAlerts.push({ id: 'settlement', level: 'info',
+        newAlerts.push({ id: `settlement_${ym}`, level: 'info',
           message: `${selMonth}월 정산이 아직 계산되지 않았습니다.`, href: '/reports/monthly' })
     }
     setAlerts(newAlerts)
@@ -169,7 +184,27 @@ export default function DashboardPage() {
     }
   }
 
-  const visibleAlerts = alerts.filter((a) => !dismissedAlerts.has(a.id))
+  function dismissSession(id: string) {
+    setDismissedAlerts((prev) => new Set([...prev, id]))
+  }
+
+  function dismissPermanent(id: string) {
+    setPermanentDismissed((prev) => {
+      const next = new Set([...prev, id])
+      try { localStorage.setItem('dash_alerts_dismissed', JSON.stringify([...next])) } catch { /* ignore */ }
+      return next
+    })
+    setDismissedAlerts((prev) => new Set([...prev, id]))
+  }
+
+  function dismissAllSession() {
+    setDismissedAlerts((prev) => new Set([...prev, ...alerts.map((a) => a.id)]))
+  }
+
+  const visibleAlerts = alerts.filter(
+    (a) => !dismissedAlerts.has(a.id) && !permanentDismissed.has(a.id)
+  )
+  const hasWarnAlert = visibleAlerts.some((a) => a.level === 'warn')
 
   return (
     <div className="space-y-6">
@@ -271,29 +306,61 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* 월말 리마인더 */}
-      {isMonthEnd && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-700 flex items-center gap-2">
-          <AlertTriangle size={14} className="flex-shrink-0" />
-          월말입니다. 이번 달 지출·급여를 모두 입력하고 정산을 완료해주세요.
-        </div>
-      )}
-
       {/* 알림 */}
       {visibleAlerts.length > 0 && (
-        <div className="space-y-2">
-          {visibleAlerts.map((alert) => (
-            <div key={alert.id} className={`flex items-center gap-3 rounded-lg px-4 py-3 text-sm border ${
-              alert.level === 'warn' ? 'bg-orange-50 border-orange-200 text-orange-700' : 'bg-yellow-50 border-yellow-200 text-yellow-700'
-            }`}>
-              <AlertTriangle size={14} className="flex-shrink-0" />
-              <span className="flex-1">{alert.message}</span>
-              <Link href={alert.href} className="underline font-medium hover:no-underline">바로가기</Link>
-              <button onClick={() => setDismissedAlerts((prev) => new Set([...prev, alert.id]))} className="ml-1 opacity-50 hover:opacity-100">
-                <X size={14} />
+        <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+          {/* 헤더 (접기/펼치기) */}
+          <button
+            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-gray-50 transition-colors"
+            onClick={() => setAlertsOpen((v) => !v)}
+          >
+            <Bell size={14} className={hasWarnAlert ? 'text-orange-500' : 'text-gray-400'} />
+            <span className="font-medium text-gray-700">알림 {visibleAlerts.length}개</span>
+            {!alertsOpen && (
+              <span className="text-gray-400 text-xs truncate flex-1">
+                {visibleAlerts.map((a) => a.message).join(' · ')}
+              </span>
+            )}
+            {alertsOpen && (
+              <button
+                onClick={(e) => { e.stopPropagation(); dismissAllSession() }}
+                className="ml-auto text-xs text-gray-400 hover:text-gray-600 mr-1"
+              >
+                모두 닫기
               </button>
+            )}
+            {!alertsOpen && <span className="flex-1" />}
+            <ChevronDown size={14} className={`text-gray-400 transition-transform flex-shrink-0 ${alertsOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {/* 알림 목록 */}
+          {alertsOpen && (
+            <div className="border-t divide-y divide-gray-100">
+              {visibleAlerts.map((alert) => (
+                <div key={alert.id} className="flex items-center gap-3 px-4 py-2 text-sm">
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${alert.level === 'warn' ? 'bg-orange-400' : 'bg-blue-400'}`} />
+                  <span className="flex-1 text-gray-700">{alert.message}</span>
+                  <Link href={alert.href} className="text-blue-500 hover:text-blue-700 text-xs font-medium whitespace-nowrap">
+                    바로가기
+                  </Link>
+                  <button
+                    onClick={() => dismissSession(alert.id)}
+                    className="text-gray-300 hover:text-gray-500 flex-shrink-0"
+                    title="이번만 닫기"
+                  >
+                    <X size={13} />
+                  </button>
+                  <button
+                    onClick={() => dismissPermanent(alert.id)}
+                    className="text-xs text-gray-300 hover:text-gray-500 whitespace-nowrap flex-shrink-0"
+                    title="다시 보지 않기"
+                  >
+                    다시 안보기
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 
