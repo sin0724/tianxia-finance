@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,6 +37,8 @@ export default function ExpensesPage() {
   const [amounts, setAmounts]       = useState<Record<string, string>>({})
   const [memos, setMemos]           = useState<Record<string, string>>({})
   const [existingIds, setExistingIds] = useState<Record<string, string>>({})
+  // React 비동기 state 갱신 우회: 항상 최신 existingIds를 동기적으로 참조
+  const existingIdsRef = useRef<Record<string, string>>({})
   const [saving, setSaving]         = useState(false)
   const [savingId, setSavingId]     = useState<string | null>(null)
 
@@ -73,6 +75,7 @@ export default function ExpensesPage() {
         idMap[e.category_id]     = e.id
       }
     }
+    existingIdsRef.current = idMap
     setAmounts(amountMap)
     setMemos(memoMap)
     setExistingIds(idMap)
@@ -90,7 +93,10 @@ export default function ExpensesPage() {
       await supabase.from('monthly_expenses').update(payload).eq('id', existingIds[catId])
     } else {
       const { data } = await supabase.from('monthly_expenses').insert(payload).select('id').single()
-      if (data) setExistingIds((prev) => ({ ...prev, [catId]: data.id }))
+      if (data) {
+        existingIdsRef.current = { ...existingIdsRef.current, [catId]: data.id }
+        setExistingIds(prev => ({ ...prev, [catId]: data.id }))
+      }
     }
     setSavingId(null)
     toast.success('저장되었습니다.')
@@ -111,6 +117,7 @@ export default function ExpensesPage() {
         if (data) updatedIds[cat.id] = data.id
       }
     }
+    existingIdsRef.current = updatedIds
     setExistingIds(updatedIds)
     setSaving(false)
     toast.success('전체 저장되었습니다.')
@@ -176,29 +183,25 @@ export default function ExpensesPage() {
 
   // ── 이번 달 지출 데이터 삭제 ────────────────────────────
   async function handleDeleteMonthly(cat: ExpenseCategory) {
-    // existingIds는 stale할 수 있으므로 DB를 직접 확인
-    const { data: dbRows } = await supabase
-      .from('monthly_expenses')
-      .select('id')
-      .eq('year', year)
-      .eq('month', month)
-      .eq('category_id', cat.id)
-
-    const hasDbData = (dbRows ?? []).length > 0
+    // ref로 항상 최신 existingIds 참조 (async 갱신 stale 문제 방지)
+    const monthlyId = existingIdsRef.current[cat.id]
     const hasLocalData = cat.id in amounts || cat.id in memos
 
-    if (!hasDbData && !hasLocalData) { toast.error('이 월에 저장된 데이터가 없습니다.'); return }
+    if (!monthlyId && !hasLocalData) { toast.error('이 월에 저장된 데이터가 없습니다.'); return }
     if (!confirm(`'${cat.name}' ${year}년 ${month}월 데이터를 삭제하시겠습니까?`)) return
 
-    if (hasDbData) {
-      // id 대신 (year, month, category_id)로 삭제해 중복 레코드도 전부 제거
+    if (monthlyId) {
+      // (year, month, category_id)로 삭제해 중복 레코드도 전부 제거
       await supabase
         .from('monthly_expenses')
         .delete()
         .eq('year', year)
         .eq('month', month)
         .eq('category_id', cat.id)
-      setExistingIds((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
+      const newIds = { ...existingIdsRef.current }
+      delete newIds[cat.id]
+      existingIdsRef.current = newIds
+      setExistingIds(newIds)
     }
     setAmounts((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
     setMemos((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
