@@ -174,29 +174,15 @@ export default function ExpensesPage() {
     load()
   }
 
-  // ── 이번 달 지출 데이터만 삭제 ────────────────────────────
-  async function handleDeleteMonthly(cat: ExpenseCategory) {
-    const monthlyId = existingIds[cat.id]
-    const hasLocalData = cat.id in amounts || cat.id in memos
-    if (!monthlyId && !hasLocalData) { toast.error('이 월에 저장된 데이터가 없습니다.'); return }
-    if (!confirm(`'${cat.name}' ${year}년 ${month}월 데이터를 삭제하시겠습니까?`)) return
-    if (monthlyId) {
-      await supabase.from('monthly_expenses').delete().eq('id', monthlyId)
-      setExistingIds((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
-    }
+  // ── 항목 삭제 (커스텀 항목만, 전체 월에서 제거) ──────────
+  async function handleDeleteItem(cat: ExpenseCategory) {
+    if (!cat.is_custom) { toast.error('기본 항목은 삭제할 수 없습니다.'); return }
+    if (!confirm(`'${cat.name}' 항목을 삭제하시겠습니까?`)) return
+    await supabase.from('expense_categories').update({ active: false }).eq('id', cat.id)
     setAmounts((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
     setMemos((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
-    toast.success(`${year}년 ${month}월 데이터가 삭제되었습니다.`)
-  }
-
-  // ── 카테고리 자체 삭제 (커스텀 항목만, 전체 월 영향) ─────
-  async function handleDeleteCategory() {
-    if (!editTarget) return
-    if (!editTarget.is_custom) { toast.error('기본 항목은 삭제할 수 없습니다.'); return }
-    if (!confirm(`'${editTarget.name}' 항목을 완전히 삭제하시겠습니까?\n모든 월의 해당 항목이 숨김 처리됩니다.`)) return
-    await supabase.from('expense_categories').update({ active: false }).eq('id', editTarget.id)
-    toast.success('항목이 삭제되었습니다.')
-    setEditOpen(false)
+    setExistingIds((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
+    toast.success(`'${cat.name}' 항목이 삭제되었습니다.`)
     load()
   }
 
@@ -271,9 +257,11 @@ export default function ExpensesPage() {
                         <button onClick={() => openEdit(cat)} className="text-gray-300 hover:text-gray-600 transition-colors" title="항목 수정">
                           <Pencil size={14} />
                         </button>
-                        <button onClick={() => handleDeleteMonthly(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="이번 달 데이터 삭제">
-                          <Trash2 size={14} />
-                        </button>
+                        {cat.is_custom && (
+                          <button onClick={() => handleDeleteItem(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="항목 삭제">
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -318,9 +306,11 @@ export default function ExpensesPage() {
                       <button onClick={() => openEdit(cat)} className="text-gray-300 hover:text-gray-600 transition-colors" title="항목 수정">
                         <Pencil size={14} />
                       </button>
-                      <button onClick={() => handleDeleteMonthly(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="이번 달 데이터 삭제">
-                        <Trash2 size={14} />
-                      </button>
+                      {cat.is_custom && (
+                        <button onClick={() => handleDeleteItem(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="항목 삭제">
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
                   </div>
                 )
@@ -409,11 +399,6 @@ export default function ExpensesPage() {
             </label>
           </div>
           <DialogFooter className="flex-col gap-2 sm:flex-row">
-            {editTarget?.is_custom && (
-              <Button variant="destructive" className="sm:mr-auto" onClick={handleDeleteCategory}>
-                항목 전체 삭제
-              </Button>
-            )}
             <Button variant="outline" onClick={() => setEditOpen(false)}>취소</Button>
             <Button onClick={handleEditSave}>저장</Button>
           </DialogFooter>
