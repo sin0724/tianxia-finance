@@ -185,30 +185,10 @@ export default function ExpensesPage() {
   }
 
   // ── 이번 달 지출 데이터 삭제 ────────────────────────────
-  async function handleDeleteMonthly(cat: ExpenseCategory) {
-    // ref로 항상 최신 existingIds 참조 (async 갱신 stale 문제 방지)
-    const monthlyId = existingIdsRef.current[cat.id]
-    const hasLocalData = cat.id in amounts || cat.id in memos
-
-    if (!monthlyId && !hasLocalData) return
-    if (!confirm(`'${cat.name}' ${year}년 ${month}월 데이터를 삭제하시겠습니까?`)) return
-
-    if (monthlyId) {
-      // (year, month, category_id)로 삭제해 중복 레코드도 전부 제거
-      await supabase
-        .from('monthly_expenses')
-        .delete()
-        .eq('year', year)
-        .eq('month', month)
-        .eq('category_id', cat.id)
-      const newIds = { ...existingIdsRef.current }
-      delete newIds[cat.id]
-      existingIdsRef.current = newIds
-      setExistingIds(newIds)
-    }
+  function handleDeleteMonthly(cat: ExpenseCategory) {
+    // UI state만 클리어 (DB 레코드는 다음 저장 시 덮어씌워짐)
     setAmounts((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
     setMemos((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
-    toast.success(`${year}년 ${month}월 데이터가 삭제되었습니다.`)
   }
 
   const grouped = categories.reduce<Record<string, ExpenseCategory[]>>((acc, cat) => {
