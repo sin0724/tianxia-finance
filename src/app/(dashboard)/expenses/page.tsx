@@ -177,7 +177,7 @@ export default function ExpensesPage() {
   // ── 이번 달 지출 데이터만 삭제 ────────────────────────────
   async function handleDeleteMonthly(cat: ExpenseCategory) {
     const monthlyId = existingIds[cat.id]
-    const hasLocalData = (parseFloat(amounts[cat.id] ?? '0') || 0) > 0
+    const hasLocalData = cat.id in amounts || cat.id in memos
     if (!monthlyId && !hasLocalData) { toast.error('이 월에 저장된 데이터가 없습니다.'); return }
     if (!confirm(`'${cat.name}' ${year}년 ${month}월 데이터를 삭제하시겠습니까?`)) return
     if (monthlyId) {
