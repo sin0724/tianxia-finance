@@ -177,12 +177,15 @@ export default function ExpensesPage() {
   // ── 이번 달 지출 데이터만 삭제 ────────────────────────────
   async function handleDeleteMonthly(cat: ExpenseCategory) {
     const monthlyId = existingIds[cat.id]
-    if (!monthlyId) { toast.error('이 월에 저장된 데이터가 없습니다.'); return }
+    const hasLocalData = (parseFloat(amounts[cat.id] ?? '0') || 0) > 0
+    if (!monthlyId && !hasLocalData) { toast.error('이 월에 저장된 데이터가 없습니다.'); return }
     if (!confirm(`'${cat.name}' ${year}년 ${month}월 데이터를 삭제하시겠습니까?`)) return
-    await supabase.from('monthly_expenses').delete().eq('id', monthlyId)
+    if (monthlyId) {
+      await supabase.from('monthly_expenses').delete().eq('id', monthlyId)
+      setExistingIds((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
+    }
     setAmounts((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
     setMemos((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
-    setExistingIds((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
     toast.success(`${year}년 ${month}월 데이터가 삭제되었습니다.`)
   }
 
