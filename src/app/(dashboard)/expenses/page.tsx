@@ -127,14 +127,17 @@ export default function ExpensesPage() {
   async function copyLastMonth() {
     const ly = month === 1 ? year - 1 : year
     const lm = month === 1 ? 12 : month - 1
+    // 조인 대신 이미 로드된 categories state로 반복 여부 판단
+    const recurringIds = new Set(categories.filter(c => c.is_recurring).map(c => c.id))
     const { data } = await supabase
       .from('monthly_expenses')
-      .select('*, expense_categories(is_recurring)')
+      .select('*')
       .eq('year', ly).eq('month', lm)
     const updated = { ...amounts }
     for (const e of data ?? []) {
-      const cat = e.expense_categories as unknown as { is_recurring: boolean } | null
-      if (cat?.is_recurring && e.category_id) updated[e.category_id] = String(e.amount)
+      if (e.category_id && recurringIds.has(e.category_id)) {
+        updated[e.category_id] = String(e.amount)
+      }
     }
     setAmounts(updated)
     toast.success('지난달 고정비가 복사되었습니다.')
@@ -187,7 +190,7 @@ export default function ExpensesPage() {
     const monthlyId = existingIdsRef.current[cat.id]
     const hasLocalData = cat.id in amounts || cat.id in memos
 
-    if (!monthlyId && !hasLocalData) { toast.error('이 월에 저장된 데이터가 없습니다.'); return }
+    if (!monthlyId && !hasLocalData) return
     if (!confirm(`'${cat.name}' ${year}년 ${month}월 데이터를 삭제하시겠습니까?`)) return
 
     if (monthlyId) {
