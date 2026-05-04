@@ -99,19 +99,21 @@ export default function ExpensesPage() {
   // ── 전체 저장 ────────────────────────────────────────────
   async function saveAll() {
     setSaving(true)
+    const updatedIds = { ...existingIds }
     for (const cat of categories) {
       const amount = parseFloat(amounts[cat.id] ?? '0')
       if (isNaN(amount) || amount <= 0) continue
       const payload = { year, month, category_id: cat.id, amount, memo: memos[cat.id] || null }
-      if (existingIds[cat.id]) {
-        await supabase.from('monthly_expenses').update(payload).eq('id', existingIds[cat.id])
+      if (updatedIds[cat.id]) {
+        await supabase.from('monthly_expenses').update(payload).eq('id', updatedIds[cat.id])
       } else {
-        await supabase.from('monthly_expenses').insert(payload)
+        const { data } = await supabase.from('monthly_expenses').insert(payload).select('id').single()
+        if (data) updatedIds[cat.id] = data.id
       }
     }
+    setExistingIds(updatedIds)
     setSaving(false)
     toast.success('전체 저장되었습니다.')
-    load()
   }
 
   // ── 지난달 고정비 복사 ────────────────────────────────────
@@ -172,11 +174,26 @@ export default function ExpensesPage() {
     load()
   }
 
-  // ── 항목 삭제 (soft delete) ───────────────────────────────
-  async function handleDelete(cat: ExpenseCategory) {
-    if (!confirm(`'${cat.name}' 항목을 삭제하시겠습니까?\n이미 입력된 지출 데이터는 유지됩니다.`)) return
-    await supabase.from('expense_categories').update({ active: false }).eq('id', cat.id)
+  // ── 이번 달 지출 데이터만 삭제 ────────────────────────────
+  async function handleDeleteMonthly(cat: ExpenseCategory) {
+    const monthlyId = existingIds[cat.id]
+    if (!monthlyId) { toast.error('이 월에 저장된 데이터가 없습니다.'); return }
+    if (!confirm(`'${cat.name}' ${year}년 ${month}월 데이터를 삭제하시겠습니까?`)) return
+    await supabase.from('monthly_expenses').delete().eq('id', monthlyId)
+    setAmounts((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
+    setMemos((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
+    setExistingIds((prev) => { const n = { ...prev }; delete n[cat.id]; return n })
+    toast.success(`${year}년 ${month}월 데이터가 삭제되었습니다.`)
+  }
+
+  // ── 카테고리 자체 삭제 (커스텀 항목만, 전체 월 영향) ─────
+  async function handleDeleteCategory() {
+    if (!editTarget) return
+    if (!editTarget.is_custom) { toast.error('기본 항목은 삭제할 수 없습니다.'); return }
+    if (!confirm(`'${editTarget.name}' 항목을 완전히 삭제하시겠습니까?\n모든 월의 해당 항목이 숨김 처리됩니다.`)) return
+    await supabase.from('expense_categories').update({ active: false }).eq('id', editTarget.id)
     toast.success('항목이 삭제되었습니다.')
+    setEditOpen(false)
     load()
   }
 
@@ -251,7 +268,7 @@ export default function ExpensesPage() {
                         <button onClick={() => openEdit(cat)} className="text-gray-300 hover:text-gray-600 transition-colors" title="항목 수정">
                           <Pencil size={14} />
                         </button>
-                        <button onClick={() => handleDelete(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="항목 삭제">
+                        <button onClick={() => handleDeleteMonthly(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="이번 달 데이터 삭제">
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -298,7 +315,7 @@ export default function ExpensesPage() {
                       <button onClick={() => openEdit(cat)} className="text-gray-300 hover:text-gray-600 transition-colors" title="항목 수정">
                         <Pencil size={14} />
                       </button>
-                      <button onClick={() => handleDelete(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="항목 삭제">
+                      <button onClick={() => handleDeleteMonthly(cat)} className="text-gray-300 hover:text-red-500 transition-colors" title="이번 달 데이터 삭제">
                         <Trash2 size={14} />
                       </button>
                     </div>
@@ -388,7 +405,12 @@ export default function ExpensesPage() {
               <span className="text-sm">매월 반복 고정비 (지난달 복사 시 포함)</span>
             </label>
           </div>
-          <DialogFooter>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            {editTarget?.is_custom && (
+              <Button variant="destructive" className="sm:mr-auto" onClick={handleDeleteCategory}>
+                항목 전체 삭제
+              </Button>
+            )}
             <Button variant="outline" onClick={() => setEditOpen(false)}>취소</Button>
             <Button onClick={handleEditSave}>저장</Button>
           </DialogFooter>

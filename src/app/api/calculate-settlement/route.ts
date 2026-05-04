@@ -185,10 +185,19 @@ async function computeBothSettlements(year: number, month: number) {
     .eq('year', year)
     .eq('month', month)
 
-  const expenses = (rawExpenses ?? []).map((e) => ({
-    ...e,
-    category_type: (e.expense_categories as unknown as { parent_type: string } | null)?.parent_type,
-  }))
+  // category_id 기준 중복 제거 (최신 created_at 우선) — DB에 중복 행이 있을 경우 보호
+  const seenCategoryIds = new Set<string>()
+  const expenses = (rawExpenses ?? [])
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .filter((e) => {
+      if (!e.category_id || seenCategoryIds.has(e.category_id)) return false
+      seenCategoryIds.add(e.category_id)
+      return true
+    })
+    .map((e) => ({
+      ...e,
+      category_type: (e.expense_categories as unknown as { parent_type: string } | null)?.parent_type,
+    }))
 
   const { data: payroll } = await supabase
     .from('monthly_payroll')
