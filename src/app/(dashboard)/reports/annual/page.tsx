@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { formatKRW } from '@/lib/calculations/settlement'
 import {
-  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  ComposedChart, Bar, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 
@@ -36,6 +36,7 @@ export default function AnnualReportPage() {
   const [productRevenue, setProductRevenue] = useState<ProductRevenue[]>([])
   const [clientRevenue, setClientRevenue] = useState<ClientRevenue[]>([])
   const [settledMonths, setSettledMonths] = useState<Set<number>>(new Set())
+  const [totalPending, setTotalPending] = useState(0)
   const [loading, setLoading] = useState(true)
 
   async function load() {
@@ -65,11 +66,17 @@ export default function AnnualReportPage() {
     // payments 기반으로 정산 미계산 월도 채우기
     const { data: paymentData } = await supabase
       .from('payments')
-      .select('payment_date, amount')
+      .select('payment_date, amount, memo')
       .gte('payment_date', `${year}-01-01`)
       .lte('payment_date', `${year}-12-31`)
 
+    let pendingSum = 0
     for (const p of paymentData ?? []) {
+      const memo = p.memo ?? ''
+      const isPending = memo.includes('⚠ 잔금 처리 요망') || memo.includes('🔴 미입금')
+      const isExcluded = memo.includes('🚫 집계 제외')
+      if (isPending && !isExcluded) pendingSum += p.amount
+
       const m = parseInt(p.payment_date.split('-')[1])
       if (!summaryMap[m]) {
         summaryMap[m] = { month: m, revenue: 0, supply_value: 0, gross_profit: 0, operating_profit: 0, distributable_profit: 0 }
@@ -79,6 +86,7 @@ export default function AnnualReportPage() {
         summaryMap[m].supply_value += p.amount / 1.1
       }
     }
+    setTotalPending(pendingSum)
 
     const finalSummary = Array.from({ length: 12 }, (_, i) => summaryMap[i + 1] ?? {
       month: i + 1, revenue: 0, supply_value: 0, gross_profit: 0, operating_profit: 0, distributable_profit: 0,
@@ -154,12 +162,22 @@ export default function AnnualReportPage() {
   const totalDistributable = monthlySummary.reduce((s, m) => s + m.distributable_profit, 0)
   const bestMonth = monthlySummary.reduce((best, m) => m.revenue > best.revenue ? m : best, monthlySummary[0] ?? { month: 0, revenue: 0 } as MonthlySummary)
 
-  const chartData = monthlySummary.map((m) => ({
-    name: MONTHS[m.month - 1],
-    매출: Math.round(m.revenue),
-    공급가액: Math.round(m.supply_value),
-    영업이익: Math.round(m.operating_profit),
-  }))
+  let cumOp = 0
+  const chartData = monthlySummary.map((m) => {
+    cumOp += m.operating_profit
+    return {
+      name: MONTHS[m.month - 1],
+      매출: Math.round(m.revenue),
+      영업이익: Math.round(m.operating_profit),
+      누적영업이익: m.revenue > 0 || m.operating_profit !== 0 ? Math.round(cumOp) : null,
+    }
+  })
+
+  let cumOpForTable = 0
+  const cumulativeProfit = monthlySummary.map((m) => {
+    cumOpForTable += m.operating_profit
+    return cumOpForTable
+  })
 
   return (
     <div className="space-y-6">
@@ -175,7 +193,7 @@ export default function AnnualReportPage() {
       </div>
 
       {/* 요약 카드 */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="bg-white rounded-lg border p-4">
           <p className="text-xs text-gray-500">연간 총매출</p>
           <p className="text-xl font-bold mt-1 text-blue-600">{formatKRW(Math.round(totalRevenue))}</p>
@@ -187,6 +205,11 @@ export default function AnnualReportPage() {
         <div className="bg-white rounded-lg border p-4">
           <p className="text-xs text-gray-500">분배 가능 이익</p>
           <p className="text-xl font-bold mt-1 text-purple-600">{formatKRW(Math.round(totalDistributable))}</p>
+        </div>
+        <div className="bg-white rounded-lg border p-4">
+          <p className="text-xs text-gray-500">미수금 잔액</p>
+          <p className={`text-xl font-bold mt-1 ${totalPending > 0 ? 'text-amber-500' : 'text-gray-400'}`}>{formatKRW(Math.round(totalPending))}</p>
+          {totalPending > 0 && <p className="text-xs text-gray-400 mt-0.5">미입금 · 잔금 대기</p>}
         </div>
         <div className="bg-white rounded-lg border p-4">
           <p className="text-xs text-gray-500">최고 매출월</p>
@@ -203,19 +226,28 @@ export default function AnnualReportPage() {
 
       {!loading && (
         <>
-          {/* 월별 매출 / 영업이익 추이 */}
+          {/* 월별 매출 / 영업이익 / 누적 추이 */}
           <div className="bg-white rounded-lg border p-4">
-            <h2 className="text-sm font-semibold text-gray-700 mb-4">월별 매출 / 영업이익 추이</h2>
+            <h2 className="text-sm font-semibold text-gray-700 mb-1">월별 매출 / 영업이익 추이</h2>
+            <p className="text-xs text-gray-400 mb-4">주황 선: 누적 영업이익 (정산 완료 월 기준)</p>
             <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={chartData} margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
+              <ComposedChart data={chartData} margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis dataKey="name" tick={{ fontSize: 12 }} />
                 <YAxis tickFormatter={formatKRWShort} tick={{ fontSize: 11 }} width={60} />
-                <Tooltip formatter={(v) => formatKRW(Number(v))} />
+                <Tooltip formatter={(v, name) => [formatKRW(Number(v)), name]} />
                 <Legend />
                 <Bar dataKey="매출" fill="#3b82f6" radius={[3, 3, 0, 0]} />
                 <Bar dataKey="영업이익" fill="#10b981" radius={[3, 3, 0, 0]} />
-              </BarChart>
+                <Line
+                  type="monotone"
+                  dataKey="누적영업이익"
+                  stroke="#f59e0b"
+                  strokeWidth={2}
+                  dot={{ r: 3, fill: '#f59e0b' }}
+                  connectNulls={false}
+                />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
 
@@ -288,11 +320,12 @@ export default function AnnualReportPage() {
                   <th className="text-right py-2 font-medium">공급가액</th>
                   <th className="text-right py-2 font-medium">매출총이익</th>
                   <th className="text-right py-2 font-medium">영업이익</th>
+                  <th className="text-right py-2 font-medium text-amber-600">누적 영업이익</th>
                   <th className="text-right py-2 font-medium">분배가능이익</th>
                 </tr>
               </thead>
               <tbody>
-                {monthlySummary.map((m) => (
+                {monthlySummary.map((m, i) => (
                   <tr key={m.month} className={`border-b hover:bg-gray-50 ${m.month === bestMonth.month && m.revenue > 0 ? 'bg-blue-50' : ''}`}>
                     <td className="py-2">{m.month}월{m.month === bestMonth.month && m.revenue > 0 && <span className="ml-1 text-xs text-blue-500">★</span>}</td>
                     <td className="text-center">
@@ -308,6 +341,9 @@ export default function AnnualReportPage() {
                     <td className={`text-right ${m.operating_profit < 0 ? 'text-red-500' : m.operating_profit > 0 ? 'text-green-600' : 'text-gray-300'}`}>
                       {m.operating_profit !== 0 ? formatKRW(Math.round(m.operating_profit)) : '-'}
                     </td>
+                    <td className={`text-right font-medium ${cumulativeProfit[i] < 0 ? 'text-red-500' : cumulativeProfit[i] > 0 ? 'text-amber-600' : 'text-gray-300'}`}>
+                      {(m.revenue > 0 || m.operating_profit !== 0) ? formatKRW(Math.round(cumulativeProfit[i])) : <span className="text-gray-300">-</span>}
+                    </td>
                     <td className="text-right">{m.distributable_profit !== 0 ? formatKRW(Math.round(m.distributable_profit)) : <span className="text-gray-300">-</span>}</td>
                   </tr>
                 ))}
@@ -318,6 +354,7 @@ export default function AnnualReportPage() {
                   <td className="text-right">{formatKRW(Math.round(monthlySummary.reduce((s, m) => s + m.supply_value, 0)))}</td>
                   <td className="text-right">{formatKRW(Math.round(monthlySummary.reduce((s, m) => s + m.gross_profit, 0)))}</td>
                   <td className={`text-right ${totalOperating < 0 ? 'text-red-500' : 'text-green-600'}`}>{formatKRW(Math.round(totalOperating))}</td>
+                  <td className={`text-right ${totalOperating < 0 ? 'text-red-500' : 'text-amber-600'}`}>{formatKRW(Math.round(totalOperating))}</td>
                   <td className="text-right">{formatKRW(Math.round(totalDistributable))}</td>
                 </tr>
               </tbody>
