@@ -32,6 +32,7 @@ export default function DashboardPage() {
   const [settlement, setSettlement]   = useState<MonthlySettlement | null>(null)
   const [monthlyData, setMonthlyData] = useState<{ month: string; revenue: number; profit: number }[]>([])
   const [paymentTotal, setPaymentTotal]   = useState(0)
+  const [refundTotal, setRefundTotal]     = useState(0)
   const [pendingTotal, setPendingTotal]   = useState(0)
   const [alerts, setAlerts]               = useState<DashAlert[]>([])
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
@@ -108,7 +109,9 @@ export default function DashboardPage() {
       .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
 
     type PendingRow = { amount: number; projects: { status: string } | null }
+    const refunds = confirmed.filter((p) => p.amount < 0)
     setPaymentTotal(confirmed.reduce((s, p) => s + p.amount, 0))
+    setRefundTotal(refunds.reduce((s, p) => s + p.amount, 0))
     setPendingTotal(((allPending as unknown as PendingRow[]) ?? [])
       .filter((p) => p.projects?.status !== 'cancelled')
       .reduce((s, p) => s + p.amount, 0))
@@ -370,7 +373,11 @@ export default function DashboardPage() {
           <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">{selMonth}월 입금액</CardTitle></CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-700">{formatKRW(paymentTotal)}</div>
-            <p className="text-xs text-gray-400 mt-1">입금완료 건 합계</p>
+            {refundTotal < 0 ? (
+              <p className="text-xs text-red-500 mt-1">환불 {formatKRW(refundTotal)} 차감 후</p>
+            ) : (
+              <p className="text-xs text-gray-400 mt-1">입금완료 건 합계</p>
+            )}
           </CardContent>
         </Card>
         <Card className="border-yellow-200 bg-yellow-50">

@@ -406,6 +406,8 @@ export default function PaymentsPage() {
   }
 
   // ─── 분류 ─────────────────────────────────────────────
+  const isRefundPayment = (p: { amount: number }) => p.amount < 0
+
   const confirmedList = payments.filter((p) => !isPendingPayment(p))
   const pendingList = allPending // 수금 관리: 월 필터 없이 전체
   const activeConfirmed = confirmedList.filter((p) => !isExcludedPayment(p))
@@ -413,6 +415,8 @@ export default function PaymentsPage() {
   const confirmedTotal = activeConfirmed.reduce((s, p) => s + p.amount, 0)
   const excludedTotal = excludedList.reduce((s, p) => s + p.amount, 0)
   const pendingTotal = pendingList.reduce((s, p) => s + p.amount, 0)
+  const refundList = activeConfirmed.filter(isRefundPayment)
+  const refundTotal = refundList.reduce((s, p) => s + p.amount, 0)
 
   const yearOptions = [2023, 2024, 2025, 2026]
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1)
@@ -469,14 +473,19 @@ export default function PaymentsPage() {
       {/* ══════════ 입금 내역 탭 ══════════ */}
       {tab === 'confirmed' && (
         <>
-          <div className="flex items-center justify-end gap-4">
+          <div className="flex items-center justify-end gap-4 flex-wrap">
             {excludedList.length > 0 && (
               <div className="text-xs text-gray-400">
                 집계 제외 {excludedList.length}건 (<span className="line-through">{formatKRW(excludedTotal)}</span>)
               </div>
             )}
+            {refundList.length > 0 && (
+              <div className="text-xs text-red-500">
+                환불 {refundList.length}건 ({formatKRW(refundTotal)})
+              </div>
+            )}
             <div className="text-sm text-gray-600">
-              총 <strong className="text-gray-900">{formatKRW(confirmedTotal)}</strong> ({activeConfirmed.length}건)
+              순 입금 <strong className="text-gray-900">{formatKRW(confirmedTotal)}</strong> ({activeConfirmed.length}건)
             </div>
           </div>
 
@@ -487,11 +496,12 @@ export default function PaymentsPage() {
             ) : confirmedList.length === 0 ? (
               <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">입금 내역이 없습니다.</div>
             ) : confirmedList.map((p) => (
-              <div key={p.id} className={`bg-white rounded-lg border p-4 ${!p.matched ? 'border-l-4 border-l-blue-300' : ''} ${isExcludedPayment(p) ? 'opacity-50' : ''}`}>
+              <div key={p.id} className={`bg-white rounded-lg border p-4 ${isRefundPayment(p) ? 'border-l-4 border-l-red-400 bg-red-50/30' : !p.matched ? 'border-l-4 border-l-blue-300' : ''} ${isExcludedPayment(p) ? 'opacity-50' : ''}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`font-bold ${isExcludedPayment(p) ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{formatKRW(p.amount)}</span>
+                      <span className={`font-bold ${isExcludedPayment(p) ? 'text-gray-400 line-through' : isRefundPayment(p) ? 'text-red-600' : 'text-gray-900'}`}>{formatKRW(p.amount)}</span>
+                      {isRefundPayment(p) && <Badge variant="destructive" className="text-xs">환불</Badge>}
                       <span className="text-xs text-gray-400">{p.payment_date}</span>
                       {p.source === 'slack' && <Badge variant="outline" className="text-xs text-gray-400">Slack</Badge>}
                     </div>
@@ -554,7 +564,7 @@ export default function PaymentsPage() {
                 ) : confirmedList.length === 0 ? (
                   <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">입금 내역이 없습니다.</TableCell></TableRow>
                 ) : confirmedList.map((p) => (
-                  <TableRow key={p.id} className={`${!p.matched ? 'bg-blue-50/30' : ''}${isExcludedPayment(p) ? ' opacity-50' : ''}`}>
+                  <TableRow key={p.id} className={`${isRefundPayment(p) ? 'bg-red-50/40' : !p.matched ? 'bg-blue-50/30' : ''}${isExcludedPayment(p) ? ' opacity-50' : ''}`}>
                     <TableCell>{p.payment_date}</TableCell>
                     <TableCell>
                       {p.projects?.clients?.name ?? (
@@ -571,12 +581,17 @@ export default function PaymentsPage() {
                         </button>
                       )}
                     </TableCell>
-                    <TableCell>{p.payment_type ?? '-'}</TableCell>
+                    <TableCell>
+                      {isRefundPayment(p)
+                        ? <Badge variant="destructive" className="text-xs">환불</Badge>
+                        : (p.payment_type ?? '-')
+                      }
+                    </TableCell>
                     <TableCell>{p.manager ?? '-'}</TableCell>
                     <TableCell className="text-right font-medium">
                       {isExcludedPayment(p)
                         ? <span className="line-through text-gray-400">{formatKRW(p.amount)}</span>
-                        : formatKRW(p.amount)
+                        : <span className={isRefundPayment(p) ? 'text-red-600' : ''}>{formatKRW(p.amount)}</span>
                       }
                     </TableCell>
                     <TableCell>
