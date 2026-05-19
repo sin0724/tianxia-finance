@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/table'
 import { toast } from 'sonner'
 import { formatKRW } from '@/lib/calculations/settlement'
-import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, Check, X, Ban } from 'lucide-react'
+import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, Check, X, Ban, Copy } from 'lucide-react'
 import type { Project, Client, Product, ProjectItem } from '@/types/database'
 
 type ProjectWithRelations = Project & {
@@ -293,6 +293,37 @@ export default function ProjectsPage() {
     if (selectedProject) openItems(selectedProject)
   }
 
+  async function handleCopyProject(p: ProjectWithRelations) {
+    const { data } = await supabase
+      .from('project_items')
+      .select('*, products(name, category)')
+      .eq('project_id', p.id)
+      .order('created_at')
+    type CopyItem = {
+      item_name: string | null; product_id: string | null; quantity: number
+      unit_price_snapshot: number; unit_cost_snapshot: number
+      products: { name: string; category: string | null } | null
+    }
+    setEditing(null)
+    setForm({
+      client_id: p.client_id ?? '',
+      name: p.name + ' (복사)',
+      total_amount: String(p.total_amount),
+      contract_date: new Date().toISOString().split('T')[0],
+      status: 'ongoing',
+      memo: p.memo ?? '',
+    })
+    const copied = ((data as unknown as CopyItem[]) ?? []).map((item) => ({
+      item_name: item.item_name ?? item.products?.category ?? item.products?.name ?? '',
+      product_id: item.product_id ?? '',
+      quantity: String(item.quantity),
+      unit_price_snapshot: String(item.unit_price_snapshot),
+      unit_cost_snapshot: String(item.unit_cost_snapshot),
+    }))
+    setItems(copied.length > 0 ? copied : [{ item_name: '', product_id: '', quantity: '1', unit_price_snapshot: '', unit_cost_snapshot: '' }])
+    setDialogOpen(true)
+  }
+
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [newItem, setNewItem] = useState<ItemForm>({ item_name: '', product_id: '', quantity: '1', unit_price_snapshot: '', unit_cost_snapshot: '' })
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
@@ -402,6 +433,9 @@ export default function ProjectsPage() {
               const discountAmt = p.total_list_price > 0 ? p.total_list_price - p.total_amount : 0
               const discountRate = p.total_list_price > 0 ? (discountAmt / p.total_list_price) * 100 : 0
               const hasDiscount = p.total_list_price > 0 && Math.abs(discountAmt) > 0.5
+              const marginRate = p.total_amount > 0 && p.total_cost > 0
+                ? ((p.total_amount - p.total_cost) / p.total_amount) * 100
+                : null
               return (
                 <TableRow key={p.id} className={p.item_count === 0 ? 'bg-orange-50/30' : ''}>
                   <TableCell>
@@ -443,6 +477,11 @@ export default function ProjectsPage() {
                         실행비 {formatKRW(p.total_cost)}
                       </div>
                     )}
+                    {marginRate !== null && (
+                      <div className={`text-xs font-medium mt-0.5 ${marginRate >= 40 ? 'text-green-600' : marginRate >= 20 ? 'text-yellow-600' : 'text-red-500'}`}>
+                        마진 {marginRate.toFixed(1)}%
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="text-right font-medium">
                     <span className={p.paid_amount > 0 ? 'text-green-600' : 'text-gray-300'}>
@@ -474,6 +513,7 @@ export default function ProjectsPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1 justify-end">
+                      <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-600" title="복사" onClick={() => handleCopyProject(p)}><Copy size={14} /></Button>
                       <Button size="sm" variant="ghost" onClick={() => openEdit(p)}><Pencil size={14} /></Button>
                       {p.status !== 'cancelled' && (
                         <Button size="sm" variant="ghost" className="text-orange-400 hover:text-orange-600" title="취소 처리" onClick={() => handleCancel(p.id)}>

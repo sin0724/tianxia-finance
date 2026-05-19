@@ -18,9 +18,12 @@ import type { Product, ProductCostHistory } from '@/types/database'
 
 const DEFAULT_CATEGORIES = ['Dcard', 'PTT', 'Threads', 'PR', 'KOC', 'KOL', '인스타브랜딩', '기타']
 
+type ProductStat = { name: string; count: number; revenue: number; cost: number }
+
 export default function ProductsPage() {
   const supabase = createClient()
   const [products, setProducts] = useState<Product[]>([])
+  const [productStats, setProductStats] = useState<ProductStat[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -41,6 +44,25 @@ export default function ProductsPage() {
     const existing = (data ?? []).map((p) => p.category).filter(Boolean) as string[]
     const merged = [...new Set([...DEFAULT_CATEGORIES, ...existing])]
     setCategories(merged)
+
+    // 상품별 판매 실적 집계
+    const { data: itemData } = await supabase
+      .from('project_items')
+      .select('quantity, unit_price_snapshot, unit_cost_snapshot, products(name, category)')
+    type RawItem = { quantity: number; unit_price_snapshot: number; unit_cost_snapshot: number; products: { name: string; category: string | null } | null }
+    const statMap: Record<string, { count: number; revenue: number; cost: number }> = {}
+    for (const item of (itemData as unknown as RawItem[]) ?? []) {
+      const name = item.products?.category ?? item.products?.name ?? '직접 입력'
+      if (!statMap[name]) statMap[name] = { count: 0, revenue: 0, cost: 0 }
+      statMap[name].count += item.quantity
+      statMap[name].revenue += item.unit_price_snapshot * item.quantity
+      statMap[name].cost += item.unit_cost_snapshot * item.quantity
+    }
+    setProductStats(
+      Object.entries(statMap)
+        .map(([name, s]) => ({ name, ...s }))
+        .sort((a, b) => b.revenue - a.revenue)
+    )
   }
 
   useEffect(() => { load() }, [])
@@ -207,6 +229,46 @@ export default function ProductsPage() {
           </TableBody>
         </Table>
       </div>
+
+      {/* 상품별 판매 실적 */}
+      {productStats.length > 0 && (
+        <div className="bg-white rounded-lg border overflow-hidden">
+          <div className="px-4 py-3 border-b">
+            <h2 className="text-sm font-semibold text-gray-700">상품별 판매 실적</h2>
+            <p className="text-xs text-gray-400 mt-0.5">프로젝트 구성 상품 기준 전체 누적</p>
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>상품명</TableHead>
+                <TableHead className="text-right">판매 수량</TableHead>
+                <TableHead className="text-right">총 판매액</TableHead>
+                <TableHead className="text-right">총 실행비</TableHead>
+                <TableHead className="text-right">마진</TableHead>
+                <TableHead className="text-right">마진율</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {productStats.map((s) => {
+                const margin = s.revenue - s.cost
+                const marginRate = s.revenue > 0 ? (margin / s.revenue) * 100 : 0
+                return (
+                  <TableRow key={s.name}>
+                    <TableCell className="font-medium">{s.name}</TableCell>
+                    <TableCell className="text-right">{s.count.toLocaleString()}</TableCell>
+                    <TableCell className="text-right">{formatKRW(s.revenue)}</TableCell>
+                    <TableCell className="text-right text-orange-600">{formatKRW(s.cost)}</TableCell>
+                    <TableCell className="text-right text-green-600">{formatKRW(margin)}</TableCell>
+                    <TableCell className={`text-right font-semibold ${marginRate >= 40 ? 'text-green-600' : marginRate >= 20 ? 'text-yellow-600' : 'text-red-500'}`}>
+                      {marginRate.toFixed(1)}%
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
 
       {/* 추가/수정 다이얼로그 */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

@@ -19,6 +19,7 @@ type MonthlySummary = {
 
 type ProductRevenue = { name: string; revenue: number }
 type ClientRevenue = { name: string; revenue: number }
+type ManagerStat = { name: string; count: number; revenue: number; share: number }
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316']
 const MONTHS = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월']
@@ -35,6 +36,7 @@ export default function AnnualReportPage() {
   const [monthlySummary, setMonthlySummary] = useState<MonthlySummary[]>([])
   const [productRevenue, setProductRevenue] = useState<ProductRevenue[]>([])
   const [clientRevenue, setClientRevenue] = useState<ClientRevenue[]>([])
+  const [managerStats, setManagerStats] = useState<ManagerStat[]>([])
   const [settledMonths, setSettledMonths] = useState<Set<number>>(new Set())
   const [totalPending, setTotalPending] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -150,6 +152,35 @@ export default function AnnualReportPage() {
         .map(([name, revenue]) => ({ name, revenue }))
         .sort((a, b) => b.revenue - a.revenue)
         .slice(0, 10)
+    )
+
+    // 4. 담당자별 실적
+    const { data: managerData } = await supabase
+      .from('payments')
+      .select('manager, amount, memo')
+      .gte('payment_date', `${year}-01-01`)
+      .lte('payment_date', `${year}-12-31`)
+      .not('manager', 'is', null)
+      .not('manager', 'eq', '')
+
+    const managerMap: Record<string, { count: number; revenue: number }> = {}
+    for (const p of managerData ?? []) {
+      const memo = p.memo ?? ''
+      if (memo.includes('⚠ 잔금 처리 요망') || memo.includes('🔴 미입금') || memo.includes('🚫 집계 제외')) continue
+      if (!p.manager?.trim()) continue
+      const name = p.manager.trim()
+      if (!managerMap[name]) managerMap[name] = { count: 0, revenue: 0 }
+      managerMap[name].count++
+      managerMap[name].revenue += p.amount
+    }
+    const totalMgrRevenue = Object.values(managerMap).reduce((s, m) => s + m.revenue, 0)
+    setManagerStats(
+      Object.entries(managerMap)
+        .map(([name, { count, revenue }]) => ({
+          name, count, revenue,
+          share: totalMgrRevenue > 0 ? (revenue / totalMgrRevenue) * 100 : 0,
+        }))
+        .sort((a, b) => b.revenue - a.revenue)
     )
 
     setLoading(false)
@@ -307,6 +338,27 @@ export default function AnnualReportPage() {
               )}
             </div>
           </div>
+
+          {/* 담당자별 실적 */}
+          {managerStats.length > 0 && (
+            <div className="bg-white rounded-lg border p-4">
+              <h2 className="text-sm font-semibold text-gray-700 mb-4">담당자별 실적</h2>
+              <div className="space-y-2.5">
+                {managerStats.map((m, i) => (
+                  <div key={m.name} className="flex items-center gap-3 text-sm">
+                    <span className="w-5 text-xs text-gray-400 text-right shrink-0">{i + 1}</span>
+                    <span className="w-20 font-medium text-gray-700 shrink-0">{m.name}</span>
+                    <div className="flex-1 bg-gray-100 rounded-full h-2 min-w-0">
+                      <div className="bg-indigo-400 h-2 rounded-full" style={{ width: `${m.share}%` }} />
+                    </div>
+                    <span className="w-10 text-right text-xs text-gray-400 shrink-0">{m.share.toFixed(1)}%</span>
+                    <span className="w-28 text-right font-medium text-gray-800 shrink-0">{formatKRW(m.revenue)}</span>
+                    <span className="w-10 text-right text-xs text-gray-400 shrink-0">{m.count}건</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* 월별 상세 테이블 */}
           <div className="bg-white rounded-lg border p-4 overflow-x-auto">
