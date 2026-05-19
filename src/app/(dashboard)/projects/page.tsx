@@ -23,9 +23,11 @@ import type { Project, Client, Product, ProjectItem } from '@/types/database'
 
 type ProjectWithRelations = Project & {
   clients: { name: string } | null
-  paid_amount: number      // 입금완료 합계
-  pending_amount: number   // 수금 예정 합계
-  item_count: number       // 구성 상품 수
+  paid_amount: number
+  pending_amount: number
+  item_count: number
+  total_list_price: number  // 구성 상품 정가 합계
+  total_cost: number        // 구성 상품 실행비 합계
 }
 
 type ItemForm = {
@@ -98,13 +100,18 @@ export default function ProjectsPage() {
       }
     }
 
-    // 프로젝트별 구성 상품 수
+    // 프로젝트별 구성 상품 수 + 정가/실행비 합계
     const { data: itemData } = await supabase
       .from('project_items')
-      .select('project_id')
+      .select('project_id, quantity, unit_price_snapshot, unit_cost_snapshot')
     const itemCountMap: Record<string, number> = {}
+    const listPriceMap: Record<string, number> = {}
+    const costMap: Record<string, number> = {}
     for (const item of itemData ?? []) {
-      if (item.project_id) itemCountMap[item.project_id] = (itemCountMap[item.project_id] ?? 0) + 1
+      if (!item.project_id) continue
+      itemCountMap[item.project_id] = (itemCountMap[item.project_id] ?? 0) + 1
+      listPriceMap[item.project_id] = (listPriceMap[item.project_id] ?? 0) + item.unit_price_snapshot * item.quantity
+      costMap[item.project_id] = (costMap[item.project_id] ?? 0) + item.unit_cost_snapshot * item.quantity
     }
 
     const merged = (projectData as unknown as (Project & { clients: { name: string } | null })[])?.map((p) => ({
@@ -112,6 +119,8 @@ export default function ProjectsPage() {
       paid_amount: paidMap[p.id] ?? 0,
       pending_amount: pendingMap[p.id] ?? 0,
       item_count: itemCountMap[p.id] ?? 0,
+      total_list_price: listPriceMap[p.id] ?? 0,
+      total_cost: costMap[p.id] ?? 0,
     })) ?? []
 
     setProjects(merged)
@@ -390,6 +399,9 @@ export default function ProjectsPage() {
               </TableCell></TableRow>
             ) : filteredProjects.map((p) => {
               const progress = p.total_amount > 0 ? Math.min(100, Math.round(p.paid_amount / p.total_amount * 100)) : 0
+              const discountAmt = p.total_list_price > 0 ? p.total_list_price - p.total_amount : 0
+              const discountRate = p.total_list_price > 0 ? (discountAmt / p.total_list_price) * 100 : 0
+              const hasDiscount = p.total_list_price > 0 && Math.abs(discountAmt) > 0.5
               return (
                 <TableRow key={p.id} className={p.item_count === 0 ? 'bg-orange-50/30' : ''}>
                   <TableCell>
@@ -419,7 +431,19 @@ export default function ProjectsPage() {
                   <TableCell>
                     <Badge variant={STATUS_VARIANT[p.status]}>{STATUS_LABEL[p.status]}</Badge>
                   </TableCell>
-                  <TableCell className="text-right">{formatKRW(p.total_amount)}</TableCell>
+                  <TableCell className="text-right">
+                    <div>{formatKRW(p.total_amount)}</div>
+                    {hasDiscount && (
+                      <div className="text-xs text-blue-500 mt-0.5">
+                        할인 {discountRate.toFixed(1)}%
+                      </div>
+                    )}
+                    {p.total_cost > 0 && (
+                      <div className="text-xs text-orange-500 mt-0.5">
+                        실행비 {formatKRW(p.total_cost)}
+                      </div>
+                    )}
+                  </TableCell>
                   <TableCell className="text-right font-medium">
                     <span className={p.paid_amount > 0 ? 'text-green-600' : 'text-gray-300'}>
                       {p.paid_amount > 0 ? formatKRW(p.paid_amount) : '-'}
@@ -733,6 +757,43 @@ export default function ProjectsPage() {
               </div>
             </div>
           </div>
+
+          {/* 요약 패널 */}
+          {selectedProject && projectItems.length > 0 && (() => {
+            const totalListPrice = projectItems.reduce((s, it) => s + it.unit_price_snapshot * it.quantity, 0)
+            const totalCost = projectItems.reduce((s, it) => s + it.unit_cost_snapshot * it.quantity, 0)
+            const contractAmount = selectedProject.total_amount
+            const discountAmount = totalListPrice - contractAmount
+            const discountRate = totalListPrice > 0 ? (discountAmount / totalListPrice) * 100 : 0
+            const hasDiscount = Math.abs(discountAmount) > 0.5
+            return (
+              <div className="px-6 py-3 border-t bg-gray-50 shrink-0 text-sm space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">구성 상품 합계 (정가)</span>
+                  <span className="font-medium">{formatKRW(totalListPrice)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">실제 계약금액</span>
+                  <span className="font-medium">{formatKRW(contractAmount)}</span>
+                </div>
+                {hasDiscount && (
+                  <div className="flex justify-between text-blue-600">
+                    <span>
+                      {discountAmount > 0 ? '할인' : '추가 청구'}
+                      <span className="ml-1 text-xs opacity-75">
+                        ({discountAmount > 0 ? '-' : '+'}{Math.abs(discountRate).toFixed(1)}%)
+                      </span>
+                    </span>
+                    <span className="font-semibold">{discountAmount > 0 ? '-' : '+'}{formatKRW(Math.abs(discountAmount))}</span>
+                  </div>
+                )}
+                <div className="flex justify-between border-t pt-1.5">
+                  <span className="text-gray-500">총 실행비 (원가 합계)</span>
+                  <span className="font-medium text-orange-600">{formatKRW(totalCost)}</span>
+                </div>
+              </div>
+            )
+          })()}
 
           <DialogFooter className="px-6 py-4 border-t shrink-0">
             <Button onClick={() => { setItemsDialogOpen(false); setEditingItemId(null) }}>닫기</Button>
