@@ -47,19 +47,22 @@ export async function POST(request: Request) {
       return Response.json({ synced: 0, skipped: 0, unmatched: 0, pending: 0, created: 0 })
     }
 
-    // 기존 결제 조회 — external_id 중복 방지 + 날짜·상호명·금액 soft 중복 방지 (수기 입력 포함)
+    // 기존 결제 조회 — external_id 중복 방지 + 날짜·상호명·금액·메모 soft 중복 방지 (수기 입력 포함)
     const { data: existingPayments } = await supabase
       .from('payments')
-      .select('external_id, payment_date, client_name_raw, amount')
+      .select('external_id, payment_date, client_name_raw, amount, memo')
 
     const existingIds = new Set(
       (existingPayments ?? []).filter((p) => p.external_id).map((p) => p.external_id)
     )
-    // 날짜+상호명+금액 기준으로 이미 존재하는 레코드 식별 (external_id 없는 수기 추가분 포함)
+    // 날짜+상호명+금액+메모 기준 soft 중복 방지 — 메모 포함으로 재계약·추가계약 구분 가능
     const softDupSet = new Set(
       (existingPayments ?? [])
         .filter((p) => p.client_name_raw)
-        .map((p) => `${p.payment_date}|${(p.client_name_raw ?? '').toLowerCase().replace(/\s+/g, '')}|${p.amount}`)
+        .map((p) => {
+          const memoClean = (p.memo ?? '').toLowerCase().replace(/\s+/g, '')
+          return `${p.payment_date}|${(p.client_name_raw ?? '').toLowerCase().replace(/\s+/g, '')}|${p.amount}|${memoClean}`
+        })
     )
 
     // 클라이언트 목록 (매칭·자동생성용) — 동기화 중 생성된 항목도 누적
@@ -78,8 +81,19 @@ export async function POST(request: Request) {
     for (const row of rows) {
       const externalId = makeExternalId(row)
 
+      // DB에 저장될 메모와 동일한 형식으로 softKey 구성 (statusTag + memo + 대표자 + 연락처)
+      const statusTagForKey =
+        row.status === '잔금처리요망' ? '⚠ 잔금 처리 요망' :
+        row.status === '미입금' ? '🔴 미입금' : ''
+      const dbMemoForKey = [
+        statusTagForKey,
+        row.memo,
+        row.representative ? `대표: ${row.representative}` : '',
+        row.phone ? `연락처: ${row.phone}` : '',
+      ].filter(Boolean).join(' | ').toLowerCase().replace(/\s+/g, '')
+
       const softKey = row.clientName
-        ? `${row.date}|${row.clientName.toLowerCase().replace(/\s+/g, '')}|${row.amount}`
+        ? `${row.date}|${row.clientName.toLowerCase().replace(/\s+/g, '')}|${row.amount}|${dbMemoForKey}`
         : null
       if (existingIds.has(externalId) || (softKey && softDupSet.has(softKey))) {
         skipped++
@@ -117,21 +131,23 @@ export async function POST(request: Request) {
           }
         }
 
-        // 2. 프로젝트 찾기 (없으면 자동 생성)
+        // 2. 프로젝트 찾기 — 진행중(ongoing)인 프로젝트만 연결
+        //    완료·취소 프로젝트만 있으면 재계약으로 판단해 새 프로젝트 생성
         if (clientId) {
-          // 진행중 프로젝트 우선, 없으면 가장 최근 프로젝트
-          const { data: existingProjects } = await supabase
+          const { data: ongoingProjects } = await supabase
             .from('projects')
-            .select('id, status')
+            .select('id')
             .eq('client_id', clientId)
+            .eq('status', 'ongoing')
             .order('created_at', { ascending: false })
             .limit(1)
 
-          if (existingProjects && existingProjects.length > 0) {
-            projectId = existingProjects[0].id
+          if (ongoingProjects && ongoingProjects.length > 0) {
+            // 진행중 프로젝트에 결제 연결
+            projectId = ongoingProjects[0].id
             matched = true
           } else {
-            // 프로젝트 자동 생성
+            // 진행중 프로젝트 없음 → 신규·재계약으로 판단해 프로젝트 자동 생성
             const { data: newProject } = await supabase
               .from('projects')
               .insert({
