@@ -534,7 +534,7 @@ export default function ProjectsPage() {
 
       {/* 프로젝트 추가/수정 다이얼로그 */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="w-[calc(100%-1rem)] max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="w-[calc(100%-1rem)] max-w-2xl max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editing ? '프로젝트 수정' : '프로젝트 추가'}</DialogTitle>
           </DialogHeader>
@@ -645,7 +645,7 @@ export default function ProjectsPage() {
 
       {/* 구성 상품 다이얼로그 */}
       <Dialog open={itemsDialogOpen} onOpenChange={(open) => { setItemsDialogOpen(open); if (!open) setEditingItemId(null) }}>
-        <DialogContent className="max-w-5xl sm:max-w-5xl w-full max-h-[85vh] flex flex-col overflow-hidden p-0">
+        <DialogContent className="max-w-5xl sm:max-w-5xl w-full max-h-[85dvh] flex flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pt-6 pb-3 shrink-0">
             <DialogTitle>{selectedProject?.name} — 구성 상품</DialogTitle>
           </DialogHeader>
