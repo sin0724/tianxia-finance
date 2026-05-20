@@ -19,6 +19,17 @@ import type { Product, ProductCostHistory } from '@/types/database'
 const DEFAULT_CATEGORIES = ['Dcard', 'PTT', 'Threads', 'PR', 'KOC', 'KOL', '인스타브랜딩', '기타']
 
 type ProductStat = { name: string; count: number; revenue: number; cost: number }
+type BatchItem = {
+  id: string
+  item_name: string | null
+  project_name: string
+  project_status: string
+  old_price: number
+  old_cost: number
+  new_price: number
+  new_cost: number
+  selected: boolean
+}
 
 export default function ProductsPage() {
   const supabase = createClient()
@@ -31,6 +42,8 @@ export default function ProductsPage() {
   const [editing, setEditing] = useState<Product | null>(null)
   const [form, setForm] = useState({ name: '', price_vat_incl: '', current_cost: '' })
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES)
+  const [batchDialog, setBatchDialog] = useState(false)
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([])
 
   async function load() {
     const { data } = await supabase
@@ -117,6 +130,40 @@ export default function ProductsPage() {
         .eq('id', editing.id)
       if (error) { toast.error('수정 실패'); return }
       toast.success('상품이 수정되었습니다.')
+
+      const priceChanged = price !== editing.price_vat_incl
+      const costChanged = cost !== editing.current_cost
+      if (priceChanged || costChanged) {
+        type AffectedRow = {
+          id: string
+          item_name: string | null
+          unit_price_snapshot: number
+          unit_cost_snapshot: number
+          projects: { name: string; status: string } | null
+        }
+        const { data: affected } = await supabase
+          .from('project_items')
+          .select('id, item_name, unit_price_snapshot, unit_cost_snapshot, projects(name, status)')
+          .eq('product_id', editing.id)
+        const rows = (affected as unknown as AffectedRow[]) ?? []
+        if (rows.length > 0) {
+          setBatchItems(rows.map((r) => ({
+            id: r.id,
+            item_name: r.item_name,
+            project_name: r.projects?.name ?? '-',
+            project_status: r.projects?.status ?? '-',
+            old_price: r.unit_price_snapshot,
+            old_cost: r.unit_cost_snapshot,
+            new_price: price,
+            new_cost: cost,
+            selected: true,
+          })))
+          setDialogOpen(false)
+          setBatchDialog(true)
+          load()
+          return
+        }
+      }
     } else {
       const { data, error } = await supabase
         .from('products')
@@ -140,6 +187,20 @@ export default function ProductsPage() {
   async function handleDeactivate(id: string) {
     await supabase.from('products').update({ active: false }).eq('id', id)
     toast.success('상품이 비활성화되었습니다.')
+    load()
+  }
+
+  async function handleBatchUpdate() {
+    const targets = batchItems.filter((b) => b.selected)
+    if (targets.length === 0) { setBatchDialog(false); return }
+    for (const t of targets) {
+      await supabase.from('project_items').update({
+        unit_price_snapshot: t.new_price,
+        unit_cost_snapshot: t.new_cost,
+      }).eq('id', t.id)
+    }
+    toast.success(`${targets.length}개 항목의 단가가 업데이트되었습니다.`)
+    setBatchDialog(false)
     load()
   }
 
@@ -341,6 +402,70 @@ export default function ProductsPage() {
               ))}
             </TableBody>
           </Table>
+        </DialogContent>
+      </Dialog>
+
+      {/* 기존 프로젝트 단가 일괄 업데이트 다이얼로그 */}
+      <Dialog open={batchDialog} onOpenChange={setBatchDialog}>
+        <DialogContent className="max-w-2xl max-h-[80dvh] flex flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>기존 프로젝트 단가 업데이트</DialogTitle>
+            <p className="text-sm text-gray-500 mt-1">
+              이 상품이 적용된 프로젝트 항목입니다. 업데이트할 항목을 선택하세요.
+            </p>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto">
+            <div className="flex items-center gap-2 px-1 py-2 border-b">
+              <input
+                type="checkbox"
+                checked={batchItems.every((b) => b.selected)}
+                onChange={(e) => setBatchItems((prev) => prev.map((b) => ({ ...b, selected: e.target.checked })))}
+                className="h-4 w-4"
+              />
+              <span className="text-xs font-medium text-gray-500">전체 선택</span>
+            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-8"></TableHead>
+                  <TableHead>프로젝트</TableHead>
+                  <TableHead>항목명</TableHead>
+                  <TableHead className="text-right">현재 판매가</TableHead>
+                  <TableHead className="text-right">새 판매가</TableHead>
+                  <TableHead className="text-right">현재 원가</TableHead>
+                  <TableHead className="text-right">새 원가</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {batchItems.map((b) => (
+                  <TableRow key={b.id} className={b.selected ? '' : 'opacity-40'}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        checked={b.selected}
+                        onChange={(e) => setBatchItems((prev) => prev.map((x) => x.id === b.id ? { ...x, selected: e.target.checked } : x))}
+                        className="h-4 w-4"
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium text-sm">{b.project_name}</div>
+                      <div className="text-xs text-gray-400">{b.project_status === 'ongoing' ? '진행중' : b.project_status === 'completed' ? '완료' : '취소'}</div>
+                    </TableCell>
+                    <TableCell className="text-sm">{b.item_name ?? '-'}</TableCell>
+                    <TableCell className="text-right text-sm text-gray-400">{formatKRW(b.old_price)}</TableCell>
+                    <TableCell className="text-right text-sm font-medium text-blue-600">{formatKRW(b.new_price)}</TableCell>
+                    <TableCell className="text-right text-sm text-gray-400">{formatKRW(b.old_cost)}</TableCell>
+                    <TableCell className="text-right text-sm font-medium text-orange-600">{formatKRW(b.new_cost)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <DialogFooter className="border-t pt-3">
+            <span className="text-xs text-gray-400 mr-auto">{batchItems.filter((b) => b.selected).length}개 선택됨</span>
+            <Button variant="outline" onClick={() => setBatchDialog(false)}>건너뛰기</Button>
+            <Button onClick={handleBatchUpdate}>선택 항목 업데이트</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
