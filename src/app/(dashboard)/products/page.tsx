@@ -134,24 +134,22 @@ export default function ProductsPage() {
       const priceChanged = price !== editing.price_vat_incl
       const costChanged = cost !== editing.current_cost
       if (priceChanged || costChanged) {
-        type AffectedRow = {
-          id: string
-          item_name: string | null
-          unit_price_snapshot: number
-          unit_cost_snapshot: number
-          projects: { name: string; status: string } | null
-        }
-        const { data: affected } = await supabase
+        const { data: affectedItems } = await supabase
           .from('project_items')
-          .select('id, item_name, unit_price_snapshot, unit_cost_snapshot, projects(name, status)')
+          .select('id, item_name, unit_price_snapshot, unit_cost_snapshot, project_id')
           .eq('product_id', editing.id)
-        const rows = (affected as unknown as AffectedRow[]) ?? []
-        if (rows.length > 0) {
-          setBatchItems(rows.map((r) => ({
+        if (affectedItems && affectedItems.length > 0) {
+          const projectIds = [...new Set(affectedItems.map((r) => r.project_id).filter(Boolean))] as string[]
+          const { data: projectsData } = await supabase
+            .from('projects')
+            .select('id, name, status')
+            .in('id', projectIds)
+          const projectMap = Object.fromEntries((projectsData ?? []).map((p) => [p.id, p]))
+          setBatchItems(affectedItems.map((r) => ({
             id: r.id,
             item_name: r.item_name,
-            project_name: r.projects?.name ?? '-',
-            project_status: r.projects?.status ?? '-',
+            project_name: projectMap[r.project_id ?? '']?.name ?? '-',
+            project_status: projectMap[r.project_id ?? '']?.status ?? '-',
             old_price: r.unit_price_snapshot,
             old_cost: r.unit_cost_snapshot,
             new_price: price,
