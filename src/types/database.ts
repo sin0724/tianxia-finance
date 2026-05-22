@@ -64,9 +64,9 @@ export interface Database {
         Relationships: []
       }
       monthly_expenses: {
-        Row: { id: string; year: number; month: number; category_id: string | null; amount: number; memo: string | null; created_at: string }
-        Insert: { id?: string; year: number; month: number; category_id?: string | null; amount: number; memo?: string | null; created_at?: string }
-        Update: { id?: string; year?: number; month?: number; category_id?: string | null; amount?: number; memo?: string | null; created_at?: string }
+        Row: { id: string; year: number; month: number; category_id: string | null; item_name: string | null; parent_type: string | null; amount: number; memo: string | null; created_at: string }
+        Insert: { id?: string; year: number; month: number; category_id?: string | null; item_name?: string | null; parent_type?: string | null; amount: number; memo?: string | null; created_at?: string }
+        Update: { id?: string; year?: number; month?: number; category_id?: string | null; item_name?: string | null; parent_type?: string | null; amount?: number; memo?: string | null; created_at?: string }
         Relationships: []
       }
       monthly_incentives: {
