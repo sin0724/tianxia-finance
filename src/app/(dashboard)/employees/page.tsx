@@ -18,6 +18,7 @@ type PayrollRow = MonthlyPayroll & { employees: { name: string } | null }
 type PayFormEntry = {
   base_salary: string
   deductions: string
+  incentive_deductions: string
   net_pay: string
   work_hours: string
   paid_at: string
@@ -82,6 +83,7 @@ export default function EmployeesPage() {
         forms[emp.id] = {
           base_salary: String(existing.base_salary),
           deductions: String(existing.deductions),
+          incentive_deductions: String(existing.incentive_deductions ?? 0),
           net_pay: String(existing.net_pay),
           work_hours: String(existing.work_hours ?? 0),
           paid_at: existing.paid_at ?? '',
@@ -90,6 +92,7 @@ export default function EmployeesPage() {
         forms[emp.id] = {
           base_salary: '0',
           deductions: '0',
+          incentive_deductions: '0',
           net_pay: '0',
           work_hours: '0',
           paid_at: '',
@@ -98,6 +101,7 @@ export default function EmployeesPage() {
         forms[emp.id] = {
           base_salary: String(emp.base_salary),
           deductions: '0',
+          incentive_deductions: '0',
           net_pay: String(emp.base_salary),
           work_hours: '0',
           paid_at: '',
@@ -194,19 +198,22 @@ export default function EmployeesPage() {
     if (!f) return
     const base = parseFloat(f.base_salary) || 0
     const ded = parseFloat(f.deductions) || 0
+    const incentiveDed = parseFloat(f.incentive_deductions) || 0
     const net = parseFloat(f.net_pay) || 0
     const hours = parseFloat(f.work_hours) || 0
 
     const existing = payrollRows.find((r) => r.employee_id === empId)
     if (existing) {
       const { error } = await supabase.from('monthly_payroll').update({
-        base_salary: base, deductions: ded, net_pay: net, work_hours: hours, paid_at: f.paid_at || null,
+        base_salary: base, deductions: ded, incentive_deductions: incentiveDed,
+        net_pay: net, work_hours: hours, paid_at: f.paid_at || null,
       }).eq('id', existing.id)
       if (error) { toast.error('수정 실패'); return }
     } else {
       const { error } = await supabase.from('monthly_payroll').insert({
         year: payYear, month: payMonth, employee_id: empId,
-        base_salary: base, deductions: ded, net_pay: net, work_hours: hours, paid_at: f.paid_at || null,
+        base_salary: base, deductions: ded, incentive_deductions: incentiveDed,
+        net_pay: net, work_hours: hours, paid_at: f.paid_at || null,
       })
       if (error) { toast.error('저장 실패'); return }
     }
@@ -360,8 +367,9 @@ export default function EmployeesPage() {
               <TableRow>
                 <TableHead>직원</TableHead>
                 <TableHead className="text-right">근무시간 / 기본급</TableHead>
-                <TableHead className="text-right">공제액</TableHead>
+                <TableHead className="text-right">공제액 (기본)</TableHead>
                 <TableHead className="text-right">실수령액</TableHead>
+                <TableHead className="text-right">인센티브 공제</TableHead>
                 <TableHead>지급일</TableHead>
                 <TableHead></TableHead>
               </TableRow>
@@ -371,6 +379,7 @@ export default function EmployeesPage() {
                 const f = payForms[emp.id] ?? {
                   base_salary: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary),
                   deductions: '0',
+                  incentive_deductions: '0',
                   net_pay: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary),
                   work_hours: '0',
                   paid_at: '',
@@ -441,6 +450,15 @@ export default function EmployeesPage() {
                         className="h-8 text-sm text-right"
                         value={f.net_pay}
                         onChange={(e) => updatePayForm(emp.id, 'net_pay', e.target.value)}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        type="number"
+                        className="h-8 text-sm text-right"
+                        placeholder="0"
+                        value={f.incentive_deductions}
+                        onChange={(e) => updatePayForm(emp.id, 'incentive_deductions', e.target.value)}
                       />
                     </TableCell>
                     <TableCell>
