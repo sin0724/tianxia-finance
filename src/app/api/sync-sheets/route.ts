@@ -77,6 +77,7 @@ export async function POST(request: Request) {
     let unmatched = 0     // 클라이언트명 없어서 미매칭
     let pending = 0       // 잔금 처리 요망
     let created = 0       // 자동 생성된 프로젝트 수
+    const errors: { row: number; reason: string }[] = []
 
     for (const row of rows) {
       const externalId = makeExternalId(row)
@@ -116,7 +117,7 @@ export async function POST(request: Request) {
           clientId = exactClient.id
         } else {
           // 신규 클라이언트 자동 생성
-          const { data: newClient } = await supabase
+          const { data: newClient, error: clientErr } = await supabase
             .from('clients')
             .insert({
               name: row.clientName,
@@ -125,7 +126,9 @@ export async function POST(request: Request) {
             })
             .select('id')
             .single()
-          if (newClient) {
+          if (clientErr) {
+            errors.push({ row: row.rowIndex, reason: `클라이언트 생성 실패: ${clientErr.message}` })
+          } else if (newClient) {
             clientId = newClient.id
             clientList.push({ id: newClient.id, name: row.clientName })
           }
@@ -148,7 +151,7 @@ export async function POST(request: Request) {
             matched = true
           } else {
             // 진행중 프로젝트 없음 → 신규·재계약으로 판단해 프로젝트 자동 생성
-            const { data: newProject } = await supabase
+            const { data: newProject, error: projErr } = await supabase
               .from('projects')
               .insert({
                 client_id: clientId,
@@ -159,7 +162,9 @@ export async function POST(request: Request) {
               })
               .select('id')
               .single()
-            if (newProject) {
+            if (projErr) {
+              errors.push({ row: row.rowIndex, reason: `프로젝트 생성 실패: ${projErr.message}` })
+            } else if (newProject) {
               projectId = newProject.id
               matched = true
               created++
@@ -187,9 +192,9 @@ export async function POST(request: Request) {
         row.status === '잔금처리요망' ? '잔금' :
         row.status === '미입금' ? '기타' : null
 
-      await supabase.from('payments').insert({
+      const { error: insertErr } = await supabase.from('payments').insert({
         project_id: projectId,
-        amount: row.amount,       // G열 = 총 계약금액 (입금 예정액)
+        amount: row.amount,
         payment_date: row.date,
         payment_type: paymentType,
         manager: row.manager || null,
@@ -200,7 +205,18 @@ export async function POST(request: Request) {
         matched,
       })
 
-      synced++
+      if (insertErr) {
+        errors.push({ row: row.rowIndex, reason: `결제 저장 실패: ${insertErr.message}` })
+        // 중복 키 에러는 이미 DB에 있는 것으로 처리 (외부 id 중복)
+        if (!insertErr.message.includes('duplicate') && !insertErr.message.includes('unique')) {
+          unmatched = Math.max(0, unmatched - (matched ? 0 : 1))
+        }
+      } else {
+        synced++
+        // 새로 추가된 항목을 softDupSet에 추가해 루프 내 중복 방지
+        if (softKey) softDupSet.add(softKey)
+        existingIds.add(externalId)
+      }
     }
 
     return Response.json({
@@ -209,6 +225,7 @@ export async function POST(request: Request) {
       unmatched,
       pending,
       created,
+      errors: errors.length > 0 ? errors : undefined,
       total: rows.length,
       timestamp: new Date().toISOString(),
     })

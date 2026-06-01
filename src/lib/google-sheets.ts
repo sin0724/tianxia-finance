@@ -105,11 +105,17 @@ function parseDate(raw: string): string | null {
 }
 
 /**
- * external_id 생성: 날짜 + 상호명 + 금액 내용 기반 (행 번호 미사용)
- * 행이 추가/삭제돼도 기존 데이터 중복 삽입 방지
+ * external_id 생성: 날짜 + 상호명 + 금액 + 메모 + 담당자 기반 (행 번호 미사용)
+ * 메모/담당자를 포함해 같은 날 동일 금액 중복 계약도 구분 가능
  */
 export function makeExternalId(row: SheetRow): string {
-  const key = `${row.date}_${row.clientName}_${row.amount}`
-  // 한글·공백 안전하게 처리
-  return `sheet_${key.replace(/\s+/g, '-')}`
+  const normalize = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '-')
+  const key = [
+    row.date,
+    normalize(row.clientName),
+    String(row.amount),
+    normalize(row.memo),
+    normalize(row.manager),
+  ].join('_')
+  return `sheet_${key}`
 }

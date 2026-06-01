@@ -45,7 +45,7 @@ export default function PaymentsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Payment | null>(null)
   const [form, setForm] = useState({
-    project_id: '', amount: '', payment_date: '',
+    project_id: '', client_name: '', amount: '', payment_date: '',
     payment_type: '' as Payment['payment_type'], manager: '', memo: '',
   })
 
@@ -137,7 +137,7 @@ export default function PaymentsPage() {
   function openAdd() {
     setEditing(null)
     setForm({
-      project_id: '', amount: '',
+      project_id: '', client_name: '', amount: '',
       payment_date: new Date().toISOString().split('T')[0],
       payment_type: null, manager: '', memo: '',
     })
@@ -148,6 +148,7 @@ export default function PaymentsPage() {
     setEditing(p)
     setForm({
       project_id: p.project_id ?? '',
+      client_name: p.client_name_raw ?? '',
       amount: String(p.amount),
       payment_date: p.payment_date,
       payment_type: p.payment_type,
@@ -163,15 +164,73 @@ export default function PaymentsPage() {
       toast.error('날짜와 금액은 필수입니다.')
       return
     }
+
+    let projectId = form.project_id || null
+    let matched = !!form.project_id
+    const clientNameRaw = form.client_name.trim() || null
+
+    // 프로젝트 미선택 + 상호명 입력 시 클라이언트·프로젝트 자동 생성
+    if (!projectId && clientNameRaw && !editing) {
+      // 1. 클라이언트 찾기 또는 생성
+      const { data: existingClient } = await supabase
+        .from('clients')
+        .select('id')
+        .ilike('name', clientNameRaw)
+        .limit(1)
+        .maybeSingle()
+
+      let clientId = existingClient?.id ?? null
+      if (!clientId) {
+        const { data: newClient, error: clientErr } = await supabase
+          .from('clients')
+          .insert({ name: clientNameRaw, manager: form.manager || null })
+          .select('id')
+          .single()
+        if (clientErr) { toast.error(`클라이언트 생성 실패: ${clientErr.message}`); return }
+        clientId = newClient?.id ?? null
+      }
+
+      // 2. 진행중 프로젝트 찾기 또는 생성
+      if (clientId) {
+        const { data: ongoing } = await supabase
+          .from('projects')
+          .select('id')
+          .eq('client_id', clientId)
+          .eq('status', 'ongoing')
+          .order('created_at', { ascending: false })
+          .limit(1)
+
+        if (ongoing && ongoing.length > 0) {
+          projectId = ongoing[0].id
+        } else {
+          const { data: newProj, error: projErr } = await supabase
+            .from('projects')
+            .insert({
+              client_id: clientId,
+              name: clientNameRaw,
+              total_amount: amount,
+              contract_date: form.payment_date,
+              status: 'ongoing',
+            })
+            .select('id')
+            .single()
+          if (projErr) { toast.error(`프로젝트 생성 실패: ${projErr.message}`); return }
+          projectId = newProj?.id ?? null
+        }
+        matched = !!projectId
+      }
+    }
+
     const payload = {
-      project_id: form.project_id || null,
+      project_id: projectId,
       amount,
       payment_date: form.payment_date,
       payment_type: form.payment_type,
       manager: form.manager || null,
       memo: form.memo || null,
       source: 'manual' as const,
-      matched: !!form.project_id,
+      matched,
+      client_name_raw: clientNameRaw,
     }
     if (editing) {
       const { error } = await supabase.from('payments').update(payload).eq('id', editing.id)
@@ -180,7 +239,7 @@ export default function PaymentsPage() {
     } else {
       const { error } = await supabase.from('payments').insert(payload)
       if (error) { toast.error(error.message); return }
-      toast.success('결제가 추가되었습니다.')
+      toast.success(matched ? '결제가 추가되었습니다.' : '결제가 추가되었습니다. (프로젝트 연결 필요)')
     }
     setDialogOpen(false)
     load()
@@ -741,7 +800,15 @@ export default function PaymentsPage() {
               <Input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
             </div>
             <div className="space-y-1">
-              <Label>프로젝트 연결</Label>
+              <Label>상호명</Label>
+              <Input
+                placeholder="입력 시 클라이언트·프로젝트 자동 생성"
+                value={form.client_name}
+                onChange={(e) => setForm({ ...form, client_name: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>프로젝트 연결 {!form.client_name && <span className="text-gray-400 text-xs">(상호명 입력 시 자동 연결)</span>}</Label>
               <select className="w-full border rounded-md px-3 py-2 text-sm" value={form.project_id}
                 onChange={(e) => setForm({ ...form, project_id: e.target.value })}>
                 <option value="">연결 안함</option>
