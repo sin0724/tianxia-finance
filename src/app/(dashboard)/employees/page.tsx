@@ -53,6 +53,7 @@ export default function EmployeesPage() {
   const [payYear, setPayYear] = useState(now.getFullYear())
   const [payMonth, setPayMonth] = useState(now.getMonth() + 1)
   const [payrollRows, setPayrollRows] = useState<PayrollRow[]>([])
+  const [terminatedPayrollRows, setTerminatedPayrollRows] = useState<PayrollRow[]>([])
   const [payForms, setPayForms] = useState<Record<string, PayFormEntry>>({})
 
   async function load() {
@@ -67,12 +68,17 @@ export default function EmployeesPage() {
       .select('*, employees(name)')
       .eq('year', payYear)
       .eq('month', payMonth)
-    setPayrollRows((data as unknown as PayrollRow[]) ?? [])
+    const allPayroll = (data as unknown as PayrollRow[]) ?? []
+    setPayrollRows(allPayroll)
 
     const { data: emps } = await supabase.from('employees').select('*').eq('active', true).order('name')
     const empList = emps ?? []
+
+    const activeIds = new Set(empList.map((e) => e.id))
+    setTerminatedPayrollRows(allPayroll.filter((r) => r.employee_id && !activeIds.has(r.employee_id)))
+
     const existingMap: Record<string, PayrollRow> = {}
-    for (const r of (data as unknown as PayrollRow[]) ?? []) {
+    for (const r of allPayroll) {
       if (r.employee_id) existingMap[r.employee_id] = r
     }
 
@@ -359,7 +365,7 @@ export default function EmployeesPage() {
           </div>
         </div>
 
-        {employees.length === 0 ? (
+        {employees.length === 0 && terminatedPayrollRows.length === 0 ? (
           <div className="text-center py-8 text-gray-400 text-sm">등록된 직원이 없습니다.</div>
         ) : (
           <Table>
@@ -477,6 +483,33 @@ export default function EmployeesPage() {
                   </TableRow>
                 )
               })}
+              {terminatedPayrollRows.length > 0 && (
+                <>
+                  <TableRow>
+                    <TableCell colSpan={7} className="bg-gray-50 py-1.5 px-3 text-xs text-gray-400 font-medium border-t">
+                      퇴사 직원 기록 (읽기 전용)
+                    </TableCell>
+                  </TableRow>
+                  {terminatedPayrollRows.map((row) => (
+                    <TableRow key={row.id} className="opacity-60 bg-gray-50/50">
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-1.5">
+                          {row.employees?.name ?? '(알 수 없음)'}
+                          <Badge variant="outline" className="text-xs py-0 text-gray-400">퇴사</Badge>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right text-sm text-gray-600">
+                        {(row.work_hours ?? 0) > 0 ? `${row.work_hours}h · ` : ''}{formatKRW(row.base_salary)}
+                      </TableCell>
+                      <TableCell className="text-right text-sm text-gray-600">{formatKRW(row.deductions)}</TableCell>
+                      <TableCell className="text-right text-sm text-gray-600">{formatKRW(row.net_pay)}</TableCell>
+                      <TableCell className="text-right text-sm text-gray-600">{formatKRW(row.incentive_deductions ?? 0)}</TableCell>
+                      <TableCell className="text-sm text-gray-600">{row.paid_at ?? '-'}</TableCell>
+                      <TableCell />
+                    </TableRow>
+                  ))}
+                </>
+              )}
             </TableBody>
           </Table>
         )}
