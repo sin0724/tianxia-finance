@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { formatKRW } from '@/lib/calculations/settlement'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line, Legend, ReferenceLine,
 } from 'recharts'
 import type { MonthlySettlement } from '@/types/database'
 import Link from 'next/link'
@@ -16,7 +17,14 @@ import { toast } from 'sonner'
 
 const MONTH_LABELS = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
 
+const CURVE_COLORS = [
+  '#3b82f6', '#ef4444', '#22c55e', '#f59e0b',
+  '#8b5cf6', '#ec4899', '#14b8a6', '#f97316',
+  '#6366f1', '#10b981', '#e11d48', '#0ea5e9',
+]
+
 type DashAlert = { id: string; message: string; href: string; level: 'warn' | 'info' }
+type PeriodRow = { month: string; 초순: number; 중순: number; 후순: number }
 
 
 export default function DashboardPage() {
@@ -38,6 +46,12 @@ export default function DashboardPage() {
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
   const [permanentDismissed, setPermanentDismissed] = useState<Set<string>>(new Set())
   const [alertsOpen, setAlertsOpen] = useState(true)
+
+  const [periodData, setPeriodData]           = useState<PeriodRow[]>([])
+  const [curveData, setCurveData]             = useState<Record<string, number>[]>([])
+  const [availableMonths, setAvailableMonths] = useState<number[]>([])
+  const [activeCurveMonths, setActiveCurveMonths] = useState<number[]>([])
+  const lastCurveYearRef = useRef<number | null>(null)
 
   // ── 동기화 ────────────────────────────────────────────────
   const [syncing, setSyncing]             = useState(false)
@@ -116,6 +130,61 @@ export default function DashboardPage() {
       .filter((p) => p.projects?.status !== 'cancelled')
       .reduce((s, p) => s + p.amount, 0))
 
+
+    // ── 초·중·후순 / 누적 추이 차트 ────────────────────────
+    const { data: yrRaw } = await supabase
+      .from('payments')
+      .select('payment_date, amount, memo, projects(status)')
+      .gte('payment_date', `${selYear}-01-01`)
+      .lte('payment_date', `${selYear}-12-31`)
+
+    type YrRow = { payment_date: string; amount: number; memo: string | null; projects: { status: string } | null }
+    const yrFiltered = ((yrRaw as unknown as YrRow[]) ?? [])
+      .filter((p) => p.amount > 0)
+      .filter((p) => !p.memo?.includes('🚫 집계 제외'))
+      .filter((p) => !p.memo?.includes('⚠ 잔금 처리 요망') && !p.memo?.includes('🔴 미입금'))
+      .filter((p) => p.projects?.status !== 'cancelled')
+
+    const periodAgg: Record<number, { 초순: number; 중순: number; 후순: number }> = {}
+    for (let m = 1; m <= 12; m++) periodAgg[m] = { 초순: 0, 중순: 0, 후순: 0 }
+    for (const p of yrFiltered) {
+      const [, mStr, dStr] = p.payment_date.split('-')
+      const m = Number(mStr), day = Number(dStr)
+      const period = day <= 10 ? '초순' : day <= 20 ? '중순' : '후순'
+      periodAgg[m][period] += p.amount
+    }
+    setPeriodData(Array.from({ length: 12 }, (_, i) => ({
+      month: MONTH_LABELS[i],
+      초순: periodAgg[i + 1].초순,
+      중순: periodAgg[i + 1].중순,
+      후순: periodAgg[i + 1].후순,
+    })).filter((r) => r.초순 + r.중순 + r.후순 > 0))
+
+    const dailyAgg: Record<number, Record<number, number>> = {}
+    for (const p of yrFiltered) {
+      const [, mStr, dStr] = p.payment_date.split('-')
+      const m = Number(mStr), day = Number(dStr)
+      if (!dailyAgg[m]) dailyAgg[m] = {}
+      dailyAgg[m][day] = (dailyAgg[m][day] ?? 0) + p.amount
+    }
+    const yrMonths = Object.keys(dailyAgg).map(Number).sort((a, b) => a - b)
+    setAvailableMonths(yrMonths)
+    if (lastCurveYearRef.current !== selYear) {
+      lastCurveYearRef.current = selYear
+      setActiveCurveMonths(yrMonths.slice(-6))
+    }
+    setCurveData(Array.from({ length: 31 }, (_, i) => {
+      const day = i + 1
+      const row: Record<string, number> = { day }
+      for (const m of yrMonths) {
+        const lastDay = new Date(selYear, m, 0).getDate()
+        if (day > lastDay) continue
+        let cum = 0
+        for (let d = 1; d <= day; d++) cum += dailyAgg[m][d] ?? 0
+        row[`${m}월`] = cum
+      }
+      return row
+    }))
 
     // 알림 (현재 월일 때만) — ID에 연월 포함해 월별 영구 닫기 구분
     const ym = `${selYear}_${selMonth}`
@@ -443,6 +512,86 @@ export default function DashboardPage() {
           <CardContent className="py-8 text-center text-gray-400 text-sm">
             아직 정산 데이터가 없습니다.{' '}
             <Link href="/reports/monthly" className="underline text-blue-500">월별 정산</Link>에서 계산해주세요.
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── 초·중·후순 분포 차트 ── */}
+      {periodData.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>{selYear}년 초·중·후순 매출 분포</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={periodData} margin={{ top: 4, right: 20, left: 0, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${(v / 1000000).toFixed(0)}M`} />
+                <Tooltip formatter={(v) => formatKRW(Number(v))} />
+                <Legend />
+                <Bar dataKey="초순" name="초순 (1~10일)" fill="#3b82f6" radius={[3,3,0,0]} />
+                <Bar dataKey="중순" name="중순 (11~20일)" fill="#22c55e" radius={[3,3,0,0]} />
+                <Bar dataKey="후순" name="후순 (21일~말일)" fill="#f59e0b" radius={[3,3,0,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── 월별 누적 매출 추이 ── */}
+      {availableMonths.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+              <CardTitle className="flex-1">{selYear}년 월별 누적 매출 추이</CardTitle>
+              <div className="flex flex-wrap gap-1">
+                {availableMonths.map((m) => {
+                  const idx = availableMonths.indexOf(m)
+                  const active = activeCurveMonths.includes(m)
+                  return (
+                    <button
+                      key={m}
+                      onClick={() => setActiveCurveMonths((prev) =>
+                        prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m].sort((a, b) => a - b)
+                      )}
+                      className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                        active ? 'text-white' : 'bg-white text-gray-400 border-gray-200'
+                      }`}
+                      style={active ? { backgroundColor: CURVE_COLORS[idx % 12], borderColor: CURVE_COLORS[idx % 12] } : {}}
+                    >
+                      {m}월
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={curveData} margin={{ top: 4, right: 20, left: 0, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(v) => `${v}일`} ticks={[1, 10, 20, 31]} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${(v / 1000000).toFixed(0)}M`} />
+                <Tooltip
+                  formatter={(v, name) => [formatKRW(Number(v)), name]}
+                  labelFormatter={(label) => `${label}일`}
+                />
+                <ReferenceLine x={10} stroke="#e5e7eb" strokeDasharray="4 4" />
+                <ReferenceLine x={20} stroke="#e5e7eb" strokeDasharray="4 4" />
+                {availableMonths
+                  .filter((m) => activeCurveMonths.includes(m))
+                  .map((m) => (
+                    <Line
+                      key={m}
+                      type="monotone"
+                      dataKey={`${m}월`}
+                      stroke={CURVE_COLORS[availableMonths.indexOf(m) % 12]}
+                      strokeWidth={2}
+                      dot={false}
+                      connectNulls={false}
+                    />
+                  ))}
+              </LineChart>
+            </ResponsiveContainer>
           </CardContent>
         </Card>
       )}
