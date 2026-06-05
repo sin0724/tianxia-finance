@@ -22,13 +22,16 @@ type PayFormEntry = {
   net_pay: string
   work_hours: string
   paid_at: string
+  include_weekly_holiday: string
 }
 
-function calcPartTimePay(hours: number, hourlyWage: number) {
+function calcPartTimePay(hours: number, hourlyWage: number, includeHoliday = true) {
   const hourlyPay = Math.round(hours * hourlyWage)
   const weeklyAvgHours = hours / 4.345
-  const weeklyHolidayPay = weeklyAvgHours >= 15 ? Math.round(hourlyPay * 0.2) : 0
-  return { hourlyPay, weeklyHolidayPay, total: hourlyPay + weeklyHolidayPay, eligible: weeklyAvgHours >= 15 }
+  const eligible = weeklyAvgHours >= 15
+  const weeklyHolidayPay = eligible ? Math.round(hourlyPay * 0.2) : 0
+  const total = hourlyPay + (includeHoliday ? weeklyHolidayPay : 0)
+  return { hourlyPay, weeklyHolidayPay, total, eligible }
 }
 
 export default function EmployeesPage() {
@@ -99,6 +102,7 @@ export default function EmployeesPage() {
           net_pay: String(existing.net_pay),
           work_hours: String(existing.work_hours ?? 0),
           paid_at: existing.paid_at ?? '',
+          include_weekly_holiday: 'true',
         }
       } else if (emp.employee_type === 'part_time') {
         forms[emp.id] = {
@@ -108,6 +112,7 @@ export default function EmployeesPage() {
           net_pay: '0',
           work_hours: '0',
           paid_at: '',
+          include_weekly_holiday: 'true',
         }
       } else {
         forms[emp.id] = {
@@ -117,6 +122,7 @@ export default function EmployeesPage() {
           net_pay: String(emp.base_salary),
           work_hours: '0',
           paid_at: '',
+          include_weekly_holiday: 'true',
         }
       }
     }
@@ -186,9 +192,10 @@ export default function EmployeesPage() {
       const row = { ...prev[empId], [field]: value }
 
       if (emp?.employee_type === 'part_time') {
-        // 아르바이트: 시간수 또는 공제액 변경 시 재계산
+        // 아르바이트: 시간수·공제액·주휴 선택 변경 시 재계산
         const hours = parseFloat(field === 'work_hours' ? value : row.work_hours) || 0
-        const { total } = calcPartTimePay(hours, emp.hourly_wage ?? 0)
+        const includeHoliday = row.include_weekly_holiday !== 'false'
+        const { total } = calcPartTimePay(hours, emp.hourly_wage ?? 0, includeHoliday)
         row.base_salary = String(total)
         const ded = parseFloat(field === 'deductions' ? value : row.deductions) || 0
         row.net_pay = String(Math.max(0, total - ded))
@@ -395,6 +402,7 @@ export default function EmployeesPage() {
                   net_pay: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary),
                   work_hours: '0',
                   paid_at: '',
+                  include_weekly_holiday: 'true',
                 }
                 const isSaved = payrollMap[emp.id]
                 const isPartTime = emp.employee_type === 'part_time'
@@ -415,7 +423,8 @@ export default function EmployeesPage() {
                     <TableCell>
                       {isPartTime ? (() => {
                         const hours = parseFloat(f.work_hours) || 0
-                        const { hourlyPay, weeklyHolidayPay, total, eligible } = calcPartTimePay(hours, emp.hourly_wage ?? 0)
+                        const includeHoliday = f.include_weekly_holiday !== 'false'
+                        const { hourlyPay, weeklyHolidayPay, total, eligible } = calcPartTimePay(hours, emp.hourly_wage ?? 0, includeHoliday)
                         return (
                           <div className="space-y-0.5">
                             <div className="flex items-center gap-1">
@@ -429,11 +438,23 @@ export default function EmployeesPage() {
                               <span className="text-xs text-gray-400">h</span>
                             </div>
                             {hours > 0 && (
-                              <div className="text-xs text-gray-500 space-y-0.5 pl-1">
-                                <div>시급: {formatKRW(hourlyPay)}</div>
-                                <div className={eligible ? 'text-blue-600' : 'text-gray-300'}>
-                                  주휴: {eligible ? formatKRW(weeklyHolidayPay) : '미해당 (주 15h 미만)'}
-                                </div>
+                              <div className="text-xs space-y-0.5 pl-1">
+                                <div className="text-gray-500">시급: {formatKRW(hourlyPay)}</div>
+                                {eligible ? (
+                                  <label className="flex items-center gap-1 cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={includeHoliday}
+                                      onChange={(e) => updatePayForm(emp.id, 'include_weekly_holiday', e.target.checked ? 'true' : 'false')}
+                                      className="rounded"
+                                    />
+                                    <span className={includeHoliday ? 'text-blue-600' : 'text-gray-400'}>
+                                      주휴: {formatKRW(weeklyHolidayPay)}
+                                    </span>
+                                  </label>
+                                ) : (
+                                  <div className="text-gray-300">주휴: 미해당 (주 15h 미만)</div>
+                                )}
                                 <div className="font-medium text-gray-700">합계: {formatKRW(total)}</div>
                               </div>
                             )}
