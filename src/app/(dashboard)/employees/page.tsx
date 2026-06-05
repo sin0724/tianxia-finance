@@ -75,7 +75,13 @@ export default function EmployeesPage() {
     const empList = emps ?? []
 
     const activeIds = new Set(empList.map((e) => e.id))
-    setTerminatedPayrollRows(allPayroll.filter((r) => r.employee_id && !activeIds.has(r.employee_id)))
+    const terminatedMap = new Map<string, PayrollRow>()
+    for (const r of allPayroll) {
+      if (!r.employee_id || activeIds.has(r.employee_id)) continue
+      const existing = terminatedMap.get(r.employee_id)
+      if (!existing || r.created_at > existing.created_at) terminatedMap.set(r.employee_id, r)
+    }
+    setTerminatedPayrollRows([...terminatedMap.values()])
 
     const existingMap: Record<string, PayrollRow> = {}
     for (const r of allPayroll) {
