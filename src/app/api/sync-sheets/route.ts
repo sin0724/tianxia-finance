@@ -114,10 +114,13 @@ export async function POST(request: Request) {
       // external_id 접두어 매칭 — makeExternalId와 동일한 정규화로 날짜+상호명+금액까지만 비교.
       // 시트에서 입금완료로 바꾸며 특이사항·담당자를 함께 수정해 external_id 뒷부분이 달라져도
       // 같은 행으로 인식해 중복 생성을 막는다. (날짜·금액이 키에 남아 반복 결제는 오탐하지 않음)
+      // 구버전 external_id(`sheet_날짜_상호명_금액`, 접미사 없음)와 신버전(메모·담당자 포함) 모두 매칭
       const baseKey = row.clientName
-        ? `sheet_${row.date}_${normName(row.clientName)}_${row.amount}_`
+        ? `sheet_${row.date}_${normName(row.clientName)}_${row.amount}`
         : null
-      const baseDup = !!baseKey && existingExternalIds.some((id) => id.startsWith(baseKey))
+      const baseDup = !!baseKey && existingExternalIds.some(
+        (id) => id === baseKey || id.startsWith(`${baseKey}_`)
+      )
 
       // 수기 입력 항목과의 중복 — 날짜+상호명+금액으로 매칭
       const manualKey = row.clientName ? `${row.date}|${normName(row.clientName)}|${row.amount}` : null
