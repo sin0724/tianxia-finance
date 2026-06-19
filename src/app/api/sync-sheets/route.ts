@@ -55,6 +55,11 @@ export async function POST(request: Request) {
     const existingIds = new Set(
       (existingPayments ?? []).filter((p) => p.external_id).map((p) => p.external_id)
     )
+    // external_id 접두어(날짜+상호명+금액) 목록 — 메모·담당자가 수정돼도 같은 시트 행임을 인식
+    // 앱에서 입금 확정 시 payment_date·금액·메모가 바뀌어 softKey 매칭이 깨지는 경우를 보완
+    const existingExternalIds = (existingPayments ?? [])
+      .map((p) => p.external_id)
+      .filter((id): id is string => !!id)
     // 날짜+상호명+금액+메모 기준 soft 중복 방지 — 메모 포함으로 재계약·추가계약 구분 가능
     const softDupSet = new Set(
       (existingPayments ?? [])
@@ -63,6 +68,15 @@ export async function POST(request: Request) {
           const memoClean = (p.memo ?? '').toLowerCase().replace(/\s+/g, '')
           return `${p.payment_date}|${(p.client_name_raw ?? '').toLowerCase().replace(/\s+/g, '')}|${p.amount}|${memoClean}`
         })
+    )
+    // 수기 입력(수금예정 추가 등 external_id 없는) 항목과 시트 행이 겹칠 때 중복 방지.
+    // 메모를 뺀 날짜+상호명+금액으로 매칭 — 수기 메모와 시트 메모가 달라도 같은 건으로 인식.
+    // external_id 있는 항목은 제외하므로 시트끼리의 재계약·추가계약 구분에는 영향 없음.
+    const normName = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '-')
+    const manualDupSet = new Set(
+      (existingPayments ?? [])
+        .filter((p) => !p.external_id && p.client_name_raw)
+        .map((p) => `${p.payment_date}|${normName(p.client_name_raw ?? '')}|${p.amount}`)
     )
 
     // 클라이언트 목록 (매칭·자동생성용) — 동기화 중 생성된 항목도 누적
@@ -96,7 +110,20 @@ export async function POST(request: Request) {
       const softKey = row.clientName
         ? `${row.date}|${row.clientName.toLowerCase().replace(/\s+/g, '')}|${row.amount}|${dbMemoForKey}`
         : null
-      if (existingIds.has(externalId) || (softKey && softDupSet.has(softKey))) {
+
+      // external_id 접두어 매칭 — makeExternalId와 동일한 정규화로 날짜+상호명+금액까지만 비교.
+      // 시트에서 입금완료로 바꾸며 특이사항·담당자를 함께 수정해 external_id 뒷부분이 달라져도
+      // 같은 행으로 인식해 중복 생성을 막는다. (날짜·금액이 키에 남아 반복 결제는 오탐하지 않음)
+      const baseKey = row.clientName
+        ? `sheet_${row.date}_${normName(row.clientName)}_${row.amount}_`
+        : null
+      const baseDup = !!baseKey && existingExternalIds.some((id) => id.startsWith(baseKey))
+
+      // 수기 입력 항목과의 중복 — 날짜+상호명+금액으로 매칭
+      const manualKey = row.clientName ? `${row.date}|${normName(row.clientName)}|${row.amount}` : null
+      const manualDup = !!manualKey && manualDupSet.has(manualKey)
+
+      if (existingIds.has(externalId) || (softKey && softDupSet.has(softKey)) || baseDup || manualDup) {
         skipped++
         continue
       }
@@ -213,9 +240,10 @@ export async function POST(request: Request) {
         }
       } else {
         synced++
-        // 새로 추가된 항목을 softDupSet에 추가해 루프 내 중복 방지
+        // 새로 추가된 항목을 중복 검사 집합에 반영해 루프 내 중복 방지
         if (softKey) softDupSet.add(softKey)
         existingIds.add(externalId)
+        existingExternalIds.push(externalId)
       }
     }
 
