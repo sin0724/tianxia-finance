@@ -111,15 +111,20 @@ export async function POST(request: Request) {
         ? `${row.date}|${row.clientName.toLowerCase().replace(/\s+/g, '')}|${row.amount}|${dbMemoForKey}`
         : null
 
-      // external_id 접두어 매칭 — makeExternalId와 동일한 정규화로 날짜+상호명+금액까지만 비교.
-      // 시트에서 입금완료로 바꾸며 특이사항·담당자를 함께 수정해 external_id 뒷부분이 달라져도
-      // 같은 행으로 인식해 중복 생성을 막는다. (날짜·금액이 키에 남아 반복 결제는 오탐하지 않음)
-      // 구버전 external_id(`sheet_날짜_상호명_금액`, 접미사 없음)와 신버전(메모·담당자 포함) 모두 매칭
-      const baseKey = row.clientName
+      // external_id 접두어 매칭 — 같은 시트 행이 재동기화될 때 중복 생성 방지.
+      //  - 구버전 external_id(`sheet_날짜_상호_금액`, 접미사 없음)는 정확히 일치할 때만 중복 처리.
+      //  - 신버전은 메모까지 같을 때(담당자만 달라도) 같은 행으로 인식해 중복 생성을 막는다.
+      //  - 메모가 다르면 같은 날·같은 금액이라도 별개의 추가·재계약으로 보고 통과시킨다.
+      //    (과거에는 날짜+상호+금액만 비교해 같은 날 동일 금액의 추가계약이 누락되던 버그를 수정)
+      const baseKeyNoMemo = row.clientName
         ? `sheet_${row.date}_${normName(row.clientName)}_${row.amount}`
         : null
-      const baseDup = !!baseKey && existingExternalIds.some(
-        (id) => id === baseKey || id.startsWith(`${baseKey}_`)
+      const baseKeyWithMemo = baseKeyNoMemo ? `${baseKeyNoMemo}_${normName(row.memo)}` : null
+      const baseDup = !!baseKeyNoMemo && existingExternalIds.some(
+        (id) =>
+          id === baseKeyNoMemo ||                  // 구버전(접미사 없음) 정확 일치
+          id === baseKeyWithMemo ||                // 메모까지 동일
+          id.startsWith(`${baseKeyWithMemo}_`)     // 메모 동일 + 담당자만 다름
       )
 
       // 수기 입력 항목과의 중복 — 날짜+상호명+금액으로 매칭
@@ -164,31 +169,65 @@ export async function POST(request: Request) {
           }
         }
 
-        // 2. 프로젝트 찾기 — 진행중(ongoing)인 프로젝트만 연결
-        //    완료·취소 프로젝트만 있으면 재계약으로 판단해 새 프로젝트 생성
+        // 2. 프로젝트 찾기 / 생성
+        //    연결 우선순위: 잔여 결제가 남은 진행중 → 진행중(추가 결제) → 잔여 있는 완료(잔금)
+        //    셋 다 없으면 신규·재계약으로 판단해 프로젝트 자동 생성
         if (clientId) {
-          const { data: ongoingProjects } = await supabase
+          const { data: clientProjects } = await supabase
             .from('projects')
-            .select('id')
+            .select('id, status, total_amount')
             .eq('client_id', clientId)
-            .eq('status', 'ongoing')
+            .neq('status', 'cancelled')
             .order('created_at', { ascending: false })
-            .limit(1)
 
-          if (ongoingProjects && ongoingProjects.length > 0) {
-            // 진행중 프로젝트에 결제 연결
-            projectId = ongoingProjects[0].id
+          const projs = clientProjects ?? []
+
+          // 프로젝트별 입금 합계 (총액 갱신·잔여 판단용)
+          const paidByProject: Record<string, number> = {}
+          if (projs.length > 0) {
+            const { data: projPays } = await supabase
+              .from('payments')
+              .select('project_id, amount')
+              .in('project_id', projs.map((p) => p.id))
+            for (const pay of projPays ?? []) {
+              if (pay.project_id) {
+                paidByProject[pay.project_id] = (paidByProject[pay.project_id] ?? 0) + pay.amount
+              }
+            }
+          }
+
+          const ongoing = projs.filter((p) => p.status === 'ongoing')
+          const ongoingWithBalance = ongoing.filter((p) => (paidByProject[p.id] ?? 0) < p.total_amount)
+          const completedWithBalance = projs.filter(
+            (p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount
+          )
+
+          const target = ongoingWithBalance[0] ?? ongoing[0] ?? completedWithBalance[0] ?? null
+
+          if (target) {
+            // 기존 프로젝트에 결제 연결
+            projectId = target.id
             matched = true
+            // 누적 결제가 기존 계약금액을 넘으면 총액 상향 (분할 납부·추가 결제 반영)
+            const newPaidTotal = (paidByProject[target.id] ?? 0) + row.amount
+            if (newPaidTotal > target.total_amount) {
+              await supabase.from('projects').update({ total_amount: newPaidTotal }).eq('id', target.id)
+            }
           } else {
-            // 진행중 프로젝트 없음 → 신규·재계약으로 판단해 프로젝트 자동 생성
+            // 연결 가능한 프로젝트 없음 → 신규·재계약으로 판단해 프로젝트 자동 생성
+            const priorCount = projs.length            // 기존(비취소) 계약 수
+            const isRenewal = priorCount > 0
+            const projectName = isRenewal ? `${row.clientName} (재계약 ${priorCount}차)` : row.clientName
+
             const { data: newProject, error: projErr } = await supabase
               .from('projects')
               .insert({
                 client_id: clientId,
-                name: row.clientName,
+                name: projectName,
                 total_amount: row.amount,
                 contract_date: row.date,
                 status: 'ongoing',
+                memo: isRenewal ? '재계약 (자동 생성)' : null,
               })
               .select('id')
               .single()
@@ -198,6 +237,18 @@ export async function POST(request: Request) {
               projectId = newProject.id
               matched = true
               created++
+              // 재계약이면 직전 프로젝트의 구성 상품(실행비)을 복제해 실행비 누락 방지
+              if (isRenewal) {
+                const { data: prevItems } = await supabase
+                  .from('project_items')
+                  .select('product_id, item_name, quantity, unit_price_snapshot, unit_cost_snapshot')
+                  .eq('project_id', projs[0].id)
+                if (prevItems && prevItems.length > 0) {
+                  await supabase.from('project_items').insert(
+                    prevItems.map((it) => ({ ...it, project_id: newProject.id }))
+                  )
+                }
+              }
             }
           }
         }
