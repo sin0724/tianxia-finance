@@ -1,6 +1,6 @@
 import { google } from 'googleapis'
 
-export type PaymentStatus = '입금완료' | '잔금처리요망' | '미입금'
+export type PaymentStatus = '입금완료' | '잔금처리요망' | '미입금' | '추가계약'
 
 export type SheetRow = {
   rowIndex: number       // 시트 내 행 번호 (1-based, 헤더 제외)
@@ -78,6 +78,8 @@ export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[
 function normalizeStatus(raw: string): PaymentStatus {
   if (/미입금/.test(raw)) return '미입금'
   if (/잔금/.test(raw)) return '잔금처리요망'
+  // '추가/재계약' — 진행 중인 업체라도 별도 계약 입금으로 처리 (새 프로젝트로 분리)
+  if (/추가|재계약/.test(raw)) return '추가계약'
   if (/입금완료|완료|완납/.test(raw)) return '입금완료'
   return '입금완료'
 }

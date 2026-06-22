@@ -202,7 +202,12 @@ export async function POST(request: Request) {
             (p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount
           )
 
-          const target = ongoingWithBalance[0] ?? ongoing[0] ?? completedWithBalance[0] ?? null
+          // '추가계약' 상태면 진행 중인 프로젝트가 있어도 새 프로젝트로 분리
+          //  → 당월 매출과 실행비를 같은 달에 매칭 (이익 과대계상 방지)
+          const forceNewProject = row.status === '추가계약'
+          const target = forceNewProject
+            ? null
+            : (ongoingWithBalance[0] ?? ongoing[0] ?? completedWithBalance[0] ?? null)
 
           if (target) {
             // 기존 프로젝트에 결제 연결
@@ -217,7 +222,11 @@ export async function POST(request: Request) {
             // 연결 가능한 프로젝트 없음 → 신규·재계약으로 판단해 프로젝트 자동 생성
             const priorCount = projs.length            // 기존(비취소) 계약 수
             const isRenewal = priorCount > 0
-            const projectName = isRenewal ? `${row.clientName} (재계약 ${priorCount}차)` : row.clientName
+            const projectName = forceNewProject
+              ? `${row.clientName} (추가계약 ${priorCount}차)`
+              : isRenewal
+                ? `${row.clientName} (재계약 ${priorCount}차)`
+                : row.clientName
 
             const { data: newProject, error: projErr } = await supabase
               .from('projects')
@@ -227,7 +236,7 @@ export async function POST(request: Request) {
                 total_amount: row.amount,
                 contract_date: row.date,
                 status: 'ongoing',
-                memo: isRenewal ? '재계약 (자동 생성)' : null,
+                memo: forceNewProject ? '추가/재계약 (자동 생성)' : isRenewal ? '재계약 (자동 생성)' : null,
               })
               .select('id')
               .single()
