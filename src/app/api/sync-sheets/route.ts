@@ -170,8 +170,9 @@ export async function POST(request: Request) {
         }
 
         // 2. 프로젝트 찾기 / 생성
-        //    연결 우선순위: 잔여 결제가 남은 진행중 → 진행중(추가 결제) → 잔여 있는 완료(잔금)
-        //    셋 다 없으면 신규·재계약으로 판단해 프로젝트 자동 생성
+        //    연결 우선순위: 잔여 결제가 남은 진행중 → 잔여 있는 완료(잔금)
+        //    완납된 진행중 프로젝트엔 합치지 않는다 — 같은 클라이언트라도 별개 계약으로 보고
+        //    새 프로젝트를 자동 생성한다 (분할납부는 '잔금처리요망' 상태로 들어와 잔여가 남으므로 위에서 매칭됨)
         if (clientId) {
           const { data: clientProjects } = await supabase
             .from('projects')
@@ -205,9 +206,10 @@ export async function POST(request: Request) {
           // '추가계약' 상태면 진행 중인 프로젝트가 있어도 새 프로젝트로 분리
           //  → 당월 매출과 실행비를 같은 달에 매칭 (이익 과대계상 방지)
           const forceNewProject = row.status === '추가계약'
+          // 완납된 ongoing 프로젝트는 폴백 대상에서 제외 — 잔여가 남은 건에만 합친다
           const target = forceNewProject
             ? null
-            : (ongoingWithBalance[0] ?? ongoing[0] ?? completedWithBalance[0] ?? null)
+            : (ongoingWithBalance[0] ?? completedWithBalance[0] ?? null)
 
           if (target) {
             // 기존 프로젝트에 결제 연결

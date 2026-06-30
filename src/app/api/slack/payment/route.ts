@@ -102,28 +102,49 @@ async function findOrCreateClient(name: string, manager: string): Promise<string
   return created?.id ?? null
 }
 
-/** 진행중 프로젝트 조회 또는 신규 생성 */
+/**
+ * 프로젝트 조회 또는 신규 생성
+ * 잔여 결제가 남은 프로젝트(진행중 우선 → 완료의 잔금)에만 합친다.
+ * 완납된 프로젝트엔 붙이지 않고, 같은 클라이언트라도 별개 계약(재계약)으로 보고 새 프로젝트를 생성한다.
+ */
 async function findOrCreateProject(clientId: string, clientName: string, amount: number, date: string): Promise<{ id: string; isNew: boolean } | null> {
-  const { data: ongoing } = await supabase
+  const { data: projs } = await supabase
     .from('projects')
-    .select('id')
+    .select('id, status, total_amount')
     .eq('client_id', clientId)
-    .eq('status', 'ongoing')
+    .neq('status', 'cancelled')
     .order('created_at', { ascending: false })
-    .limit(1)
 
-  if (ongoing && ongoing.length > 0) {
-    return { id: ongoing[0].id, isNew: false }
+  const candidates = projs ?? []
+
+  if (candidates.length > 0) {
+    const { data: pays } = await supabase
+      .from('payments')
+      .select('project_id, amount')
+      .in('project_id', candidates.map((p) => p.id))
+
+    const paidByProject: Record<string, number> = {}
+    for (const pay of pays ?? []) {
+      if (pay.project_id) paidByProject[pay.project_id] = (paidByProject[pay.project_id] ?? 0) + pay.amount
+    }
+
+    const target =
+      candidates.find((p) => p.status === 'ongoing' && (paidByProject[p.id] ?? 0) < p.total_amount) ??
+      candidates.find((p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount)
+    if (target) return { id: target.id, isNew: false }
   }
 
+  // 잔여 있는 프로젝트 없음 → 신규/재계약으로 새 프로젝트 생성
+  const isRenewal = candidates.length > 0
   const { data: created, error } = await supabase
     .from('projects')
     .insert({
       client_id: clientId,
-      name: clientName,
+      name: isRenewal ? `${clientName} (재계약 ${candidates.length}차)` : clientName,
       total_amount: amount,
       contract_date: date,
       status: 'ongoing',
+      memo: isRenewal ? '재계약 (자동 생성)' : null,
     })
     .select('id')
     .single()

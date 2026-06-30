@@ -190,27 +190,46 @@ export default function PaymentsPage() {
         clientId = newClient?.id ?? null
       }
 
-      // 2. 진행중 프로젝트 찾기 또는 생성
+      // 2. 잔여 결제가 남은 프로젝트(진행중 우선 → 완료의 잔금)에만 합친다.
+      //    완납된 프로젝트엔 붙이지 않고, 같은 클라이언트라도 별개 계약(재계약)으로 보고 새로 생성.
       if (clientId) {
-        const { data: ongoing } = await supabase
+        const { data: projs } = await supabase
           .from('projects')
-          .select('id')
+          .select('id, status, total_amount')
           .eq('client_id', clientId)
-          .eq('status', 'ongoing')
+          .neq('status', 'cancelled')
           .order('created_at', { ascending: false })
-          .limit(1)
+        const candidates = projs ?? []
 
-        if (ongoing && ongoing.length > 0) {
-          projectId = ongoing[0].id
+        let target: { id: string } | null = null
+        if (candidates.length > 0) {
+          const { data: pays } = await supabase
+            .from('payments')
+            .select('project_id, amount')
+            .in('project_id', candidates.map((p) => p.id))
+          const paidByProject: Record<string, number> = {}
+          for (const pay of pays ?? []) {
+            if (pay.project_id) paidByProject[pay.project_id] = (paidByProject[pay.project_id] ?? 0) + pay.amount
+          }
+          target =
+            candidates.find((p) => p.status === 'ongoing' && (paidByProject[p.id] ?? 0) < p.total_amount) ??
+            candidates.find((p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount) ??
+            null
+        }
+
+        if (target) {
+          projectId = target.id
         } else {
+          const isRenewal = candidates.length > 0
           const { data: newProj, error: projErr } = await supabase
             .from('projects')
             .insert({
               client_id: clientId,
-              name: clientNameRaw,
+              name: isRenewal ? `${clientNameRaw} (재계약 ${candidates.length}차)` : clientNameRaw,
               total_amount: amount,
               contract_date: form.payment_date,
               status: 'ongoing',
+              memo: isRenewal ? '재계약 (자동 생성)' : null,
             })
             .select('id')
             .single()
