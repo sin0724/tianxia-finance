@@ -54,6 +54,12 @@ export default function ExpensesPage() {
   const [editItem, setEditItem]   = useState<ExpenseItem | null>(null)
   const [editName, setEditName]   = useState('')
 
+  // 지난달 복사 다이얼로그
+  const [copyOpen, setCopyOpen]           = useState(false)
+  const [copyTypes, setCopyTypes]         = useState<Set<'fixed' | 'variable' | 'special'>>(new Set(['fixed']))
+  const [copyWithAmount, setCopyWithAmount] = useState(true)
+  const [copying, setCopying]             = useState(false)
+
   async function load() {
     const { data } = await supabase
       .from('monthly_expenses')
@@ -167,38 +173,54 @@ export default function ExpensesPage() {
     toast.success('항목명이 수정되었습니다.')
   }
 
-  // ── 지난달 고정비 복사 ────────────────────────────────────
-  async function copyLastMonth() {
+  // ── 지난달 항목 복사 ─────────────────────────────────────
+  function openCopy() {
+    setCopyTypes(new Set(['fixed']))
+    setCopyWithAmount(true)
+    setCopyOpen(true)
+  }
+
+  async function confirmCopy() {
+    if (copyTypes.size === 0) { toast.error('복사할 지출 종류를 선택해주세요.'); return }
+
     const ly = month === 1 ? year - 1 : year
     const lm = month === 1 ? 12 : month - 1
 
+    setCopying(true)
     const { data: lastItems } = await supabase
       .from('monthly_expenses')
-      .select('*, expense_categories(is_recurring)')
+      .select('*')
       .eq('year', ly)
       .eq('month', lm)
 
     const existingCatIds = new Set(items.filter(i => i.category_id).map(i => i.category_id))
+    const existingNames = new Set(items.filter(i => !i.category_id).map(i => `${i.parent_type}:${i.item_name}`))
 
     const toInsert = (lastItems ?? [])
       .filter(e => {
-        const cat = e.expense_categories as unknown as { is_recurring: boolean } | null
-        if (!cat?.is_recurring) return false
-        if (e.category_id && existingCatIds.has(e.category_id)) return false
-        return true
+        if (!copyTypes.has((e.parent_type ?? 'fixed') as 'fixed' | 'variable' | 'special')) return false
+        if (e.category_id) return !existingCatIds.has(e.category_id)
+        return !existingNames.has(`${e.parent_type}:${e.item_name}`)
       })
       .map(e => ({
         year, month,
         category_id: e.category_id,
         item_name: e.item_name,
         parent_type: e.parent_type,
-        amount: e.amount,
+        amount: copyWithAmount ? e.amount : 0,
         memo: null,
       }))
 
-    if (toInsert.length === 0) { toast.info('복사할 고정비 항목이 없습니다.'); return }
-    await supabase.from('monthly_expenses').insert(toInsert)
-    toast.success('지난달 고정비가 복사되었습니다.')
+    if (toInsert.length === 0) {
+      setCopying(false)
+      toast.info('복사할 항목이 없습니다. (이미 등록된 항목은 제외됩니다)')
+      return
+    }
+    const { error } = await supabase.from('monthly_expenses').insert(toInsert)
+    setCopying(false)
+    if (error) { toast.error('복사 실패: ' + error.message); return }
+    setCopyOpen(false)
+    toast.success(`지난달 항목 ${toInsert.length}개가 복사되었습니다.`)
     load()
   }
 
@@ -227,8 +249,8 @@ export default function ExpensesPage() {
           <select className="border rounded-md px-3 py-2 text-sm" value={month} onChange={e => setMonth(Number(e.target.value))}>
             {Array.from({ length: 12 }, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}월</option>)}
           </select>
-          <Button variant="outline" size="sm" onClick={copyLastMonth}>
-            <Copy size={14} className="mr-1" />지난달 고정비 복사
+          <Button variant="outline" size="sm" onClick={openCopy}>
+            <Copy size={14} className="mr-1" />지난달 복사
           </Button>
         </div>
       </div>
@@ -336,6 +358,49 @@ export default function ExpensesPage() {
           {savingId === 'all' ? '저장 중...' : '전체 저장'}
         </Button>
       </div>
+
+      {/* 지난달 복사 다이얼로그 */}
+      <Dialog open={copyOpen} onOpenChange={setCopyOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>지난달 항목 복사</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1">
+              <Label>복사할 지출 종류</Label>
+              <div className="space-y-1">
+                {(['fixed', 'variable', 'special'] as const).map(type => (
+                  <label key={type} className="flex items-center gap-2 cursor-pointer py-1 px-2 rounded hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={copyTypes.has(type)}
+                      onChange={e => {
+                        const next = new Set(copyTypes)
+                        e.target.checked ? next.add(type) : next.delete(type)
+                        setCopyTypes(next)
+                      }}
+                    />
+                    <span className="text-sm">{TYPE_LABEL[type]}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer py-1 px-2 rounded hover:bg-gray-50 border-t pt-3">
+              <input
+                type="checkbox"
+                checked={copyWithAmount}
+                onChange={e => setCopyWithAmount(e.target.checked)}
+              />
+              <span className="text-sm">금액도 함께 복사</span>
+            </label>
+            <p className="text-xs text-gray-400">이번 달에 이미 등록된 항목은 제외하고 복사합니다.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCopyOpen(false)}>취소</Button>
+            <Button onClick={confirmCopy} disabled={copying}>{copying ? '복사 중...' : '복사'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 항목 추가 다이얼로그 */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
