@@ -18,6 +18,7 @@ type PayrollRow = {
   deductions: number
   incentive_deductions: number
   net_pay: number
+  gross_pay: number
   total_pay: number
   paid_at: string | null
 }
@@ -176,6 +177,7 @@ export default function PayrollPage() {
         deductions: p.deductions,
         incentive_deductions: incentiveDed,
         net_pay: p.net_pay,
+        gross_pay: p.base_salary + incentive,
         total_pay: p.net_pay + netIncentive,
         paid_at: p.paid_at,
       }
@@ -243,6 +245,7 @@ export default function PayrollPage() {
   const totalIncentiveDed   = rows.reduce((s, r) => s + r.incentive_deductions, 0)
   const totalDeduct         = rows.reduce((s, r) => s + r.deductions, 0)
   const totalNet            = rows.reduce((s, r) => s + r.net_pay, 0)
+  const totalGross          = rows.reduce((s, r) => s + r.gross_pay, 0)
   const totalPay            = rows.reduce((s, r) => s + r.total_pay, 0)
 
   async function handleExport() {
@@ -259,6 +262,7 @@ export default function PayrollPage() {
           직원명: r.name,
           기본급: r.base_salary,
           인센티브: r.incentive,
+          '총지급액_세전(기본+인센티브)': r.gross_pay,
           인센티브공제: r.incentive_deductions,
           공제액: r.deductions,
           '총지급액_공제후(기본+인센티브)': r.total_pay,
@@ -270,6 +274,7 @@ export default function PayrollPage() {
           직원명: '합계',
           기본급: totalBase,
           인센티브: totalIncentive,
+          '총지급액_세전(기본+인센티브)': totalGross,
           인센티브공제: totalIncentiveDed,
           공제액: totalDeduct,
           '총지급액_공제후(기본+인센티브)': totalPay,
@@ -280,7 +285,7 @@ export default function PayrollPage() {
       const ws = XLSX.utils.json_to_sheet(sheetRows)
       ws['!cols'] = [
         { wch: 6 }, { wch: 4 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
-        { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 12 },
+        { wch: 20 }, { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 12 },
       ]
       XLSX.utils.book_append_sheet(wb, ws, '급여대장')
       XLSX.writeFile(wb, `티엔샤_급여대장_${year}년_${month}월.xlsx`)
@@ -351,7 +356,7 @@ export default function PayrollPage() {
 
       {/* 요약 카드 */}
       {rows.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <Card>
             <CardHeader className="pb-1"><CardTitle className="text-xs text-gray-500">기본급 합계</CardTitle></CardHeader>
             <CardContent><div className="text-xl font-bold">{formatKRW(totalBase)}</div></CardContent>
@@ -359,6 +364,10 @@ export default function PayrollPage() {
           <Card className="border-blue-200 bg-blue-50">
             <CardHeader className="pb-1"><CardTitle className="text-xs text-blue-600">인센티브 합계</CardTitle></CardHeader>
             <CardContent><div className="text-xl font-bold text-blue-800">{formatKRW(totalIncentive)}</div></CardContent>
+          </Card>
+          <Card className="border-amber-200 bg-amber-50">
+            <CardHeader className="pb-1"><CardTitle className="text-xs text-amber-600">총 지급액 (세전)</CardTitle></CardHeader>
+            <CardContent><div className="text-xl font-bold text-amber-800">{formatKRW(totalGross)}</div></CardContent>
           </Card>
           <Card className="border-green-200 bg-green-50">
             <CardHeader className="pb-1"><CardTitle className="text-xs text-green-600">총 지급액 (공제 후)</CardTitle></CardHeader>
@@ -394,6 +403,10 @@ export default function PayrollPage() {
                     <IncentiveCell {...incentiveCellProps(r)} />
                   </div>
                   <div className="flex justify-between">
+                    <span className="text-gray-400">세전 합계</span>
+                    <span className="text-amber-700">{formatKRW(r.gross_pay)}</span>
+                  </div>
+                  <div className="flex justify-between">
                     <span className="text-gray-400">인센티브 공제</span>
                     <span className="text-red-500">{r.incentive_deductions > 0 ? `- ${formatKRW(r.incentive_deductions)}` : '-'}</span>
                   </div>
@@ -426,6 +439,10 @@ export default function PayrollPage() {
                   <span className="text-blue-600">{formatKRW(totalIncentive)}</span>
                 </div>
                 <div className="flex justify-between">
+                  <span className="text-gray-400">세전 합계</span>
+                  <span className="text-amber-700">{formatKRW(totalGross)}</span>
+                </div>
+                <div className="flex justify-between">
                   <span className="text-gray-400">인센티브 공제</span>
                   <span className="text-red-500">- {formatKRW(totalIncentiveDed)}</span>
                 </div>
@@ -451,6 +468,7 @@ export default function PayrollPage() {
               <TableHead>직원명</TableHead>
               <TableHead className="text-right">기본급</TableHead>
               <TableHead className="text-right">인센티브</TableHead>
+              <TableHead className="text-right">총 지급액 (세전)</TableHead>
               <TableHead className="text-right">인센티브 공제</TableHead>
               <TableHead className="text-right">공제액 (기본)</TableHead>
               <TableHead className="text-right">실수령액 (기본)</TableHead>
@@ -460,10 +478,10 @@ export default function PayrollPage() {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={8} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
+              <TableRow><TableCell colSpan={9} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-8 text-gray-400">
+                <TableCell colSpan={9} className="text-center py-8 text-gray-400">
                   {year}년 {month}월 급여 데이터가 없습니다.<br />
                   <span className="text-xs">직원/급여 메뉴에서 급여를 입력해주세요.</span>
                 </TableCell>
@@ -477,6 +495,7 @@ export default function PayrollPage() {
                     <TableCell className="text-right">
                       <IncentiveCell {...incentiveCellProps(r)} />
                     </TableCell>
+                    <TableCell className="text-right text-amber-700">{formatKRW(r.gross_pay)}</TableCell>
                     <TableCell className="text-right text-red-500">
                       {r.incentive_deductions > 0 ? `- ${formatKRW(r.incentive_deductions)}` : '-'}
                     </TableCell>
@@ -494,6 +513,7 @@ export default function PayrollPage() {
                   <TableCell>합계</TableCell>
                   <TableCell className="text-right">{formatKRW(totalBase)}</TableCell>
                   <TableCell className="text-right text-blue-600">{formatKRW(totalIncentive)}</TableCell>
+                  <TableCell className="text-right text-amber-700">{formatKRW(totalGross)}</TableCell>
                   <TableCell className="text-right text-red-500">- {formatKRW(totalIncentiveDed)}</TableCell>
                   <TableCell className="text-right text-red-500">- {formatKRW(totalDeduct)}</TableCell>
                   <TableCell className="text-right">{formatKRW(totalNet)}</TableCell>
