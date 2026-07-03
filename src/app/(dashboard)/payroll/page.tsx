@@ -261,7 +261,7 @@ export default function PayrollPage() {
           인센티브: r.incentive,
           인센티브공제: r.incentive_deductions,
           공제액: r.deductions,
-          '총지급액_세전(기본+인센티브)': r.total_pay,
+          '총지급액_공제후(기본+인센티브)': r.total_pay,
           지급일: r.paid_at ?? '',
         })),
         {
@@ -272,7 +272,7 @@ export default function PayrollPage() {
           인센티브: totalIncentive,
           인센티브공제: totalIncentiveDed,
           공제액: totalDeduct,
-          '총지급액_세전(기본+인센티브)': totalPay,
+          '총지급액_공제후(기본+인센티브)': totalPay,
           지급일: '',
         },
       ]
@@ -361,7 +361,7 @@ export default function PayrollPage() {
             <CardContent><div className="text-xl font-bold text-blue-800">{formatKRW(totalIncentive)}</div></CardContent>
           </Card>
           <Card className="border-green-200 bg-green-50">
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-green-600">총 지급액 (세전)</CardTitle></CardHeader>
+            <CardHeader className="pb-1"><CardTitle className="text-xs text-green-600">총 지급액 (공제 후)</CardTitle></CardHeader>
             <CardContent><div className="text-xl font-bold text-green-800">{formatKRW(totalPay)}</div></CardContent>
           </Card>
         </div>
@@ -454,7 +454,7 @@ export default function PayrollPage() {
               <TableHead className="text-right">인센티브 공제</TableHead>
               <TableHead className="text-right">공제액 (기본)</TableHead>
               <TableHead className="text-right">실수령액 (기본)</TableHead>
-              <TableHead className="text-right font-semibold">총 지급액 (세전)</TableHead>
+              <TableHead className="text-right font-semibold">총 지급액 (공제 후)</TableHead>
               <TableHead className="text-center">지급일</TableHead>
             </TableRow>
           </TableHeader>
