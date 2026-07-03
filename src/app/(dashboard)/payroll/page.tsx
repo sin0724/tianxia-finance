@@ -113,21 +113,28 @@ export default function PayrollPage() {
       { data: manualIncentives },
       { data: payments },
       { data: settingsRows },
+      { data: cancelledProjects },
     ] = await Promise.all([
       supabase.from('monthly_payroll').select('*, employees(name)').eq('year', year).eq('month', month),
       supabase.from('employees').select('id, name, incentive_type, incentive_value').eq('active', true),
       supabase.from('monthly_incentives').select('*').eq('year', year).eq('month', month),
-      supabase.from('payments').select('amount, manager, memo')
+      supabase.from('payments').select('amount, manager, memo, project_id')
         .gte('payment_date', start).lte('payment_date', end),
       supabase.from('settings').select('*'),
+      supabase.from('projects').select('id').eq('status', 'cancelled'),
     ])
 
     const settings = Object.fromEntries((settingsRows ?? []).map((s) => [s.key, Number(s.value)]))
     const vatRate = settings.vat_rate ?? 0.1
 
+    // 정산 API(calculate-settlement)와 동일한 제외 기준 적용
     const isPending = (memo: string | null) =>
       !!(memo?.includes('⚠ 잔금 처리 요망') || memo?.includes('🔴 미입금'))
-    const confirmedPayments = (payments ?? []).filter((p) => !isPending(p.memo))
+    const isExcluded = (memo: string | null) => !!(memo?.includes('🚫 집계 제외'))
+    const cancelledIds = new Set((cancelledProjects ?? []).map((p) => p.id))
+    const confirmedPayments = (payments ?? []).filter(
+      (p) => !isPending(p.memo) && !isExcluded(p.memo) && !(p.project_id && cancelledIds.has(p.project_id))
+    )
 
     const manualEmployeeIds = new Set((manualIncentives ?? []).map((i) => i.employee_id))
 
