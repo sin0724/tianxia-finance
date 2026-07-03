@@ -34,6 +34,14 @@ function calcPartTimePay(hours: number, hourlyWage: number, includeHoliday = tru
   return { hourlyPay, weeklyHolidayPay, total, eligible }
 }
 
+// 저장된 급여액에서 주휴 포함 여부 역산 (base_salary는 항상 계산식으로 저장됨)
+function inferIncludeWeeklyHoliday(row: MonthlyPayroll, emp: Employee): string {
+  if (emp.employee_type !== 'part_time') return 'true'
+  const { hourlyPay, weeklyHolidayPay } = calcPartTimePay(row.work_hours ?? 0, emp.hourly_wage ?? 0, true)
+  if (weeklyHolidayPay > 0 && row.base_salary === hourlyPay) return 'false'
+  return 'true'
+}
+
 export default function EmployeesPage() {
   const supabase = createClient()
   const now = new Date()
@@ -102,7 +110,7 @@ export default function EmployeesPage() {
           net_pay: String(existing.net_pay),
           work_hours: String(existing.work_hours ?? 0),
           paid_at: existing.paid_at ?? '',
-          include_weekly_holiday: 'true',
+          include_weekly_holiday: inferIncludeWeeklyHoliday(existing, emp),
         }
       } else if (emp.employee_type === 'part_time') {
         forms[emp.id] = {
