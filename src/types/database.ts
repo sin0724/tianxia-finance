@@ -76,9 +76,9 @@ export interface Database {
         Relationships: []
       }
       monthly_payroll: {
-        Row: { id: string; year: number; month: number; employee_id: string | null; base_salary: number; deductions: number; incentive_deductions: number; net_pay: number; work_hours: number; paid_at: string | null; created_at: string }
-        Insert: { id?: string; year: number; month: number; employee_id?: string | null; base_salary: number; deductions?: number; incentive_deductions?: number; net_pay: number; work_hours?: number; paid_at?: string | null; created_at?: string }
-        Update: { id?: string; year?: number; month?: number; employee_id?: string | null; base_salary?: number; deductions?: number; incentive_deductions?: number; net_pay?: number; work_hours?: number; paid_at?: string | null; created_at?: string }
+        Row: { id: string; year: number; month: number; employee_id: string | null; base_salary: number; deductions: number; incentive_deductions: number; net_pay: number; work_hours: number; include_weekly_holiday: boolean; paid_at: string | null; created_at: string }
+        Insert: { id?: string; year: number; month: number; employee_id?: string | null; base_salary: number; deductions?: number; incentive_deductions?: number; net_pay: number; work_hours?: number; include_weekly_holiday?: boolean; paid_at?: string | null; created_at?: string }
+        Update: { id?: string; year?: number; month?: number; employee_id?: string | null; base_salary?: number; deductions?: number; incentive_deductions?: number; net_pay?: number; work_hours?: number; include_weekly_holiday?: boolean; paid_at?: string | null; created_at?: string }
         Relationships: []
       }
       monthly_settlements: {

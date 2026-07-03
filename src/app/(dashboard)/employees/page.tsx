@@ -34,14 +34,6 @@ function calcPartTimePay(hours: number, hourlyWage: number, includeHoliday = tru
   return { hourlyPay, weeklyHolidayPay, total, eligible }
 }
 
-// 저장된 급여액에서 주휴 포함 여부 역산 (base_salary는 항상 계산식으로 저장됨)
-function inferIncludeWeeklyHoliday(row: MonthlyPayroll, emp: Employee): string {
-  if (emp.employee_type !== 'part_time') return 'true'
-  const { hourlyPay, weeklyHolidayPay } = calcPartTimePay(row.work_hours ?? 0, emp.hourly_wage ?? 0, true)
-  if (weeklyHolidayPay > 0 && row.base_salary === hourlyPay) return 'false'
-  return 'true'
-}
-
 export default function EmployeesPage() {
   const supabase = createClient()
   const now = new Date()
@@ -110,7 +102,7 @@ export default function EmployeesPage() {
           net_pay: String(existing.net_pay),
           work_hours: String(existing.work_hours ?? 0),
           paid_at: existing.paid_at ?? '',
-          include_weekly_holiday: inferIncludeWeeklyHoliday(existing, emp),
+          include_weekly_holiday: existing.include_weekly_holiday === false ? 'false' : 'true',
         }
       } else if (emp.employee_type === 'part_time') {
         forms[emp.id] = {
@@ -233,14 +225,16 @@ export default function EmployeesPage() {
     if (existing) {
       const { error } = await supabase.from('monthly_payroll').update({
         base_salary: base, deductions: ded, incentive_deductions: incentiveDed,
-        net_pay: net, work_hours: hours, paid_at: f.paid_at || null,
+        net_pay: net, work_hours: hours, include_weekly_holiday: f.include_weekly_holiday !== 'false',
+        paid_at: f.paid_at || null,
       }).eq('id', existing.id)
       if (error) { toast.error('수정 실패'); return }
     } else {
       const { error } = await supabase.from('monthly_payroll').insert({
         year: payYear, month: payMonth, employee_id: empId,
         base_salary: base, deductions: ded, incentive_deductions: incentiveDed,
-        net_pay: net, work_hours: hours, paid_at: f.paid_at || null,
+        net_pay: net, work_hours: hours, include_weekly_holiday: f.include_weekly_holiday !== 'false',
+        paid_at: f.paid_at || null,
       })
       if (error) { toast.error('저장 실패'); return }
     }
