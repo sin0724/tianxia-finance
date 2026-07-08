@@ -25,6 +25,16 @@ type PayFormEntry = {
   include_weekly_holiday: string
 }
 
+const WEEK_DAYS = ['월', '화', '수', '목', '금', '토', '일'] as const
+
+function formatWorkSchedule(e: Employee) {
+  const days = e.work_days ? e.work_days.split(',').join('·') : ''
+  const time = e.work_start_time && e.work_end_time
+    ? `${e.work_start_time}~${e.work_end_time}`
+    : (e.work_start_time || e.work_end_time || '')
+  return [days, time].filter(Boolean).join(' ')
+}
+
 function calcPartTimePay(hours: number, hourlyWage: number, includeHoliday = true) {
   const hourlyPay = Math.round(hours * hourlyWage)
   const weeklyAvgHours = hours / 4.345
@@ -47,6 +57,9 @@ export default function EmployeesPage() {
     employee_type: 'full_time' as 'full_time' | 'part_time',
     base_salary: '',
     hourly_wage: '',
+    work_days: [] as string[],
+    work_start_time: '',
+    work_end_time: '',
     incentive_type: '' as '' | 'percent' | 'fixed',
     incentive_value: '',
     hired_at: '',
@@ -136,7 +149,7 @@ export default function EmployeesPage() {
 
   function openAdd() {
     setEditing(null)
-    setForm({ name: '', position: '', employee_type: 'full_time', base_salary: '', hourly_wage: '', incentive_type: '', incentive_value: '', hired_at: '' })
+    setForm({ name: '', position: '', employee_type: 'full_time', base_salary: '', hourly_wage: '', work_days: [], work_start_time: '', work_end_time: '', incentive_type: '', incentive_value: '', hired_at: '' })
     setDialogOpen(true)
   }
 
@@ -148,6 +161,9 @@ export default function EmployeesPage() {
       employee_type: e.employee_type ?? 'full_time',
       base_salary: String(e.base_salary),
       hourly_wage: String(e.hourly_wage ?? 0),
+      work_days: e.work_days ? e.work_days.split(',') : [],
+      work_start_time: e.work_start_time ?? '',
+      work_end_time: e.work_end_time ?? '',
       incentive_type: e.incentive_type ?? '',
       incentive_value: String(e.incentive_value),
       hired_at: e.hired_at ?? '',
@@ -163,6 +179,11 @@ export default function EmployeesPage() {
       employee_type: form.employee_type,
       base_salary: form.employee_type === 'full_time' ? (parseFloat(form.base_salary) || 0) : 0,
       hourly_wage: form.employee_type === 'part_time' ? (parseInt(form.hourly_wage) || 0) : 0,
+      work_days: form.employee_type === 'part_time' && form.work_days.length > 0
+        ? WEEK_DAYS.filter((d) => form.work_days.includes(d)).join(',')
+        : null,
+      work_start_time: form.employee_type === 'part_time' ? (form.work_start_time || null) : null,
+      work_end_time: form.employee_type === 'part_time' ? (form.work_end_time || null) : null,
       incentive_type: form.incentive_type || null,
       incentive_value: parseFloat(form.incentive_value) || 0,
       hired_at: form.hired_at || null,
@@ -301,6 +322,9 @@ export default function EmployeesPage() {
                     </div>
                   </div>
                 </div>
+                {e.employee_type === 'part_time' && formatWorkSchedule(e) && (
+                  <div className="text-xs text-purple-600 mt-1">근무: {formatWorkSchedule(e)}</div>
+                )}
                 {e.hired_at && <div className="text-xs text-gray-400 mt-1">입사일: {e.hired_at}</div>}
               </div>
               <div className="flex gap-1 shrink-0">
@@ -321,6 +345,7 @@ export default function EmployeesPage() {
               <TableHead>구분</TableHead>
               <TableHead>직책</TableHead>
               <TableHead className="text-right">기본급 / 시급</TableHead>
+              <TableHead>근무일정</TableHead>
               <TableHead>인센티브</TableHead>
               <TableHead>입사일</TableHead>
               <TableHead></TableHead>
@@ -328,9 +353,9 @@ export default function EmployeesPage() {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
             ) : employees.length === 0 ? (
-              <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">등록된 직원이 없습니다.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center py-8 text-gray-400">등록된 직원이 없습니다.</TableCell></TableRow>
             ) : employees.map((e) => (
               <TableRow key={e.id}>
                 <TableCell className="font-medium">{e.name}</TableCell>
@@ -344,6 +369,11 @@ export default function EmployeesPage() {
                   {e.employee_type === 'part_time'
                     ? <span className="text-purple-700">{formatKRW(e.hourly_wage ?? 0)}/h</span>
                     : formatKRW(e.base_salary)}
+                </TableCell>
+                <TableCell>
+                  {e.employee_type === 'part_time' && formatWorkSchedule(e)
+                    ? <span className="text-sm text-purple-600">{formatWorkSchedule(e)}</span>
+                    : '-'}
                 </TableCell>
                 <TableCell>
                   {e.incentive_type ? (
@@ -421,6 +451,9 @@ export default function EmployeesPage() {
                           </Badge>
                         )}
                       </div>
+                      {isPartTime && formatWorkSchedule(emp) && (
+                        <div className="text-xs text-gray-400 font-normal mt-0.5">{formatWorkSchedule(emp)}</div>
+                      )}
                     </TableCell>
                     <TableCell>
                       {isPartTime ? (() => {
@@ -565,11 +598,46 @@ export default function EmployeesPage() {
             {form.employee_type === 'full_time' ? (
               <div className="space-y-1"><Label>기본급 (월)</Label><Input type="number" value={form.base_salary} onChange={(e) => setForm({ ...form, base_salary: e.target.value })} /></div>
             ) : (
-              <div className="space-y-1">
-                <Label>시급 (원/시간)</Label>
-                <Input type="number" placeholder="예: 10030" value={form.hourly_wage} onChange={(e) => setForm({ ...form, hourly_wage: e.target.value })} />
-                <p className="text-xs text-gray-400">2025년 최저임금: 10,030원/h</p>
-              </div>
+              <>
+                <div className="space-y-1">
+                  <Label>시급 (원/시간)</Label>
+                  <Input type="number" placeholder="예: 10030" value={form.hourly_wage} onChange={(e) => setForm({ ...form, hourly_wage: e.target.value })} />
+                  <p className="text-xs text-gray-400">2025년 최저임금: 10,030원/h</p>
+                </div>
+                <div className="space-y-1">
+                  <Label>근무 요일 (확인용)</Label>
+                  <div className="flex gap-1">
+                    {WEEK_DAYS.map((d) => {
+                      const selected = form.work_days.includes(d)
+                      return (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setForm({
+                            ...form,
+                            work_days: selected ? form.work_days.filter((v) => v !== d) : [...form.work_days, d],
+                          })}
+                          className={`w-9 h-9 rounded-md border text-sm font-medium transition-colors ${
+                            selected
+                              ? 'bg-purple-600 border-purple-600 text-white'
+                              : 'bg-white border-gray-200 text-gray-500 hover:border-gray-300'
+                          }`}
+                        >
+                          {d}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label>근무 시간 (확인용)</Label>
+                  <div className="flex items-center gap-2">
+                    <Input type="time" className="flex-1" value={form.work_start_time} onChange={(e) => setForm({ ...form, work_start_time: e.target.value })} />
+                    <span className="text-gray-400">~</span>
+                    <Input type="time" className="flex-1" value={form.work_end_time} onChange={(e) => setForm({ ...form, work_end_time: e.target.value })} />
+                  </div>
+                </div>
+              </>
             )}
             <div className="space-y-1">
               <Label>인센티브 방식</Label>

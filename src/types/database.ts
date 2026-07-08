@@ -16,9 +16,9 @@ export interface Database {
         Relationships: []
       }
       employees: {
-        Row: { id: string; name: string; position: string | null; employee_type: 'full_time' | 'part_time'; base_salary: number; hourly_wage: number; incentive_type: 'percent' | 'fixed' | null; incentive_value: number; active: boolean; hired_at: string | null; created_at: string; updated_at: string }
-        Insert: { id?: string; name: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; base_salary?: number; hourly_wage?: number; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
-        Update: { id?: string; name?: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; base_salary?: number; hourly_wage?: number; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
+        Row: { id: string; name: string; position: string | null; employee_type: 'full_time' | 'part_time'; base_salary: number; hourly_wage: number; work_days: string | null; work_start_time: string | null; work_end_time: string | null; incentive_type: 'percent' | 'fixed' | null; incentive_value: number; active: boolean; hired_at: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; name: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; base_salary?: number; hourly_wage?: number; work_days?: string | null; work_start_time?: string | null; work_end_time?: string | null; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; name?: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; base_salary?: number; hourly_wage?: number; work_days?: string | null; work_start_time?: string | null; work_end_time?: string | null; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
       clients: {
