@@ -203,9 +203,12 @@ export async function POST(request: Request) {
             (p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount
           )
 
-          // '추가계약' 상태면 진행 중인 프로젝트가 있어도 새 프로젝트로 분리
+          // '추가계약' 상태이거나 특이사항(메모)에 재계약·추가계약 표기가 있으면
+          // 진행 중인 프로젝트가 있어도 새 프로젝트로 분리 — 기존 프로젝트에 합치지 않는다.
+          // (입금상태 I열을 '입금완료'로 두고 특이사항에만 '재계약'이라 적는 경우 대응)
           //  → 당월 매출과 실행비를 같은 달에 매칭 (이익 과대계상 방지)
-          const forceNewProject = row.status === '추가계약'
+          const memoRenewal = /재\s*계약|추가\s*계약/.test(row.memo)
+          const forceNewProject = row.status === '추가계약' || memoRenewal
           // 완납된 ongoing 프로젝트는 폴백 대상에서 제외 — 잔여가 남은 건에만 합친다
           const target = forceNewProject
             ? null
@@ -224,8 +227,10 @@ export async function POST(request: Request) {
             // 연결 가능한 프로젝트 없음 → 신규·재계약으로 판단해 프로젝트 자동 생성
             const priorCount = projs.length            // 기존(비취소) 계약 수
             const isRenewal = priorCount > 0
-            const projectName = forceNewProject
-              ? `${row.clientName} (추가계약 ${priorCount}차)`
+            // 특이사항에 '재계약'이라 적혀 있으면 재계약, 아니면 추가계약으로 표기
+            const forceTag = /재\s*계약/.test(row.memo) ? '재계약' : '추가계약'
+            const projectName = forceNewProject && isRenewal
+              ? `${row.clientName} (${forceTag} ${priorCount}차)`
               : isRenewal
                 ? `${row.clientName} (재계약 ${priorCount}차)`
                 : row.clientName
