@@ -248,18 +248,8 @@ export async function POST(request: Request) {
               projectId = newProject.id
               matched = true
               created++
-              // 재계약이면 직전 프로젝트의 구성 상품(실행비)을 복제해 실행비 누락 방지
-              if (isRenewal) {
-                const { data: prevItems } = await supabase
-                  .from('project_items')
-                  .select('product_id, item_name, quantity, unit_price_snapshot, unit_cost_snapshot')
-                  .eq('project_id', projs[0].id)
-                if (prevItems && prevItems.length > 0) {
-                  await supabase.from('project_items').insert(
-                    prevItems.map((it) => ({ ...it, project_id: newProject.id }))
-                  )
-                }
-              }
+              // 재계약은 다른 상품으로 계약하는 경우가 많아 직전 프로젝트의 구성 상품을
+              // 복제하지 않는다 — 구성 상품은 직접 입력 (미입력 시 월별 리포트에 경고 표시됨)
             }
           }
         }
