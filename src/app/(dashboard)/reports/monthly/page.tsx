@@ -55,6 +55,7 @@ export default function MonthlyReportPage() {
   const [month, setMonth] = useState(now.getMonth() + 1)
 
   const [settlement, setSettlement]               = useState<MonthlySettlement | null>(null)
+  const [history, setHistory]                     = useState<MonthlySettlement[]>([])
   const [projectedSettlement, setProjectedSettlement] = useState<SettlementData | null>(null)
   const [pendingTotal, setPendingTotal]           = useState(0)
   const [pendingCount, setPendingCount]           = useState(0)
@@ -74,6 +75,14 @@ export default function MonthlyReportPage() {
       .from('monthly_settlements').select('*')
       .eq('year', year).eq('month', month).single()
     setSettlement(data)
+
+    // 선택한 월까지 저장된 정산 전체 (누적 현황용)
+    const { data: allSettlements } = await supabase
+      .from('monthly_settlements').select('*')
+      .order('year').order('month')
+    setHistory(
+      (allSettlements ?? []).filter((s) => s.year < year || (s.year === year && s.month <= month))
+    )
 
     const { data: settingsRows } = await supabase.from('settings').select('*')
     const map = Object.fromEntries((settingsRows ?? []).map((s) => [s.key, Number(s.value)]))
@@ -173,6 +182,7 @@ export default function MonthlyReportPage() {
     toast.success('정산이 초기화되었습니다.')
     setResetting(false)
     setSettlement(null)
+    load() // 누적 현황 최신화
   }
 
   const activeData: SettlementData | null = activeView === 'confirmed'
@@ -180,6 +190,12 @@ export default function MonthlyReportPage() {
     : projectedSettlement
 
   const rows: Row[] = activeData ? makeRows(activeData, rates, reps) : []
+
+  const cumOperating     = history.reduce((sum, s) => sum + s.operating_profit, 0)
+  const cumDistributable = history.reduce((sum, s) => sum + s.distributable_profit, 0)
+  const cumRepAmount = (ratio: number) =>
+    history.reduce((sum, s) => sum + Math.floor(s.distributable_profit * ratio / 100), 0)
+  const cumRepShare = history.reduce((sum, s) => sum + s.representative_share, 0)
 
   return (
     <div className="space-y-4">
@@ -251,6 +267,12 @@ export default function MonthlyReportPage() {
             </div>
           </div>
 
+          {/* 정산 기준 안내 */}
+          <div className="text-xs text-gray-400 bg-gray-50 border rounded-md px-3 py-2">
+            아래 모든 금액(대표자 정산액 포함)은 <strong>{year}년 {month}월 한 달치</strong> 매출·비용만 집계한 금액입니다.
+            이전 달까지의 영업이익이 누적된 금액이 아닙니다.
+          </div>
+
           {/* 보기 전환 탭 */}
           <div className="flex gap-1 p-1 bg-gray-100 rounded-lg w-fit">
             <button
@@ -284,7 +306,8 @@ export default function MonthlyReportPage() {
           {activeView === 'projected' && pendingCount > 0 && (
             <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs text-amber-800">
               <AlertTriangle size={13} className="text-amber-500 shrink-0" />
-              미수금 <strong>{pendingCount}건 ({formatKRW(pendingTotal)})</strong>이 전액 입금됐을 때의 예상 정산입니다.
+              전체 기간 미수금 <strong>{pendingCount}건 ({formatKRW(pendingTotal)})</strong>이 모두 입금됐다고 가정한 <strong>{month}월 한 달치</strong> 예상 정산입니다.
+              미수금은 발생 월과 무관하게 전부 포함되지만, 그 외 매출·비용은 이번 달 것만 집계됩니다.
             </div>
           )}
 
@@ -307,7 +330,7 @@ export default function MonthlyReportPage() {
               <div className="grid grid-cols-2 gap-4">
                 <Card className="border-blue-200 bg-blue-50">
                   <CardHeader className="pb-1">
-                    <CardTitle className="text-sm text-blue-700">대표자 정산액</CardTitle>
+                    <CardTitle className="text-sm text-blue-700">대표자 정산액 ({month}월 한 달치)</CardTitle>
                   </CardHeader>
                   <CardContent>
                     {reps.length > 0 ? (
@@ -345,7 +368,7 @@ export default function MonthlyReportPage() {
                 </Card>
                 <Card className={activeData.operating_profit >= 0 ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}>
                   <CardHeader className="pb-1">
-                    <CardTitle className="text-sm text-gray-600">영업이익</CardTitle>
+                    <CardTitle className="text-sm text-gray-600">영업이익 ({month}월 한 달치)</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className={`text-3xl font-bold ${activeData.operating_profit >= 0 ? 'text-green-900' : 'text-red-900'}`}>
@@ -402,6 +425,57 @@ export default function MonthlyReportPage() {
             </>
           )}
         </div>
+      )}
+
+      {/* 누적 정산 현황 */}
+      {history.length > 0 && (
+        <Card className="border-indigo-200">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">
+              누적 정산 현황
+              <span className="ml-2 text-xs font-normal text-gray-400">
+                {history[0].year}년 {history[0].month}월 ~ {year}년 {month}월 · 저장된 정산 {history.length}개월 합산 (입금 완료 기준)
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <div className="text-xs text-gray-500 mb-0.5">누적 영업이익</div>
+                <div className={`text-xl font-bold ${cumOperating >= 0 ? 'text-green-900' : 'text-red-600'}`}>
+                  {formatKRW(cumOperating)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-0.5">누적 분배 가능 이익</div>
+                <div className={`text-xl font-bold ${cumDistributable >= 0 ? 'text-gray-900' : 'text-red-600'}`}>
+                  {formatKRW(cumDistributable)}
+                </div>
+              </div>
+              {reps.length > 0 ? (
+                reps.map((rep) => (
+                  <div key={rep.id}>
+                    <div className="text-xs text-blue-500 mb-0.5">{rep.name} 누적 정산액 ({rep.share_ratio}%)</div>
+                    <div className={`text-xl font-bold ${cumRepAmount(rep.share_ratio) >= 0 ? 'text-blue-900' : 'text-red-600'}`}>
+                      {formatKRW(cumRepAmount(rep.share_ratio))}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div>
+                  <div className="text-xs text-blue-500 mb-0.5">대표자 1인당 누적 정산액</div>
+                  <div className={`text-xl font-bold ${cumRepShare >= 0 ? 'text-blue-900' : 'text-red-600'}`}>
+                    {formatKRW(cumRepShare)}
+                  </div>
+                </div>
+              )}
+            </div>
+            <p className="mt-3 pt-3 border-t text-xs text-gray-400">
+              "정산 계산"으로 저장된 월만 합산되며, 각 월을 재계산하면 자동으로 최신화됩니다.
+              미수금 전액 수취 가정치는 확정 전이므로 누적에 포함되지 않습니다.
+            </p>
+          </CardContent>
+        </Card>
       )}
 
       <AlertDialog open={resetConfirmOpen} onOpenChange={setResetConfirmOpen}>
