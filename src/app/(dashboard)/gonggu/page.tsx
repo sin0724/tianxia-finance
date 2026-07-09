@@ -192,6 +192,10 @@ export default function GongguPage() {
 
   const monthGross  = items.reduce((s, r) => s + r.gross_sales, 0)
   const monthMargin = items.reduce((s, r) => s + r.margin, 0)
+  // 취급액·마진 모두 VAT 포함 수취액 — 정산에는 마진 공급가액(÷1.1)만 반영
+  const monthMarginSupply = monthMargin / 1.1
+  const monthMarginVat    = monthMargin - monthMarginSupply
+  const monthGrossVat     = monthGross - monthGross / 1.1
 
   return (
     <div className="space-y-4">
@@ -230,18 +234,20 @@ export default function GongguPage() {
       {/* 요약 카드 */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card className="border-purple-200">
-          <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">{month}월 취급액</CardTitle></CardHeader>
+          <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">{month}월 취급액 (VAT 포함)</CardTitle></CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-purple-700">{formatKRW(monthGross)}</div>
-            <p className="text-xs text-gray-400 mt-1">캠페인 {items.length}건</p>
+            <p className="text-xs text-gray-400 mt-1">
+              캠페인 {items.length}건 · 부가세 {formatKRW(Math.round(monthGrossVat))} 포함
+            </p>
           </CardContent>
         </Card>
         <Card className="border-purple-200 bg-purple-50">
-          <CardHeader className="pb-1"><CardTitle className="text-sm text-purple-700">{month}월 우리 마진</CardTitle></CardHeader>
+          <CardHeader className="pb-1"><CardTitle className="text-sm text-purple-700">{month}월 우리 마진 (VAT 포함)</CardTitle></CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-purple-900">{formatKRW(monthMargin)}</div>
             <p className="text-xs text-purple-500 mt-1">
-              취급액 대비 {monthGross > 0 ? ((monthMargin / monthGross) * 100).toFixed(1) : '0'}% · 정산 시 영업이익에 합산
+              공급가액 {formatKRW(Math.round(monthMarginSupply))}만 정산 반영 · 부가세 {formatKRW(Math.round(monthMarginVat))} 납부용
             </p>
           </CardContent>
         </Card>
@@ -325,8 +331,9 @@ export default function GongguPage() {
             </Table>
           )}
           <p className="mt-3 pt-3 border-t text-xs text-gray-400">
-            공구는 실행비 없이 RS수수료·공급가 마진이 곧 수익입니다. 마진은 VAT를 제외한 실수익 기준으로 입력해주세요.
-            월별 정산 계산 시 이 달의 마진 합계가 영업이익에 자동 합산됩니다.
+            공구는 실행비 없이 RS수수료·공급가 마진이 곧 수익입니다. 취급액·마진 모두 부가세(VAT) 포함 수취액 기준으로 입력해주세요.
+            월별 정산 시 마진의 공급가액(마진 ÷ 1.1)만 영업이익에 합산되고, 부가세분(마진의 1/11)은 납부용으로 제외됩니다.
+            취급액에 포함된 매출부가세는 매입세액공제를 거치면 실제 납부액이 마진 부가세와 같아지므로 정산에서 따로 차감하지 않습니다.
           </p>
         </CardContent>
       </Card>
@@ -400,21 +407,21 @@ export default function GongguPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>취급액 (원)</Label>
+                <Label>취급액 (원 · VAT 포함)</Label>
                 <Input
                   type="number"
                   value={form.gross_sales}
                   onChange={(e) => setForm({ ...form, gross_sales: e.target.value })}
-                  placeholder="전체 판매액"
+                  placeholder="전체 판매액 (부가세 포함)"
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>우리 마진 (원)</Label>
+                <Label>우리 마진 (원 · VAT 포함)</Label>
                 <Input
                   type="number"
                   value={form.margin}
                   onChange={(e) => setForm({ ...form, margin: e.target.value })}
-                  placeholder="RS수수료·마진"
+                  placeholder="RS수수료·마진 (부가세 포함)"
                 />
               </div>
             </div>

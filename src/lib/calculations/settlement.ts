@@ -17,7 +17,7 @@ interface SettlementInput {
   expenses: (MonthlyExpense & { category_type?: string })[]
   incentives: MonthlyIncentive[]
   payroll: MonthlyPayroll[]
-  /** 공구 사업부 실적 — 마진(VAT 제외 실수익)만 영업이익에 가산, 취급액은 참고 표기 */
+  /** 공구 사업부 실적 — 취급액·마진 모두 VAT 포함 수취액. 마진 공급가액(÷1.1)만 영업이익에 가산, 취급액은 참고 표기 */
   gonggu?: { grossSales: number; margin: number }
   settings: {
     vat_rate: number
@@ -38,6 +38,7 @@ export interface SettlementResult {
   totalPayroll: number
   gongguGrossSales: number
   gongguMargin: number
+  gongguMarginSupply: number
   operatingProfit: number
   corporateTaxReserve: number
   retainedEarnings: number
@@ -103,9 +104,12 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
     new Decimal(0)
   )
 
-  // 8. 공구 사업부 — 실행비 없이 마진이 곧 수익이므로 영업이익에 직접 가산
+  // 8. 공구 사업부 — 마진은 VAT 포함 수취액이므로 공급가액(÷1.1)만 영업이익에 가산
+  //    (부가세분은 납부 대상이라 수익에서 제외. 취급액의 매출부가세는 매입세액공제 후
+  //     실납부액이 마진 부가세와 같아지므로 별도 차감 없음)
   const gongguGrossSales = new Decimal(input.gonggu?.grossSales ?? 0)
   const gongguMargin = new Decimal(input.gonggu?.margin ?? 0)
+  const gongguMarginSupply = gongguMargin.dividedBy(new Decimal(1).plus(vatRate))
 
   // 9. 영업이익
   const operatingProfit = grossProfit
@@ -113,7 +117,7 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
     .minus(totalVariableCost)
     .minus(totalSpecialCost)
     .minus(totalPayroll)
-    .plus(gongguMargin)
+    .plus(gongguMarginSupply)
 
   // 10. 적립금 (영업이익이 음수면 0)
   const profitForReserve = Decimal.max(operatingProfit, 0)
@@ -140,6 +144,7 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
     totalPayroll: round2(totalPayroll),
     gongguGrossSales: round2(gongguGrossSales),
     gongguMargin: round2(gongguMargin),
+    gongguMarginSupply: round2(gongguMarginSupply),
     operatingProfit: round2(operatingProfit),
     corporateTaxReserve: round2(corporateTaxReserve),
     retainedEarnings: round2(retainedEarnings),
