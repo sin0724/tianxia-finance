@@ -17,6 +17,8 @@ interface SettlementInput {
   expenses: (MonthlyExpense & { category_type?: string })[]
   incentives: MonthlyIncentive[]
   payroll: MonthlyPayroll[]
+  /** 공구 사업부 실적 — 마진(VAT 제외 실수익)만 영업이익에 가산, 취급액은 참고 표기 */
+  gonggu?: { grossSales: number; margin: number }
   settings: {
     vat_rate: number
     corporate_tax_reserve: number
@@ -34,6 +36,8 @@ export interface SettlementResult {
   totalVariableCost: number
   totalSpecialCost: number
   totalPayroll: number
+  gongguGrossSales: number
+  gongguMargin: number
   operatingProfit: number
   corporateTaxReserve: number
   retainedEarnings: number
@@ -99,22 +103,27 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
     new Decimal(0)
   )
 
-  // 8. 영업이익
+  // 8. 공구 사업부 — 실행비 없이 마진이 곧 수익이므로 영업이익에 직접 가산
+  const gongguGrossSales = new Decimal(input.gonggu?.grossSales ?? 0)
+  const gongguMargin = new Decimal(input.gonggu?.margin ?? 0)
+
+  // 9. 영업이익
   const operatingProfit = grossProfit
     .minus(totalFixedCost)
     .minus(totalVariableCost)
     .minus(totalSpecialCost)
     .minus(totalPayroll)
+    .plus(gongguMargin)
 
-  // 9. 적립금 (영업이익이 음수면 0)
+  // 10. 적립금 (영업이익이 음수면 0)
   const profitForReserve = Decimal.max(operatingProfit, 0)
   const corporateTaxReserve = profitForReserve.times(taxRate)
   const retainedEarnings = profitForReserve.times(retainedRate)
 
-  // 10. 분배 가능 이익
+  // 11. 분배 가능 이익
   const distributableProfit = operatingProfit.minus(corporateTaxReserve).minus(retainedEarnings)
 
-  // 11. 대표자 1인당 (50:50, 단수 처리)
+  // 12. 대표자 1인당 (50:50, 단수 처리)
   const representativeShare = distributableProfit.dividedBy(2).toDecimalPlaces(0, Decimal.ROUND_FLOOR)
 
   const round2 = (d: Decimal) => d.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber()
@@ -129,6 +138,8 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
     totalVariableCost: round2(totalVariableCost),
     totalSpecialCost: round2(totalSpecialCost),
     totalPayroll: round2(totalPayroll),
+    gongguGrossSales: round2(gongguGrossSales),
+    gongguMargin: round2(gongguMargin),
     operatingProfit: round2(operatingProfit),
     corporateTaxReserve: round2(corporateTaxReserve),
     retainedEarnings: round2(retainedEarnings),

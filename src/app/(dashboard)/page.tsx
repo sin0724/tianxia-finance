@@ -42,6 +42,8 @@ export default function DashboardPage() {
   const [paymentTotal, setPaymentTotal]   = useState(0)
   const [refundTotal, setRefundTotal]     = useState(0)
   const [pendingTotal, setPendingTotal]   = useState(0)
+  const [gongguGross, setGongguGross]     = useState(0)
+  const [gongguMargin, setGongguMargin]   = useState(0)
   const [alerts, setAlerts]               = useState<DashAlert[]>([])
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
   const [permanentDismissed, setPermanentDismissed] = useState<Set<string>>(new Set())
@@ -130,6 +132,15 @@ export default function DashboardPage() {
       .filter((p) => p.projects?.status !== 'cancelled')
       .reduce((s, p) => s + p.amount, 0))
 
+
+    // 공구 사업부 실적 (선택 월)
+    const { data: gongguRows } = await supabase
+      .from('gonggu_sales')
+      .select('gross_sales, margin')
+      .eq('year', selYear)
+      .eq('month', selMonth)
+    setGongguGross((gongguRows ?? []).reduce((s, r) => s + r.gross_sales, 0))
+    setGongguMargin((gongguRows ?? []).reduce((s, r) => s + r.margin, 0))
 
     // ── 초·중·후순 / 누적 추이 차트 ────────────────────────
     const { data: yrRaw } = await supabase
@@ -437,9 +448,9 @@ export default function DashboardPage() {
       )}
 
       {/* ── 지표 카드 ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${gongguGross > 0 || gongguMargin > 0 ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
         <Card className="border-green-200">
-          <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">{selMonth}월 입금액</CardTitle></CardHeader>
+          <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">{selMonth}월 입금액 (바이럴)</CardTitle></CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-700">{formatKRW(paymentTotal)}</div>
             {refundTotal < 0 ? (
@@ -463,6 +474,18 @@ export default function DashboardPage() {
             <p className="text-xs text-gray-400 mt-1">VAT 제외</p>
           </CardContent>
         </Card>
+        {(gongguGross > 0 || gongguMargin > 0) && (
+          <Card className="border-purple-200">
+            <CardHeader className="pb-1"><CardTitle className="text-sm text-purple-600">{selMonth}월 공구 취급액</CardTitle></CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-purple-700">{formatKRW(gongguGross)}</div>
+              <p className="text-xs text-purple-500 mt-1">
+                마진 {formatKRW(gongguMargin)} ·{' '}
+                <Link href="/gonggu" className="hover:underline">상세 보기</Link>
+              </p>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

@@ -57,6 +57,8 @@ function toSnakeCase(r: SettlementResult) {
     total_variable_cost: r.totalVariableCost,
     total_special_cost: r.totalSpecialCost,
     total_payroll: r.totalPayroll,
+    gonggu_gross_sales: r.gongguGrossSales,
+    gonggu_margin: r.gongguMargin,
     operating_profit: r.operatingProfit,
     corporate_tax_reserve: r.corporateTaxReserve,
     retained_earnings: r.retainedEarnings,
@@ -199,6 +201,17 @@ async function computeBothSettlements(year: number, month: number) {
     .eq('year', year)
     .eq('month', month)
 
+  // 공구 사업부 실적 — 취급액은 참고 표기, 마진만 영업이익에 가산
+  const { data: gongguRows } = await supabase
+    .from('gonggu_sales')
+    .select('gross_sales, margin')
+    .eq('year', year)
+    .eq('month', month)
+  const gonggu = {
+    grossSales: (gongguRows ?? []).reduce((sum, r) => sum + r.gross_sales, 0),
+    margin: (gongguRows ?? []).reduce((sum, r) => sum + r.margin, 0),
+  }
+
   const { data: settingsRows } = await supabase.from('settings').select('*')
   const settings = Object.fromEntries((settingsRows ?? []).map((s) => [s.key, Number(s.value)])) as {
     vat_rate: number
@@ -246,6 +259,7 @@ async function computeBothSettlements(year: number, month: number) {
     expenses,
     incentives,
     payroll: payroll ?? [],
+    gonggu,
     settings: settlementSettings,
   })
 
@@ -256,6 +270,7 @@ async function computeBothSettlements(year: number, month: number) {
     expenses,
     incentives: projectedIncentives,
     payroll: payroll ?? [],
+    gonggu,
     settings: settlementSettings,
   })
 

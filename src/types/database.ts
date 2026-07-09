@@ -82,9 +82,15 @@ export interface Database {
         Relationships: []
       }
       monthly_settlements: {
-        Row: { id: string; year: number; month: number; total_revenue: number; supply_value: number; total_incentive: number; total_product_cost: number; gross_profit: number; total_fixed_cost: number; total_variable_cost: number; total_special_cost: number; total_payroll: number; operating_profit: number; corporate_tax_reserve: number; retained_earnings: number; distributable_profit: number; representative_share: number; calculated_at: string }
-        Insert: { id?: string; year: number; month: number; total_revenue: number; supply_value: number; total_incentive?: number; total_product_cost?: number; gross_profit: number; total_fixed_cost?: number; total_variable_cost?: number; total_special_cost?: number; total_payroll?: number; operating_profit: number; corporate_tax_reserve?: number; retained_earnings?: number; distributable_profit: number; representative_share: number; calculated_at?: string }
-        Update: { id?: string; year?: number; month?: number; total_revenue?: number; supply_value?: number; total_incentive?: number; total_product_cost?: number; gross_profit?: number; total_fixed_cost?: number; total_variable_cost?: number; total_special_cost?: number; total_payroll?: number; operating_profit?: number; corporate_tax_reserve?: number; retained_earnings?: number; distributable_profit?: number; representative_share?: number; calculated_at?: string }
+        Row: { id: string; year: number; month: number; total_revenue: number; supply_value: number; total_incentive: number; total_product_cost: number; gross_profit: number; total_fixed_cost: number; total_variable_cost: number; total_special_cost: number; total_payroll: number; gonggu_gross_sales: number; gonggu_margin: number; operating_profit: number; corporate_tax_reserve: number; retained_earnings: number; distributable_profit: number; representative_share: number; calculated_at: string }
+        Insert: { id?: string; year: number; month: number; total_revenue: number; supply_value: number; total_incentive?: number; total_product_cost?: number; gross_profit: number; total_fixed_cost?: number; total_variable_cost?: number; total_special_cost?: number; total_payroll?: number; gonggu_gross_sales?: number; gonggu_margin?: number; operating_profit: number; corporate_tax_reserve?: number; retained_earnings?: number; distributable_profit: number; representative_share: number; calculated_at?: string }
+        Update: { id?: string; year?: number; month?: number; total_revenue?: number; supply_value?: number; total_incentive?: number; total_product_cost?: number; gross_profit?: number; total_fixed_cost?: number; total_variable_cost?: number; total_special_cost?: number; total_payroll?: number; gonggu_gross_sales?: number; gonggu_margin?: number; operating_profit?: number; corporate_tax_reserve?: number; retained_earnings?: number; distributable_profit?: number; representative_share?: number; calculated_at?: string }
+        Relationships: []
+      }
+      gonggu_sales: {
+        Row: { id: string; campaign_id: string | null; campaign_name: string; client_name: string | null; year: number; month: number; gross_sales: number; margin: number; memo: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; campaign_id?: string | null; campaign_name: string; client_name?: string | null; year: number; month: number; gross_sales?: number; margin?: number; memo?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; campaign_id?: string | null; campaign_name?: string; client_name?: string | null; year?: number; month?: number; gross_sales?: number; margin?: number; memo?: string | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
     }
@@ -110,3 +116,4 @@ export type MonthlyExpense = Database['public']['Tables']['monthly_expenses']['R
 export type MonthlyIncentive = Database['public']['Tables']['monthly_incentives']['Row']
 export type MonthlyPayroll = Database['public']['Tables']['monthly_payroll']['Row']
 export type MonthlySettlement = Database['public']['Tables']['monthly_settlements']['Row']
+export type GongguSale = Database['public']['Tables']['gonggu_sales']['Row']

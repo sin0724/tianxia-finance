@@ -30,6 +30,14 @@ function makeRows(s: SettlementData, rates: SettlementRates, reps: Representativ
         highlight: true,
       }))
     : [{ label: '대표자 1인당 정산액 (50%)', value: s.representative_share, highlight: true }]
+  const gongguGross  = s.gonggu_gross_sales ?? 0
+  const gongguMargin = s.gonggu_margin ?? 0
+  const gongguRows: Row[] = gongguGross > 0 || gongguMargin > 0
+    ? [
+        { label: `공구 취급액 (참고 — 영업이익 미포함)`, value: gongguGross, indent: true },
+        { label: '+ 공구 사업부 마진',                   value: gongguMargin, indent: true },
+      ]
+    : []
   return [
     { label: `총 매출 (VAT ${vatPct}% 포함)`,      value: s.total_revenue },
     { label: `공급가액 (÷${1 + vatPct / 100})`,    value: s.supply_value, indent: true },
@@ -40,6 +48,7 @@ function makeRows(s: SettlementData, rates: SettlementRates, reps: Representativ
     { label: '- 변동비',                            value: -s.total_variable_cost, indent: true, type: 'deduct' },
     { label: '- 특수비용',                          value: -s.total_special_cost, indent: true, type: 'deduct' },
     { label: '- 직원 급여',                         value: -s.total_payroll, indent: true, type: 'deduct' },
+    ...gongguRows,
     { label: '영업이익',                            value: s.operating_profit, highlight: true, type: 'result' },
     { label: `- 법인세 적립 (${taxPct}%)`,          value: -s.corporate_tax_reserve, indent: true, type: 'deduct' },
     { label: `- 유보금 적립 (${retPct}%)`,          value: -s.retained_earnings, indent: true, type: 'deduct' },
@@ -418,6 +427,13 @@ export default function MonthlyReportPage() {
                   {activeData.total_incentive > 0 && (
                     <div className="mt-4 pt-3 border-t text-xs text-gray-400">
                       * 인센티브 {formatKRW(activeData.total_incentive)} = 직원 담당 계약건의 공급가액 × 인센티브 요율 합산
+                    </div>
+                  )}
+
+                  {(activeData.gonggu_margin ?? 0) > 0 && (
+                    <div className={`text-xs text-gray-400 ${activeData.total_incentive > 0 ? 'mt-1' : 'mt-4 pt-3 border-t'}`}>
+                      * 공구 사업부는 실행비 없이 마진이 곧 수익 — 취급액 {formatKRW(activeData.gonggu_gross_sales ?? 0)}은 참고 표기이며
+                      마진 {formatKRW(activeData.gonggu_margin ?? 0)}만 영업이익에 합산됩니다.
                     </div>
                   )}
                 </CardContent>
