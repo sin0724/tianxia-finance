@@ -32,18 +32,11 @@ function makeRows(s: SettlementData, rates: SettlementRates, reps: Representativ
     : [{ label: '대표자 1인당 정산액 (50%)', value: s.representative_share, highlight: true }]
   const gongguGross  = s.gonggu_gross_sales ?? 0
   const gongguMargin = s.gonggu_margin ?? 0
-  // 마진 공급가액이 없는 행은 마진 전액이 가산된 구버전 정산 — 기존 형식으로 표시 (재계산 시 갱신)
-  const gongguMarginSupply = s.gonggu_margin_supply ?? 0
   const gongguRows: Row[] = gongguGross > 0 || gongguMargin > 0
-    ? gongguMarginSupply > 0
-      ? [
-          { label: `공구 취급액 (VAT 포함, 참고 — 영업이익 미포함)`, value: gongguGross, indent: true },
-          { label: `+ 공구 마진 공급가액 (마진 ${formatKRW(gongguMargin)} ÷ ${1 + vatPct / 100})`, value: gongguMarginSupply, indent: true },
-        ]
-      : [
-          { label: `공구 취급액 (참고 — 영업이익 미포함)`, value: gongguGross, indent: true },
-          { label: '+ 공구 사업부 마진',                   value: gongguMargin, indent: true },
-        ]
+    ? [
+        { label: `공구 취급액 (영세율 0%, 참고 — 영업이익 미포함)`, value: gongguGross, indent: true },
+        { label: '+ 공구 사업부 마진 (영세율 0% — 전액 가산)',      value: gongguMargin, indent: true },
+      ]
     : []
   return [
     { label: `총 매출 (VAT ${vatPct}% 포함)`,      value: s.total_revenue },
@@ -439,14 +432,9 @@ export default function MonthlyReportPage() {
 
                   {(activeData.gonggu_margin ?? 0) > 0 && (
                     <div className={`text-xs text-gray-400 ${activeData.total_incentive > 0 ? 'mt-1' : 'mt-4 pt-3 border-t'}`}>
-                      * 공구 사업부는 취급액·마진 모두 VAT 포함 수취액 기준 — 취급액 {formatKRW(activeData.gonggu_gross_sales ?? 0)}은 참고 표기이며,
-                      {(activeData.gonggu_margin_supply ?? 0) > 0 ? (
-                        <> 마진 {formatKRW(activeData.gonggu_margin ?? 0)} 중 공급가액 {formatKRW(activeData.gonggu_margin_supply ?? 0)}만
-                        영업이익에 합산되고 부가세 {formatKRW((activeData.gonggu_margin ?? 0) - (activeData.gonggu_margin_supply ?? 0))}는
-                        납부용으로 제외됩니다. (취급액의 매출부가세는 매입세액공제 후 실납부액이 마진 부가세와 동일)</>
-                      ) : (
-                        <> 마진 {formatKRW(activeData.gonggu_margin ?? 0)}만 영업이익에 합산됩니다. (부가세 반영 전 구버전 정산 — 재계산 시 갱신)</>
-                      )}
+                      * 공구 사업부는 대만 셀러 대상 수출로 부가세 영세율(0%) 적용 — 취급액 {formatKRW(activeData.gonggu_gross_sales ?? 0)}은
+                      참고 표기이며 마진 {formatKRW(activeData.gonggu_margin ?? 0)} 전액이 영업이익에 합산됩니다.
+                      (부가세 납부 없음, 국내 매입 시 낸 매입부가세는 환급 대상)
                     </div>
                   )}
                 </CardContent>

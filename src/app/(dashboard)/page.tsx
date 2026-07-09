@@ -476,11 +476,11 @@ export default function DashboardPage() {
         </Card>
         {(gongguGross > 0 || gongguMargin > 0) && (
           <Card className="border-purple-200">
-            <CardHeader className="pb-1"><CardTitle className="text-sm text-purple-600">{selMonth}월 공구 취급액 (VAT 포함)</CardTitle></CardHeader>
+            <CardHeader className="pb-1"><CardTitle className="text-sm text-purple-600">{selMonth}월 공구 취급액 (영세율 0%)</CardTitle></CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-purple-700">{formatKRW(gongguGross)}</div>
               <p className="text-xs text-purple-500 mt-1">
-                마진 {formatKRW(gongguMargin)} (VAT 포함) ·{' '}
+                마진 {formatKRW(gongguMargin)} ·{' '}
                 <Link href="/gonggu" className="hover:underline">상세 보기</Link>
               </p>
             </CardContent>

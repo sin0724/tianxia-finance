@@ -59,7 +59,6 @@ function toSnakeCase(r: SettlementResult) {
     total_payroll: r.totalPayroll,
     gonggu_gross_sales: r.gongguGrossSales,
     gonggu_margin: r.gongguMargin,
-    gonggu_margin_supply: r.gongguMarginSupply,
     operating_profit: r.operatingProfit,
     corporate_tax_reserve: r.corporateTaxReserve,
     retained_earnings: r.retainedEarnings,
@@ -202,7 +201,7 @@ async function computeBothSettlements(year: number, month: number) {
     .eq('year', year)
     .eq('month', month)
 
-  // 공구 사업부 실적 — 취급액·마진 모두 VAT 포함 수취액. 취급액은 참고 표기, 마진 공급가액만 영업이익에 가산
+  // 공구 사업부 실적 — 수출 영세율(0%) 적용. 취급액은 참고 표기, 마진 전액 영업이익에 가산
   const { data: gongguRows } = await supabase
     .from('gonggu_sales')
     .select('gross_sales, margin')
