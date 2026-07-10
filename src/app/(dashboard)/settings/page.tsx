@@ -119,11 +119,11 @@ export default function SettingsPage() {
             <div>CRON_SECRET={"<"}Cron 인증 시크릿{">"}</div>
           </div>
           <p className="text-xs text-gray-400">
-            시트 컬럼: A=동기화 ID(자동 기록 — 수정 금지), B=날짜, C=상호명, D=대표자, E=전화번호, F=담당자, G=금액, H=특이사항, I=입금상태
+            시트 컬럼: B=날짜, C=상호명, D=대표자, E=전화번호, F=담당자, G=금액, H=특이사항, I=입금상태, <strong>M=동기화 ID(자동 기록 — 수정 금지)</strong>
           </p>
           <p className="text-xs text-gray-400">
-            동기화 시 A열에 고유 ID가 자동 기록되어, 이후 상호명·금액을 수정해도 중복 집계되지 않습니다.
-            (서비스 계정에 시트 <strong>편집</strong> 권한 필요)
+            동기화 시 M열에 고유 ID가 자동 기록되어, 이후 상호명·금액을 수정해도 중복 집계되지 않습니다.
+            M열은 시트에서 숨김 처리해도 됩니다. (서비스 계정에 시트 <strong>편집</strong> 권한 필요)
           </p>
           <p className="text-xs text-gray-400">
             Cron 자동 동기화: <code className="bg-gray-100 px-1 rounded">POST /api/sync-sheets</code> (Authorization: Bearer CRON_SECRET)

@@ -79,14 +79,25 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const router = useRouter()
   const [unmatchedCount, setUnmatchedCount] = useState(0)
 
-  // 미연결 결제 건수 배지 — 페이지 이동 시마다 갱신
+  // 프로젝트 미연결 "확정 입금" 건수 배지 — 페이지 이동·창 포커스 시 갱신
+  // (수금 예정 건은 수금 관리 탭에서 따로 관리되므로 제외)
   useEffect(() => {
     const supabase = createClient()
-    supabase
-      .from('payments')
-      .select('id', { count: 'exact', head: true })
-      .eq('matched', false)
-      .then(({ count }) => setUnmatchedCount(count ?? 0))
+    const refresh = () => {
+      supabase
+        .from('payments')
+        .select('id', { count: 'exact', head: true })
+        .eq('matched', false)
+        .eq('status', 'confirmed')
+        .then(({ count }) => setUnmatchedCount(count ?? 0))
+    }
+    refresh()
+    window.addEventListener('focus', refresh)
+    window.addEventListener('refresh-badges', refresh)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener('refresh-badges', refresh)
+    }
   }, [pathname])
 
   async function handleLogout() {
@@ -143,7 +154,10 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                   <Icon size={16} />
                   <span className="flex-1">{label}</span>
                   {badge === 'unmatched' && unmatchedCount > 0 && (
-                    <span className="text-[11px] font-semibold bg-orange-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center">
+                    <span
+                      className="text-[11px] font-semibold bg-orange-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"
+                      title={`프로젝트 미연결 입금 ${unmatchedCount}건 — 결제 내역에서 연결해주세요`}
+                    >
                       {unmatchedCount}
                     </span>
                   )}

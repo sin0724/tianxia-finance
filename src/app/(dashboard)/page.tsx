@@ -144,7 +144,8 @@ export default function DashboardPage() {
     const confirmed = paymentRows.filter(
       (p) => p.status === 'confirmed' && !p.excluded && p.projects?.status !== 'cancelled'
     )
-    const unmatched = paymentRows.filter((p) => !p.matched)
+    // 미연결 알림은 확정 입금만 대상 (수금 예정은 수금 관리 탭에서 관리)
+    const unmatched = paymentRows.filter((p) => !p.matched && p.status === 'confirmed')
     const refunds = confirmed.filter((p) => p.amount < 0)
     setPaymentTotal(confirmed.reduce((sum, p) => sum + p.amount, 0))
     setRefundTotal(refunds.reduce((sum, p) => sum + p.amount, 0))

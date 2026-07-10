@@ -194,11 +194,14 @@ export async function POST(request: Request) {
 
       if (legacyMatch) {
         // 기존 건에 새 동기화 ID를 부여하고 시트에도 기록 — 다음부터는 내용이 바뀌어도 중복되지 않는다
-        const { error } = await supabase.from('payments')
-          .update({ external_id: newSyncId }).eq('id', legacyMatch.id)
-        if (!error) {
-          byExternalId.set(newSyncId, { ...legacyMatch, external_id: newSyncId })
-          writeBacks.push({ rowIndex: row.rowIndex, syncId: newSyncId })
+        // (ID 셀에 다른 내용이 있으면 기록하지 않고 매번 레거시 매칭으로 처리)
+        if (!row.idCellOccupied) {
+          const { error } = await supabase.from('payments')
+            .update({ external_id: newSyncId }).eq('id', legacyMatch.id)
+          if (!error) {
+            byExternalId.set(newSyncId, { ...legacyMatch, external_id: newSyncId })
+            writeBacks.push({ rowIndex: row.rowIndex, syncId: newSyncId })
+          }
         }
         skipped++
         continue
@@ -342,7 +345,7 @@ export async function POST(request: Request) {
         errors.push({ row: row.rowIndex, reason: `결제 저장 실패: ${insertErr.message}` })
       } else {
         synced++
-        writeBacks.push({ rowIndex: row.rowIndex, syncId: newSyncId })
+        if (!row.idCellOccupied) writeBacks.push({ rowIndex: row.rowIndex, syncId: newSyncId })
         if (row.clientName) {
           softDupMap.set(`${row.date}|${normName(row.clientName)}|${row.amount}|${normMemo(dbMemo)}`, {
             id: '', external_id: newSyncId, payment_date: row.date,

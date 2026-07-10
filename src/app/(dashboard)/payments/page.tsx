@@ -146,6 +146,8 @@ export default function PaymentsPage() {
     setProjects(projRes.data ?? [])
     setClients(clientRes.data ?? [])
     setLoading(false)
+    // 사이드바 미연결 배지 즉시 갱신
+    window.dispatchEvent(new Event('refresh-badges'))
   }
 
   useEffect(() => { load() }, [year, month])  // eslint-disable-line react-hooks/exhaustive-deps

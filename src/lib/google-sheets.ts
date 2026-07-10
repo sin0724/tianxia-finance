@@ -5,7 +5,8 @@ export type PaymentStatus = '입금완료' | '잔금처리요망' | '미입금' 
 
 export type SheetRow = {
   rowIndex: number       // 시트 내 실제 행 번호 (1-based)
-  syncId: string         // A열에 기록된 고유 동기화 ID (없으면 '')
+  syncId: string         // M열에 기록된 고유 동기화 ID — tx_ 형식일 때만 인정 (없으면 '')
+  idCellOccupied: boolean // M열에 ID가 아닌 다른 내용이 있어 기록 불가
   date: string           // YYYY-MM-DD (B열)
   clientName: string     // 상호명 (C열)
   representative: string // 대표자 (D열)
@@ -15,6 +16,10 @@ export type SheetRow = {
   memo: string           // 특이사항 (H열)
   status: PaymentStatus  // 입금상태 (I열)
 }
+
+/** 동기화 ID를 기록하는 열 — A(체크박스)·J(계산서)·K(메모)는 팀이 사용 중이라 여유를 두고 M열 사용 */
+const SYNC_ID_COLUMN = 'M'
+const SYNC_ID_HEADER = '동기화ID (수정금지)'
 
 function getSheetsClient(readonly: boolean): { sheets: sheets_v4.Sheets; sheetId: string; sheetName: string } {
   const credentialsRaw = process.env.GOOGLE_SHEETS_CREDENTIALS
@@ -37,15 +42,16 @@ function getSheetsClient(readonly: boolean): { sheets: sheets_v4.Sheets; sheetId
 }
 
 /**
- * 시트 컬럼 구조: A=동기화ID(자동 기록) B=날짜 C=상호명 D=대표자 E=전화번호 F=담당자 G=금액 H=특이사항 I=입금상태
- * fromDate 이후 데이터만 반환. A열 ID는 앱이 write-back하며 사용자는 건드리지 않는다.
+ * 시트 컬럼 구조: B=날짜 C=상호명 D=대표자 E=전화번호 F=담당자 G=금액 H=특이사항 I=입금상태 M=동기화ID(자동 기록)
+ * A(체크박스)·J(계산서)·K(수기 메모)는 팀이 사용 중이므로 건드리지 않는다.
+ * fromDate 이후 데이터만 반환. M열 ID는 앱이 write-back하며 사용자는 건드리지 않는다.
  */
 export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[]> {
   const { sheets, sheetId, sheetName } = getSheetsClient(true)
 
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${sheetName}!A2:I`,  // A열(동기화 ID)부터 I열(입금상태)까지, 헤더 제외
+    range: `${sheetName}!B2:${SYNC_ID_COLUMN}`,  // B열(날짜)부터 M열(동기화 ID)까지, 헤더 제외
   })
 
   const rows = response.data.values ?? []
@@ -53,9 +59,9 @@ export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[
 
   return rows
     .map((row, idx) => {
-      // A=row[0], B=row[1], C=row[2], D=row[3], E=row[4], F=row[5], G=row[6], H=row[7], I=row[8]
-      const rawDate = String(row[1] ?? '').trim()
-      const rawAmount = String(row[6] ?? '').trim().replace(/,/g, '').replace(/[^\d.-]/g, '')
+      // B=row[0], C=row[1], D=row[2], E=row[3], F=row[4], G=row[5], H=row[6], I=row[7], ..., M=row[11]
+      const rawDate = String(row[0] ?? '').trim()
+      const rawAmount = String(row[5] ?? '').trim().replace(/,/g, '').replace(/[^\d.-]/g, '')
       const amount = parseFloat(rawAmount)
 
       if (!rawDate || isNaN(amount) || amount <= 0) return null
@@ -65,18 +71,23 @@ export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[
 
       if (date < cutoff) return null
 
-      const status = normalizeStatus(String(row[8] ?? '').trim())
+      const status = normalizeStatus(String(row[7] ?? '').trim())
+
+      // ID 셀에 tx_ 형식이 아닌 값이 있으면 무시하고 덮어쓰지도 않는다 (사용자 데이터 보호)
+      const rawIdCell = String(row[11] ?? '').trim()
+      const isValidId = /^tx_/.test(rawIdCell)
 
       return {
         rowIndex: idx + 2,
-        syncId: String(row[0] ?? '').trim(),
+        syncId: isValidId ? rawIdCell : '',
+        idCellOccupied: !!rawIdCell && !isValidId,
         date,
-        clientName: String(row[2] ?? '').trim(),
-        representative: String(row[3] ?? '').trim(),
-        phone: String(row[4] ?? '').trim(),
-        manager: String(row[5] ?? '').trim(),
+        clientName: String(row[1] ?? '').trim(),
+        representative: String(row[2] ?? '').trim(),
+        phone: String(row[3] ?? '').trim(),
+        manager: String(row[4] ?? '').trim(),
         amount,
-        memo: String(row[7] ?? '').trim(),
+        memo: String(row[6] ?? '').trim(),
         status,
       }
     })
@@ -84,9 +95,9 @@ export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[
 }
 
 /**
- * 동기화 ID를 시트 A열에 기록 (write-back).
+ * 동기화 ID를 시트 M열에 기록 (write-back).
  * 이후에는 상호명·금액·메모를 수정해도 같은 행으로 인식되어 중복 집계가 발생하지 않는다.
- * 서비스 계정에 시트 편집 권한이 필요하다.
+ * 서비스 계정에 시트 편집 권한이 필요하다. M열은 시트에서 숨김 처리해도 무방하다.
  */
 export async function writeBackSyncIds(entries: { rowIndex: number; syncId: string }[]): Promise<void> {
   if (entries.length === 0) return
@@ -96,10 +107,14 @@ export async function writeBackSyncIds(entries: { rowIndex: number; syncId: stri
     spreadsheetId: sheetId,
     requestBody: {
       valueInputOption: 'RAW',
-      data: entries.map((e) => ({
-        range: `${sheetName}!A${e.rowIndex}`,
-        values: [[e.syncId]],
-      })),
+      data: [
+        // 헤더도 함께 유지 — 열의 용도를 시트에서 알 수 있게
+        { range: `${sheetName}!${SYNC_ID_COLUMN}1`, values: [[SYNC_ID_HEADER]] },
+        ...entries.map((e) => ({
+          range: `${sheetName}!${SYNC_ID_COLUMN}${e.rowIndex}`,
+          values: [[e.syncId]],
+        })),
+      ],
     },
   })
 }
