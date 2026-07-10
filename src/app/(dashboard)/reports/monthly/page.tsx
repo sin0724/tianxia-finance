@@ -4,9 +4,11 @@ import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { RefreshCw, Trash2, AlertTriangle } from 'lucide-react'
+import { useMonth } from '@/components/shared/month-context'
+import { MonthNavigator } from '@/components/shared/month-navigator'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -59,9 +61,7 @@ function makeRows(s: SettlementData, rates: SettlementRates, reps: Representativ
 
 export default function MonthlyReportPage() {
   const supabase = createClient()
-  const now = new Date()
-  const [year, setYear]   = useState(now.getFullYear())
-  const [month, setMonth] = useState(now.getMonth() + 1)
+  const { year, month } = useMonth()
 
   const [settlement, setSettlement]               = useState<MonthlySettlement | null>(null)
   const [history, setHistory]                     = useState<MonthlySettlement[]>([])
@@ -131,8 +131,7 @@ export default function MonthlyReportPage() {
       .gte('payment_date', start)
       .lte('payment_date', end)
       .eq('matched', true)
-      .not('memo', 'ilike', '%⚠ 잔금 처리 요망%')
-      .not('memo', 'ilike', '%🔴 미입금%')
+      .eq('status', 'confirmed')
 
     const projectMap: Record<string, string> = {}
     for (const p of payments ?? []) {
@@ -210,15 +209,8 @@ export default function MonthlyReportPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">월별 정산 리포트</h1>
-        <div className="flex items-center gap-2">
-          <select className="border rounded-md px-3 py-2 text-sm" value={year}
-            onChange={(e) => setYear(Number(e.target.value))}>
-            {[2023, 2024, 2025, 2026].map((y) => <option key={y} value={y}>{y}년</option>)}
-          </select>
-          <select className="border rounded-md px-3 py-2 text-sm" value={month}
-            onChange={(e) => setMonth(Number(e.target.value))}>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}월</option>)}
-          </select>
+        <div className="flex items-center gap-2 flex-wrap">
+          <MonthNavigator />
 
           {settlement && (
             <Button

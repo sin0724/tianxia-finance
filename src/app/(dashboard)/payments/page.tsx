@@ -1,52 +1,83 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
+import { useForm, Controller } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { CurrencyInput } from '@/components/ui/currency-input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, Link2, CheckCircle, FolderOpen, EyeOff } from 'lucide-react'
+import { toast } from '@/lib/toast'
+import { Plus, Pencil, Trash2, Link2, CheckCircle, FolderOpen, EyeOff, Search, ArrowUp, ArrowDown } from 'lucide-react'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { findSimilar } from '@/lib/utils/levenshtein'
-import type { Payment, Project, Client } from '@/types/database'
+import { useMonth } from '@/components/shared/month-context'
+import { MonthNavigator } from '@/components/shared/month-navigator'
+import type { Payment, Project, Client, PaymentStatus } from '@/types/database'
 
 type PaymentWithRelations = Payment & {
   projects: { name: string; status: string; clients: { name: string } | null } | null
 }
 
-// 정확한 상태 태그 문자열로만 판별 (일반 메모의 ⚠/🔴 오탐 방지)
-const isPendingPayment = (p: { memo: string | null }) =>
-  !!(p.memo?.includes('⚠ 잔금 처리 요망') || p.memo?.includes('🔴 미입금'))
+const PENDING_LABEL: Record<Exclude<PaymentStatus, 'confirmed'>, string> = {
+  balance_due: '잔금 처리 요망',
+  unpaid: '미입금',
+}
 
-const isExcludedPayment = (p: { memo: string | null }) =>
-  !!(p.memo?.includes('🚫 집계 제외'))
+// ─── 결제 추가/수정 폼 (react-hook-form + zod) ─────────────
+const paymentFormSchema = z.object({
+  payment_date: z.string().min(1, '결제일을 입력해주세요.'),
+  amount: z.string()
+    .min(1, '금액을 입력해주세요.')
+    .refine((v) => v !== '-' && !isNaN(Number(v)) && Number(v) !== 0, '올바른 금액을 입력해주세요.'),
+  client_name: z.string(),
+  project_id: z.string(),
+  payment_type: z.string(),
+  manager: z.string(),
+  memo: z.string(),
+})
+type PaymentFormValues = z.infer<typeof paymentFormSchema>
+
+const emptyPaymentForm: PaymentFormValues = {
+  payment_date: '', amount: '', client_name: '',
+  project_id: '', payment_type: '', manager: '', memo: '',
+}
+
+type SortKey = 'payment_date' | 'client' | 'amount'
 
 export default function PaymentsPage() {
   const supabase = createClient()
-  const now = new Date()
+  const { year, month } = useMonth()
   const [tab, setTab] = useState<'confirmed' | 'pending'>('confirmed')
-  const [year, setYear] = useState(now.getFullYear())
-  const [month, setMonth] = useState(now.getMonth() + 1)
   const [payments, setPayments] = useState<PaymentWithRelations[]>([])
   const [allPending, setAllPending] = useState<PaymentWithRelations[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [clients, setClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(true)
 
+  // 검색·정렬
+  const [search, setSearch] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('payment_date')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
   // 결제 추가/수정 다이얼로그
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Payment | null>(null)
-  const [form, setForm] = useState({
-    project_id: '', client_name: '', amount: '', payment_date: '',
-    payment_type: '' as Payment['payment_type'], manager: '', memo: '',
+  const {
+    register, handleSubmit, control, reset,
+    formState: { errors, isSubmitting },
+  } = useForm<PaymentFormValues>({
+    resolver: zodResolver(paymentFormSchema),
+    defaultValues: emptyPaymentForm,
   })
 
   // 프로젝트 연결 다이얼로그
@@ -64,28 +95,15 @@ export default function PaymentsPage() {
   const [confirmDate, setConfirmDate] = useState('')
   const [confirmProjectId, setConfirmProjectId] = useState('')
 
-  // 수금 예정 수정 다이얼로그
-  const [editPendingOpen, setEditPendingOpen] = useState(false)
-  const [editPendingTarget, setEditPendingTarget] = useState<PaymentWithRelations | null>(null)
-  const [editPendingForm, setEditPendingForm] = useState({
-    client_name_raw: '',
-    amount: '',
-    payment_date: '',
-    payment_type: '' as Payment['payment_type'],
-    pendingStatus: '미입금' as '미입금' | '잔금 처리 요망',
-    manager: '',
-    project_id: '',
-    memo: '',
-  })
-
-  // 수금 예정 추가 다이얼로그
-  const [addPendingOpen, setAddPendingOpen] = useState(false)
+  // 수금 예정 추가/수정 다이얼로그 (공용 폼)
+  const [pendingOpen, setPendingOpen] = useState(false)
+  const [pendingEditing, setPendingEditing] = useState<PaymentWithRelations | null>(null)
   const [pendingForm, setPendingForm] = useState({
     client_name_raw: '',
     amount: '',
     payment_date: '',
-    payment_type: '' as Payment['payment_type'],
-    pendingStatus: '미입금' as '미입금' | '잔금 처리 요망',
+    payment_type: '' as string,
+    status: 'unpaid' as 'unpaid' | 'balance_due',
     manager: '',
     project_id: '',
     memo: '',
@@ -98,167 +116,94 @@ export default function PaymentsPage() {
     const lastDay = new Date(year, month, 0).getDate()
     const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 
-    const { data, error } = await supabase
-      .from('payments')
-      .select('*, projects(name, clients(name))')
-      .gte('payment_date', start)
-      .lte('payment_date', end)
-      .order('payment_date', { ascending: false })
+    const [paymentsRes, pendingRes, projRes, clientRes] = await Promise.all([
+      supabase
+        .from('payments')
+        .select('*, projects(name, status, clients(name))')
+        .eq('status', 'confirmed')
+        .gte('payment_date', start)
+        .lte('payment_date', end)
+        .order('payment_date', { ascending: false }),
+      supabase
+        .from('payments')
+        .select('*, projects(name, status, clients(name))')
+        .in('status', ['balance_due', 'unpaid'])
+        .order('payment_date', { ascending: false }),
+      supabase
+        .from('projects')
+        .select('*')
+        .in('status', ['ongoing', 'completed'])
+        .order('name'),
+      supabase.from('clients').select('*').order('name'),
+    ])
 
-    if (error) toast.error('데이터 로드 실패: ' + error.message)
-    setPayments((data as unknown as PaymentWithRelations[]) ?? [])
-
-    // 수금 관리: 월 필터 없이 전체 미수금 항목 (취소 프로젝트 제외)
-    const { data: pendingData } = await supabase
-      .from('payments')
-      .select('*, projects(name, status, clients(name))')
-      .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
-      .order('payment_date', { ascending: false })
+    if (paymentsRes.error) toast.error('데이터 로드 실패: ' + paymentsRes.error.message)
+    setPayments((paymentsRes.data as unknown as PaymentWithRelations[]) ?? [])
     setAllPending(
-      ((pendingData as unknown as PaymentWithRelations[]) ?? [])
+      ((pendingRes.data as unknown as PaymentWithRelations[]) ?? [])
         .filter((p) => p.projects?.status !== 'cancelled')
     )
-
-    const { data: proj } = await supabase
-      .from('projects')
-      .select('*')
-      .in('status', ['ongoing', 'completed'])
-      .order('name')
-    setProjects(proj ?? [])
-
-    const { data: clientData } = await supabase.from('clients').select('*').order('name')
-    setClients(clientData ?? [])
+    setProjects(projRes.data ?? [])
+    setClients(clientRes.data ?? [])
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [year, month])
+  useEffect(() => { load() }, [year, month])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── 결제 추가/수정 ────────────────────────────────────
   function openAdd() {
     setEditing(null)
-    setForm({
-      project_id: '', client_name: '', amount: '',
-      payment_date: new Date().toISOString().split('T')[0],
-      payment_type: null, manager: '', memo: '',
-    })
+    reset({ ...emptyPaymentForm, payment_date: new Date().toISOString().split('T')[0] })
     setDialogOpen(true)
   }
 
   function openEdit(p: Payment) {
     setEditing(p)
-    setForm({
+    reset({
       project_id: p.project_id ?? '',
       client_name: p.client_name_raw ?? '',
       amount: String(p.amount),
       payment_date: p.payment_date,
-      payment_type: p.payment_type,
+      payment_type: p.payment_type ?? '',
       manager: p.manager ?? '',
       memo: p.memo ?? '',
     })
     setDialogOpen(true)
   }
 
-  async function handleSave() {
-    const amount = parseFloat(form.amount)
-    if (!form.payment_date || isNaN(amount)) {
-      toast.error('날짜와 금액은 필수입니다.')
-      return
-    }
+  async function onSubmitPayment(values: PaymentFormValues) {
+    const amount = Number(values.amount)
 
-    let projectId = form.project_id || null
-    let matched = !!form.project_id
-    const clientNameRaw = form.client_name.trim() || null
-
-    // 프로젝트 미선택 + 상호명 입력 시 클라이언트·프로젝트 자동 생성
-    if (!projectId && clientNameRaw && !editing) {
-      // 1. 클라이언트 찾기 또는 생성
-      const { data: existingClient } = await supabase
-        .from('clients')
-        .select('id')
-        .ilike('name', clientNameRaw)
-        .limit(1)
-        .maybeSingle()
-
-      let clientId = existingClient?.id ?? null
-      if (!clientId) {
-        const { data: newClient, error: clientErr } = await supabase
-          .from('clients')
-          .insert({ name: clientNameRaw, manager: form.manager || null })
-          .select('id')
-          .single()
-        if (clientErr) { toast.error(`클라이언트 생성 실패: ${clientErr.message}`); return }
-        clientId = newClient?.id ?? null
-      }
-
-      // 2. 잔여 결제가 남은 프로젝트(진행중 우선 → 완료의 잔금)에만 합친다.
-      //    완납된 프로젝트엔 붙이지 않고, 같은 클라이언트라도 별개 계약(재계약)으로 보고 새로 생성.
-      if (clientId) {
-        const { data: projs } = await supabase
-          .from('projects')
-          .select('id, status, total_amount')
-          .eq('client_id', clientId)
-          .neq('status', 'cancelled')
-          .order('created_at', { ascending: false })
-        const candidates = projs ?? []
-
-        let target: { id: string } | null = null
-        if (candidates.length > 0) {
-          const { data: pays } = await supabase
-            .from('payments')
-            .select('project_id, amount')
-            .in('project_id', candidates.map((p) => p.id))
-          const paidByProject: Record<string, number> = {}
-          for (const pay of pays ?? []) {
-            if (pay.project_id) paidByProject[pay.project_id] = (paidByProject[pay.project_id] ?? 0) + pay.amount
-          }
-          target =
-            candidates.find((p) => p.status === 'ongoing' && (paidByProject[p.id] ?? 0) < p.total_amount) ??
-            candidates.find((p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount) ??
-            null
-        }
-
-        if (target) {
-          projectId = target.id
-        } else {
-          const isRenewal = candidates.length > 0
-          const { data: newProj, error: projErr } = await supabase
-            .from('projects')
-            .insert({
-              client_id: clientId,
-              name: isRenewal ? `${clientNameRaw} (재계약 ${candidates.length}차)` : clientNameRaw,
-              total_amount: amount,
-              contract_date: form.payment_date,
-              status: 'ongoing',
-              memo: isRenewal ? '재계약 (자동 생성)' : null,
-            })
-            .select('id')
-            .single()
-          if (projErr) { toast.error(`프로젝트 생성 실패: ${projErr.message}`); return }
-          projectId = newProj?.id ?? null
-        }
-        matched = !!projectId
-      }
-    }
-
-    const payload = {
-      project_id: projectId,
-      amount,
-      payment_date: form.payment_date,
-      payment_type: form.payment_type,
-      manager: form.manager || null,
-      memo: form.memo || null,
-      source: 'manual' as const,
-      matched,
-      client_name_raw: clientNameRaw,
-    }
     if (editing) {
-      const { error } = await supabase.from('payments').update(payload).eq('id', editing.id)
+      const { error } = await supabase.from('payments').update({
+        project_id: values.project_id || null,
+        amount,
+        payment_date: values.payment_date,
+        payment_type: (values.payment_type || null) as Payment['payment_type'],
+        manager: values.manager || null,
+        memo: values.memo || null,
+        matched: !!values.project_id,
+        client_name_raw: values.client_name.trim() || null,
+      }).eq('id', editing.id)
       if (error) { toast.error(error.message); return }
       toast.success('수정되었습니다.')
     } else {
-      const { error } = await supabase.from('payments').insert(payload)
+      // 클라이언트·프로젝트 자동 생성 포함 — DB 함수로 원자적으로 처리
+      const { data, error } = await supabase.rpc('add_payment_with_auto_project', {
+        p_amount: amount,
+        p_payment_date: values.payment_date,
+        p_payment_type: values.payment_type || null,
+        p_manager: values.manager || null,
+        p_memo: values.memo || null,
+        p_client_name: values.client_name || null,
+        p_project_id: values.project_id || null,
+        p_status: 'confirmed',
+      })
       if (error) { toast.error(error.message); return }
-      toast.success(matched ? '결제가 추가되었습니다.' : '결제가 추가되었습니다. (프로젝트 연결 필요)')
+      const result = data as { project_id: string | null; created_project: boolean } | null
+      if (result?.created_project) toast.success('결제가 추가되었습니다. (프로젝트 자동 생성)')
+      else if (result?.project_id) toast.success('결제가 추가되었습니다.')
+      else toast.success('결제가 추가되었습니다. (프로젝트 연결 필요)')
     }
     setDialogOpen(false)
     load()
@@ -274,20 +219,9 @@ export default function PaymentsPage() {
 
   // ─── 집계 제외 토글 ──────────────────────────────────
   async function handleToggleExclude(p: PaymentWithRelations) {
-    const excluded = isExcludedPayment(p)
-    let newMemo: string | null
-    if (excluded) {
-      newMemo = (p.memo ?? '')
-        .replace('🚫 집계 제외', '')
-        .replace(/^\s*\|\s*/, '')
-        .replace(/\s*\|\s*$/, '')
-        .trim() || null
-    } else {
-      newMemo = p.memo ? `🚫 집계 제외 | ${p.memo}` : '🚫 집계 제외'
-    }
-    const { error } = await supabase.from('payments').update({ memo: newMemo }).eq('id', p.id)
+    const { error } = await supabase.from('payments').update({ excluded: !p.excluded }).eq('id', p.id)
     if (error) { toast.error(error.message); return }
-    toast.success(excluded ? '집계에 다시 포함됩니다.' : '집계에서 제외됩니다.')
+    toast.success(p.excluded ? '집계에 다시 포함됩니다.' : '집계에서 제외됩니다.')
     load()
   }
 
@@ -314,7 +248,7 @@ export default function PaymentsPage() {
     load()
   }
 
-  // ─── 입금 확정 (수금 관리 탭) ──────────────────────────
+  // ─── 입금 확정 (수금 관리 탭) — DB 함수로 원자 처리 ────
   function openConfirm(p: PaymentWithRelations) {
     setConfirmTarget(p)
     setConfirmAmount(String(p.amount))
@@ -328,46 +262,16 @@ export default function PaymentsPage() {
     const amount = parseFloat(confirmAmount)
     if (isNaN(amount) || amount <= 0) { toast.error('금액을 확인해주세요.'); return }
 
-    // 메모에서 보류 태그 제거
-    const cleanMemo = (confirmTarget.memo ?? '')
-      .replace('⚠ 잔금 처리 요망', '')
-      .replace('🔴 미입금', '')
-      .replace(/^\s*\|\s*/, '')
-      .replace(/\s*\|\s*$/, '')
-      .trim() || null
-
-    // 원본 레코드를 입금 확정 처리 (실제 입금일로 날짜 업데이트)
-    const { error } = await supabase
-      .from('payments')
-      .update({
-        amount,
-        memo: cleanMemo,
-        payment_date: confirmDate || new Date().toISOString().split('T')[0],
-        project_id: confirmProjectId || null,
-        matched: !!confirmProjectId,
-      })
-      .eq('id', confirmTarget.id)
+    const { data, error } = await supabase.rpc('confirm_pending_payment', {
+      p_payment_id: confirmTarget.id,
+      p_amount: amount,
+      p_payment_date: confirmDate || new Date().toISOString().split('T')[0],
+      p_project_id: confirmProjectId || null,
+    })
     if (error) { toast.error('처리 실패: ' + error.message); return }
 
-    // 부분 입금인 경우 — 차액을 새 수금 예정 레코드로 생성
-    const originalAmount = confirmTarget.amount
-    const remainder = originalAmount - amount
+    const remainder = (data as { remainder?: number } | null)?.remainder ?? 0
     if (remainder > 0.01) {
-      // 원본 상태 태그 유지 (잔금 → 잔금, 미입금 → 미입금)
-      const remainderTag = confirmTarget.memo?.includes('⚠') ? '⚠ 잔금 처리 요망' : '🔴 미입금'
-      const remainderMemo = [remainderTag, cleanMemo].filter(Boolean).join(' | ') || remainderTag
-
-      await supabase.from('payments').insert({
-        project_id: confirmProjectId || null,
-        amount: remainder,
-        payment_date: confirmTarget.payment_date,
-        payment_type: confirmTarget.payment_type,
-        manager: confirmTarget.manager,
-        memo: remainderMemo,
-        source: confirmTarget.source,
-        client_name_raw: confirmTarget.client_name_raw,
-        matched: !!confirmProjectId,
-      })
       toast.success(`입금 ${formatKRW(amount)} 확정. 잔여 ${formatKRW(remainder)}은 수금 관리에 남습니다.`)
     } else {
       toast.success('입금 확정 처리되었습니다. 입금액에 반영됩니다.')
@@ -378,68 +282,30 @@ export default function PaymentsPage() {
     load()
   }
 
-  // ─── 수금 예정 수정 ───────────────────────────────────
+  // ─── 수금 예정 추가/수정 ──────────────────────────────
+  function openAddPending() {
+    setPendingEditing(null)
+    setPendingForm({
+      client_name_raw: '', amount: '',
+      payment_date: new Date().toISOString().split('T')[0],
+      payment_type: '', status: 'unpaid', manager: '', project_id: '', memo: '',
+    })
+    setPendingOpen(true)
+  }
+
   function openEditPending(p: PaymentWithRelations) {
-    const isJanggeum = p.memo?.includes('⚠ 잔금 처리 요망')
-    const cleanMemo = (p.memo ?? '')
-      .replace('⚠ 잔금 처리 요망', '')
-      .replace('🔴 미입금', '')
-      .replace(/^\s*\|\s*/, '')
-      .replace(/\s*\|\s*$/, '')
-      .trim()
-    setEditPendingTarget(p)
-    setEditPendingForm({
+    setPendingEditing(p)
+    setPendingForm({
       client_name_raw: p.client_name_raw ?? '',
       amount: String(p.amount),
       payment_date: p.payment_date,
-      payment_type: p.payment_type,
-      pendingStatus: isJanggeum ? '잔금 처리 요망' : '미입금',
+      payment_type: p.payment_type ?? '',
+      status: p.status === 'balance_due' ? 'balance_due' : 'unpaid',
       manager: p.manager ?? '',
       project_id: p.project_id ?? '',
-      memo: cleanMemo,
+      memo: p.memo ?? '',
     })
-    setEditPendingOpen(true)
-  }
-
-  async function handleSavePendingEdit() {
-    if (!editPendingTarget) return
-    const amount = parseFloat(editPendingForm.amount)
-    if (!editPendingForm.client_name_raw.trim() || !editPendingForm.payment_date || isNaN(amount)) {
-      toast.error('상호명, 날짜, 금액은 필수입니다.')
-      return
-    }
-    const tag = editPendingForm.pendingStatus === '잔금 처리 요망' ? '⚠ 잔금 처리 요망' : '🔴 미입금'
-    const memo = [tag, editPendingForm.memo.trim()].filter(Boolean).join(' | ')
-    const { error } = await supabase.from('payments').update({
-      client_name_raw: editPendingForm.client_name_raw.trim(),
-      amount,
-      payment_date: editPendingForm.payment_date,
-      payment_type: editPendingForm.payment_type || null,
-      manager: editPendingForm.manager || null,
-      project_id: editPendingForm.project_id || null,
-      memo,
-      matched: !!editPendingForm.project_id,
-    }).eq('id', editPendingTarget.id)
-    if (error) { toast.error(error.message); return }
-    toast.success('수정되었습니다.')
-    setEditPendingOpen(false)
-    setEditPendingTarget(null)
-    load()
-  }
-
-  // ─── 수금 예정 추가 ───────────────────────────────────
-  function openAddPending() {
-    setPendingForm({
-      client_name_raw: '',
-      amount: '',
-      payment_date: new Date().toISOString().split('T')[0],
-      payment_type: null,
-      pendingStatus: '미입금',
-      manager: '',
-      project_id: '',
-      memo: '',
-    })
-    setAddPendingOpen(true)
+    setPendingOpen(true)
   }
 
   async function handleSavePending() {
@@ -448,22 +314,28 @@ export default function PaymentsPage() {
       toast.error('상호명, 날짜, 금액은 필수입니다.')
       return
     }
-    const tag = pendingForm.pendingStatus === '잔금 처리 요망' ? '⚠ 잔금 처리 요망' : '🔴 미입금'
-    const memo = [tag, pendingForm.memo.trim()].filter(Boolean).join(' | ')
-    const { error } = await supabase.from('payments').insert({
+    const payload = {
       client_name_raw: pendingForm.client_name_raw.trim(),
       amount,
       payment_date: pendingForm.payment_date,
-      payment_type: pendingForm.payment_type || null,
+      payment_type: (pendingForm.payment_type || null) as Payment['payment_type'],
       manager: pendingForm.manager || null,
       project_id: pendingForm.project_id || null,
-      memo,
-      source: 'manual' as const,
+      memo: pendingForm.memo.trim() || null,
       matched: !!pendingForm.project_id,
-    })
-    if (error) { toast.error(error.message); return }
-    toast.success('수금 예정건이 추가되었습니다.')
-    setAddPendingOpen(false)
+      status: pendingForm.status,
+    }
+    if (pendingEditing) {
+      const { error } = await supabase.from('payments').update(payload).eq('id', pendingEditing.id)
+      if (error) { toast.error(error.message); return }
+      toast.success('수정되었습니다.')
+    } else {
+      const { error } = await supabase.from('payments').insert({ ...payload, source: 'manual' as const })
+      if (error) { toast.error(error.message); return }
+      toast.success('수금 예정건이 추가되었습니다.')
+    }
+    setPendingOpen(false)
+    setPendingEditing(null)
     load()
   }
 
@@ -483,43 +355,68 @@ export default function PaymentsPage() {
     setMatchOpen(true)
   }
 
-  // ─── 분류 ─────────────────────────────────────────────
+  // ─── 검색·정렬·분류 ───────────────────────────────────
   const isRefundPayment = (p: { amount: number }) => p.amount < 0
 
-  const confirmedList = payments.filter((p) => !isPendingPayment(p))
-  const pendingList = allPending // 수금 관리: 월 필터 없이 전체
-  const activeConfirmed = confirmedList.filter((p) => !isExcludedPayment(p))
-  const excludedList = confirmedList.filter((p) => isExcludedPayment(p))
+  const matchesSearch = (p: PaymentWithRelations, q: string) =>
+    !q || [p.client_name_raw, p.projects?.clients?.name, p.projects?.name, p.manager, p.memo]
+      .some((s) => s?.toLowerCase().includes(q))
+
+  const q = search.trim().toLowerCase()
+
+  const confirmedList = useMemo(() => {
+    const filtered = payments.filter((p) => matchesSearch(p, q))
+    const dir = sortDir === 'asc' ? 1 : -1
+    return [...filtered].sort((a, b) => {
+      if (sortKey === 'amount') return (a.amount - b.amount) * dir
+      if (sortKey === 'client') {
+        const an = a.projects?.clients?.name ?? a.client_name_raw ?? ''
+        const bn = b.projects?.clients?.name ?? b.client_name_raw ?? ''
+        return an.localeCompare(bn, 'ko') * dir
+      }
+      return a.payment_date.localeCompare(b.payment_date) * dir
+    })
+  }, [payments, q, sortKey, sortDir])
+
+  const pendingList = allPending.filter((p) => matchesSearch(p, q))
+
+  const activeConfirmed = confirmedList.filter((p) => !p.excluded)
+  const excludedList = confirmedList.filter((p) => p.excluded)
   const confirmedTotal = activeConfirmed.reduce((s, p) => s + p.amount, 0)
   const excludedTotal = excludedList.reduce((s, p) => s + p.amount, 0)
   const pendingTotal = pendingList.reduce((s, p) => s + p.amount, 0)
   const refundList = activeConfirmed.filter(isRefundPayment)
   const refundTotal = refundList.reduce((s, p) => s + p.amount, 0)
 
-  const yearOptions = [2023, 2024, 2025, 2026]
-  const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1)
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortKey(key); setSortDir(key === 'client' ? 'asc' : 'desc') }
+  }
 
-  const MonthSelector = () => (
-    <div className="flex items-center gap-2">
-      <select className="border rounded-md px-3 py-2 text-sm" value={year} onChange={(e) => setYear(Number(e.target.value))}>
-        {yearOptions.map((y) => <option key={y} value={y}>{y}년</option>)}
-      </select>
-      <select className="border rounded-md px-3 py-2 text-sm" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
-        {monthOptions.map((m) => <option key={m} value={m}>{m}월</option>)}
-      </select>
-    </div>
-  )
+  function renderSortHead(label: string, k: SortKey, className?: string) {
+    return (
+      <TableHead className={className}>
+        <button
+          onClick={() => toggleSort(k)}
+          className={`inline-flex items-center gap-1 hover:text-gray-900 ${sortKey === k ? 'text-gray-900 font-semibold' : ''}`}
+        >
+          {label}
+          {sortKey === k && (sortDir === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+        </button>
+      </TableHead>
+    )
+  }
 
   return (
     <div className="space-y-4">
       {/* 헤더 */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h1 className="text-2xl font-bold">결제 내역</h1>
         <Button onClick={openAdd}><Plus size={16} className="mr-1" />결제 추가</Button>
       </div>
 
       {/* 탭 + 월 선택 */}
-      <div className="flex items-center justify-between border-b">
+      <div className="flex items-center justify-between border-b flex-wrap gap-2">
         <div className="flex gap-1">
           <button
             onClick={() => setTab('confirmed')}
@@ -537,14 +434,32 @@ export default function PaymentsPage() {
             }`}
           >
             수금 관리
-            {pendingList.length > 0 && (
-              <span className="ml-1.5 text-xs bg-orange-100 text-orange-600 rounded-full px-1.5 py-0.5">{pendingList.length}</span>
+            {allPending.length > 0 && (
+              <span className="ml-1.5 text-xs bg-orange-100 text-orange-600 rounded-full px-1.5 py-0.5">{allPending.length}</span>
             )}
           </button>
         </div>
-        {tab === 'confirmed' && <MonthSelector />}
+        {tab === 'confirmed' && <div className="pb-1"><MonthNavigator /></div>}
         {tab === 'pending' && (
           <span className="text-xs text-gray-400 pb-1">전체 기간 미수금 표시</span>
+        )}
+      </div>
+
+      {/* 검색 */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-48 max-w-sm">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Input
+            className="pl-8"
+            placeholder="상호명·프로젝트·담당자·메모 검색"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        {search && (
+          <button onClick={() => setSearch('')} className="text-xs text-gray-400 hover:text-gray-600">
+            초기화
+          </button>
         )}
       </div>
 
@@ -572,13 +487,15 @@ export default function PaymentsPage() {
             {loading ? (
               <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
             ) : confirmedList.length === 0 ? (
-              <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">입금 내역이 없습니다.</div>
+              <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">
+                {search ? '검색 결과가 없습니다.' : '입금 내역이 없습니다.'}
+              </div>
             ) : confirmedList.map((p) => (
-              <div key={p.id} className={`bg-white rounded-lg border p-4 ${isRefundPayment(p) ? 'border-l-4 border-l-red-400 bg-red-50/30' : !p.matched ? 'border-l-4 border-l-blue-300' : ''} ${isExcludedPayment(p) ? 'opacity-50' : ''}`}>
+              <div key={p.id} className={`bg-white rounded-lg border p-4 ${isRefundPayment(p) ? 'border-l-4 border-l-red-400 bg-red-50/30' : !p.matched ? 'border-l-4 border-l-blue-300' : ''} ${p.excluded ? 'opacity-50' : ''}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`font-bold ${isExcludedPayment(p) ? 'text-gray-400 line-through' : isRefundPayment(p) ? 'text-red-600' : 'text-gray-900'}`}>{formatKRW(p.amount)}</span>
+                      <span className={`font-bold ${p.excluded ? 'text-gray-400 line-through' : isRefundPayment(p) ? 'text-red-600' : 'text-gray-900'}`}>{formatKRW(p.amount)}</span>
                       {isRefundPayment(p) && <Badge variant="destructive" className="text-xs">환불</Badge>}
                       <span className="text-xs text-gray-400">{p.payment_date}</span>
                       {p.source === 'slack' && <Badge variant="outline" className="text-xs text-gray-400">Slack</Badge>}
@@ -606,8 +523,8 @@ export default function PaymentsPage() {
                     )}
                     <Button
                       size="sm" variant="ghost"
-                      className={isExcludedPayment(p) ? 'text-orange-400' : 'text-gray-300 hover:text-orange-400'}
-                      title={isExcludedPayment(p) ? '집계 제외 중 — 클릭하여 포함' : '집계에서 제외'}
+                      className={p.excluded ? 'text-orange-400' : 'text-gray-300 hover:text-orange-400'}
+                      title={p.excluded ? '집계 제외 중 — 클릭하여 포함' : '집계에서 제외'}
                       onClick={() => handleToggleExclude(p)}
                     >
                       <EyeOff size={14} />
@@ -623,16 +540,16 @@ export default function PaymentsPage() {
           </div>
 
           {/* 데스크톱 테이블 */}
-          <div className="hidden md:block bg-white rounded-lg border">
+          <div className="hidden md:block bg-white rounded-lg border overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>결제일</TableHead>
-                  <TableHead>클라이언트</TableHead>
+                  {renderSortHead('결제일', 'payment_date')}
+                  {renderSortHead('클라이언트', 'client')}
                   <TableHead>프로젝트</TableHead>
                   <TableHead>유형</TableHead>
                   <TableHead>담당자</TableHead>
-                  <TableHead className="text-right">금액</TableHead>
+                  {renderSortHead('금액', 'amount', 'text-right')}
                   <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
@@ -640,9 +557,11 @@ export default function PaymentsPage() {
                 {loading ? (
                   <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
                 ) : confirmedList.length === 0 ? (
-                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">입금 내역이 없습니다.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">
+                    {search ? '검색 결과가 없습니다.' : '입금 내역이 없습니다.'}
+                  </TableCell></TableRow>
                 ) : confirmedList.map((p) => (
-                  <TableRow key={p.id} className={`${isRefundPayment(p) ? 'bg-red-50/40' : !p.matched ? 'bg-blue-50/30' : ''}${isExcludedPayment(p) ? ' opacity-50' : ''}`}>
+                  <TableRow key={p.id} className={`${isRefundPayment(p) ? 'bg-red-50/40' : !p.matched ? 'bg-blue-50/30' : ''}${p.excluded ? ' opacity-50' : ''}`}>
                     <TableCell>{p.payment_date}</TableCell>
                     <TableCell>
                       {p.projects?.clients?.name ?? (
@@ -667,7 +586,7 @@ export default function PaymentsPage() {
                     </TableCell>
                     <TableCell>{p.manager ?? '-'}</TableCell>
                     <TableCell className="text-right font-medium">
-                      {isExcludedPayment(p)
+                      {p.excluded
                         ? <span className="line-through text-gray-400">{formatKRW(p.amount)}</span>
                         : <span className={isRefundPayment(p) ? 'text-red-600' : ''}>{formatKRW(p.amount)}</span>
                       }
@@ -681,8 +600,8 @@ export default function PaymentsPage() {
                         )}
                         <Button
                           size="sm" variant="ghost"
-                          className={isExcludedPayment(p) ? 'text-orange-400 hover:text-orange-600' : 'text-gray-300 hover:text-orange-400'}
-                          title={isExcludedPayment(p) ? '집계 제외 중 — 클릭하여 포함' : '집계에서 제외'}
+                          className={p.excluded ? 'text-orange-400 hover:text-orange-600' : 'text-gray-300 hover:text-orange-400'}
+                          title={p.excluded ? '집계 제외 중 — 클릭하여 포함' : '집계에서 제외'}
                           onClick={() => handleToggleExclude(p)}
                         >
                           <EyeOff size={14} />
@@ -716,13 +635,12 @@ export default function PaymentsPage() {
 
           {pendingList.length === 0 ? (
             <div className="bg-white rounded-lg border text-center py-12 text-gray-400 text-sm">
-              {year}년 {month}월 수금 관리 항목이 없습니다.
+              {search ? '검색 결과가 없습니다.' : '수금 관리 항목이 없습니다.'}
             </div>
           ) : (
             <div className="space-y-2">
               {pendingList.map((p) => {
-                const isJanggeum = p.memo?.includes('⚠')
-                const isMiipgeum = p.memo?.includes('🔴')
+                const isJanggeum = p.status === 'balance_due'
                 const suggestions = findSimilar(p.client_name_raw ?? '', clientCandidates, 3, 0.35)
 
                 return (
@@ -730,9 +648,9 @@ export default function PaymentsPage() {
                     {/* 상단: 기본 정보 */}
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                       <div className="space-y-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${isJanggeum ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
-                            {isJanggeum ? '잔금 처리 요망' : '미입금'}
+                            {PENDING_LABEL[p.status as 'balance_due' | 'unpaid']}
                           </span>
                           <span className="text-sm font-semibold text-gray-800">{p.client_name_raw ?? '(상호명 없음)'}</span>
                           <span className="text-sm text-gray-400">{p.payment_date}</span>
@@ -746,15 +664,7 @@ export default function PaymentsPage() {
                         {p.projects?.name && (
                           <div className="text-xs text-gray-400">프로젝트: {p.projects.name}</div>
                         )}
-                        {/* 메모에서 태그 제거한 내용 표시 */}
-                        {(() => {
-                          const cleanNote = (p.memo ?? '')
-                            .replace('⚠ 잔금 처리 요망', '')
-                            .replace('🔴 미입금', '')
-                            .replace(/^\s*\|\s*/, '')
-                            .trim()
-                          return cleanNote ? <div className="text-xs text-gray-500 italic">{cleanNote}</div> : null
-                        })()}
+                        {p.memo && <div className="text-xs text-gray-500 italic">{p.memo}</div>}
                       </div>
 
                       {/* 액션 버튼 */}
@@ -809,50 +719,56 @@ export default function PaymentsPage() {
 
       {/* ══════════ 결제 추가/수정 다이얼로그 ══════════ */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
+        <DialogContent className="w-[calc(100%-1rem)] max-w-md max-h-[90dvh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? '결제 수정' : '결제 추가'}</DialogTitle></DialogHeader>
-          <div className="space-y-3 py-2">
-            <div className="space-y-1"><Label>결제일 *</Label>
-              <Input type="date" value={form.payment_date} onChange={(e) => setForm({ ...form, payment_date: e.target.value })} />
+          <form onSubmit={handleSubmit(onSubmitPayment)} className="space-y-3 py-2">
+            <div className="space-y-1">
+              <Label>결제일 *</Label>
+              <Input type="date" {...register('payment_date')} aria-invalid={!!errors.payment_date} />
+              {errors.payment_date && <p className="text-xs text-red-500">{errors.payment_date.message}</p>}
             </div>
-            <div className="space-y-1"><Label>금액 *</Label>
-              <Input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+            <div className="space-y-1">
+              <Label>금액 *</Label>
+              <Controller
+                name="amount"
+                control={control}
+                render={({ field }) => (
+                  <CurrencyInput value={field.value} onChange={field.onChange} aria-invalid={!!errors.amount} />
+                )}
+              />
+              {errors.amount && <p className="text-xs text-red-500">{errors.amount.message}</p>}
             </div>
             <div className="space-y-1">
               <Label>상호명</Label>
-              <Input
-                placeholder="입력 시 클라이언트·프로젝트 자동 생성"
-                value={form.client_name}
-                onChange={(e) => setForm({ ...form, client_name: e.target.value })}
-              />
+              <Input placeholder="입력 시 클라이언트·프로젝트 자동 생성" {...register('client_name')} />
             </div>
             <div className="space-y-1">
-              <Label>프로젝트 연결 {!form.client_name && <span className="text-gray-400 text-xs">(상호명 입력 시 자동 연결)</span>}</Label>
-              <select className="w-full border rounded-md px-3 py-2 text-sm" value={form.project_id}
-                onChange={(e) => setForm({ ...form, project_id: e.target.value })}>
-                <option value="">연결 안함</option>
+              <Label>프로젝트 연결</Label>
+              <select className="w-full border rounded-md px-3 py-2 text-sm" {...register('project_id')}>
+                <option value="">연결 안함 (상호명 입력 시 자동 연결)</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
             <div className="space-y-1">
               <Label>결제 유형</Label>
-              <select className="w-full border rounded-md px-3 py-2 text-sm" value={form.payment_type ?? ''}
-                onChange={(e) => setForm({ ...form, payment_type: e.target.value as Payment['payment_type'] })}>
+              <select className="w-full border rounded-md px-3 py-2 text-sm" {...register('payment_type')}>
                 <option value="">선택 안함</option>
                 {['계약금', '중도금', '잔금', '기타'].map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
-            <div className="space-y-1"><Label>담당자</Label>
-              <Input value={form.manager} onChange={(e) => setForm({ ...form, manager: e.target.value })} />
+            <div className="space-y-1">
+              <Label>담당자</Label>
+              <Input {...register('manager')} />
             </div>
-            <div className="space-y-1"><Label>메모</Label>
-              <Input value={form.memo} onChange={(e) => setForm({ ...form, memo: e.target.value })} />
+            <div className="space-y-1">
+              <Label>메모</Label>
+              <Input {...register('memo')} />
             </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>취소</Button>
-            <Button onClick={handleSave}>저장</Button>
-          </DialogFooter>
+            <DialogFooter className="pt-2">
+              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>취소</Button>
+              <Button type="submit" disabled={isSubmitting}>{isSubmitting ? '저장 중...' : '저장'}</Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -908,10 +824,9 @@ export default function PaymentsPage() {
               </div>
               <div className="space-y-1">
                 <Label>실제 입금액 *</Label>
-                <Input
-                  type="number"
+                <CurrencyInput
                   value={confirmAmount}
-                  onChange={(e) => setConfirmAmount(e.target.value)}
+                  onChange={setConfirmAmount}
                   autoFocus
                 />
                 <div className="text-xs text-gray-400 space-y-0.5">
@@ -948,94 +863,10 @@ export default function PaymentsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ══════════ 수금 예정 수정 다이얼로그 ══════════ */}
-      <Dialog open={editPendingOpen} onOpenChange={(v) => { setEditPendingOpen(v); if (!v) setEditPendingTarget(null) }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>수금 예정 수정</DialogTitle></DialogHeader>
-          <div className="space-y-3 py-2">
-            <div className="space-y-1">
-              <Label>상호명 *</Label>
-              <Input
-                value={editPendingForm.client_name_raw}
-                onChange={(e) => setEditPendingForm({ ...editPendingForm, client_name_raw: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>금액 *</Label>
-              <Input
-                type="number"
-                value={editPendingForm.amount}
-                onChange={(e) => setEditPendingForm({ ...editPendingForm, amount: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>예정일 *</Label>
-              <Input
-                type="date"
-                value={editPendingForm.payment_date}
-                onChange={(e) => setEditPendingForm({ ...editPendingForm, payment_date: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>수금 상태</Label>
-              <select
-                className="w-full border rounded-md px-3 py-2 text-sm"
-                value={editPendingForm.pendingStatus}
-                onChange={(e) => setEditPendingForm({ ...editPendingForm, pendingStatus: e.target.value as '미입금' | '잔금 처리 요망' })}
-              >
-                <option value="미입금">🔴 미입금</option>
-                <option value="잔금 처리 요망">⚠ 잔금 처리 요망</option>
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label>결제 유형</Label>
-              <select
-                className="w-full border rounded-md px-3 py-2 text-sm"
-                value={editPendingForm.payment_type ?? ''}
-                onChange={(e) => setEditPendingForm({ ...editPendingForm, payment_type: e.target.value as Payment['payment_type'] })}
-              >
-                <option value="">선택 안함</option>
-                {['계약금', '중도금', '잔금', '기타'].map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label>담당자</Label>
-              <Input
-                value={editPendingForm.manager}
-                onChange={(e) => setEditPendingForm({ ...editPendingForm, manager: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>프로젝트 연결 (선택)</Label>
-              <select
-                className="w-full border rounded-md px-3 py-2 text-sm"
-                value={editPendingForm.project_id}
-                onChange={(e) => setEditPendingForm({ ...editPendingForm, project_id: e.target.value })}
-              >
-                <option value="">연결 안함</option>
-                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label>메모</Label>
-              <Input
-                placeholder="특이사항, 계약 내용 등"
-                value={editPendingForm.memo}
-                onChange={(e) => setEditPendingForm({ ...editPendingForm, memo: e.target.value })}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setEditPendingOpen(false); setEditPendingTarget(null) }}>취소</Button>
-            <Button onClick={handleSavePendingEdit}>저장</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* ══════════ 수금 예정 추가 다이얼로그 ══════════ */}
-      <Dialog open={addPendingOpen} onOpenChange={setAddPendingOpen}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>수금 예정 추가</DialogTitle></DialogHeader>
+      {/* ══════════ 수금 예정 추가/수정 다이얼로그 ══════════ */}
+      <Dialog open={pendingOpen} onOpenChange={(v) => { setPendingOpen(v); if (!v) setPendingEditing(null) }}>
+        <DialogContent className="w-[calc(100%-1rem)] max-w-md max-h-[90dvh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{pendingEditing ? '수금 예정 수정' : '수금 예정 추가'}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
             <div className="space-y-1">
               <Label>상호명 *</Label>
@@ -1047,11 +878,9 @@ export default function PaymentsPage() {
             </div>
             <div className="space-y-1">
               <Label>금액 *</Label>
-              <Input
-                type="number"
-                placeholder="0"
+              <CurrencyInput
                 value={pendingForm.amount}
-                onChange={(e) => setPendingForm({ ...pendingForm, amount: e.target.value })}
+                onChange={(v) => setPendingForm({ ...pendingForm, amount: v })}
               />
             </div>
             <div className="space-y-1">
@@ -1066,19 +895,19 @@ export default function PaymentsPage() {
               <Label>수금 상태</Label>
               <select
                 className="w-full border rounded-md px-3 py-2 text-sm"
-                value={pendingForm.pendingStatus}
-                onChange={(e) => setPendingForm({ ...pendingForm, pendingStatus: e.target.value as '미입금' | '잔금 처리 요망' })}
+                value={pendingForm.status}
+                onChange={(e) => setPendingForm({ ...pendingForm, status: e.target.value as 'unpaid' | 'balance_due' })}
               >
-                <option value="미입금">🔴 미입금</option>
-                <option value="잔금 처리 요망">⚠ 잔금 처리 요망</option>
+                <option value="unpaid">🔴 미입금</option>
+                <option value="balance_due">⚠ 잔금 처리 요망</option>
               </select>
             </div>
             <div className="space-y-1">
               <Label>결제 유형</Label>
               <select
                 className="w-full border rounded-md px-3 py-2 text-sm"
-                value={pendingForm.payment_type ?? ''}
-                onChange={(e) => setPendingForm({ ...pendingForm, payment_type: e.target.value as Payment['payment_type'] })}
+                value={pendingForm.payment_type}
+                onChange={(e) => setPendingForm({ ...pendingForm, payment_type: e.target.value })}
               >
                 <option value="">선택 안함</option>
                 {['계약금', '중도금', '잔금', '기타'].map((t) => <option key={t} value={t}>{t}</option>)}
@@ -1112,8 +941,8 @@ export default function PaymentsPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAddPendingOpen(false)}>취소</Button>
-            <Button onClick={handleSavePending}>추가</Button>
+            <Button variant="outline" onClick={() => { setPendingOpen(false); setPendingEditing(null) }}>취소</Button>
+            <Button onClick={handleSavePending}>{pendingEditing ? '저장' : '추가'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

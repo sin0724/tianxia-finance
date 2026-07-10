@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
 import { formatKRW } from '@/lib/calculations/settlement'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -12,8 +13,10 @@ import {
 } from 'recharts'
 import type { MonthlySettlement } from '@/types/database'
 import Link from 'next/link'
-import { Bell, RefreshCw, X, ChevronLeft, ChevronRight, Calendar, ChevronDown } from 'lucide-react'
-import { toast } from 'sonner'
+import { Bell, RefreshCw, X, Calendar, ChevronDown, TrendingUp, TrendingDown } from 'lucide-react'
+import { toast } from '@/lib/toast'
+import { useMonth } from '@/components/shared/month-context'
+import { MonthNavigator } from '@/components/shared/month-navigator'
 
 const MONTH_LABELS = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
 
@@ -23,27 +26,41 @@ const CURVE_COLORS = [
   '#6366f1', '#10b981', '#e11d48', '#0ea5e9',
 ]
 
+const DISMISSED_PREF_KEY = 'dashboard_dismissed_alerts'
+
 type DashAlert = { id: string; message: string; href: string; level: 'warn' | 'info' }
 type PeriodRow = { month: string; 초순: number; 중순: number; 후순: number }
 
+/** 전월 대비 증감 표시 */
+function MoMDelta({ current, prev }: { current: number; prev: number | null }) {
+  if (prev === null || prev === 0) return null
+  const pct = ((current - prev) / Math.abs(prev)) * 100
+  if (!isFinite(pct)) return null
+  const up = pct >= 0
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-xs font-medium ${up ? 'text-green-600' : 'text-red-500'}`}>
+      {up ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+      {up ? '+' : ''}{pct.toFixed(1)}% <span className="text-gray-400 font-normal">전월 대비</span>
+    </span>
+  )
+}
 
 export default function DashboardPage() {
   const supabase = createClient()
-  const now = new Date()
-
-  // ── 선택 월 ──────────────────────────────────────────────
-  const [selYear, setSelYear]   = useState(now.getFullYear())
-  const [selMonth, setSelMonth] = useState(now.getMonth() + 1)
-  const isCurrentMonth = selYear === now.getFullYear() && selMonth === now.getMonth() + 1
+  const { year: selYear, month: selMonth, isCurrentMonth } = useMonth()
 
   // ── 데이터 ────────────────────────────────────────────────
+  const [initialLoading, setInitialLoading] = useState(true)
   const [settlement, setSettlement]   = useState<MonthlySettlement | null>(null)
+  const [prevSettlement, setPrevSettlement] = useState<MonthlySettlement | null>(null)
   const [monthlyData, setMonthlyData] = useState<{ month: string; revenue: number; profit: number }[]>([])
   const [paymentTotal, setPaymentTotal]   = useState(0)
+  const [prevPaymentTotal, setPrevPaymentTotal] = useState<number | null>(null)
   const [refundTotal, setRefundTotal]     = useState(0)
   const [pendingTotal, setPendingTotal]   = useState(0)
   const [gongguGross, setGongguGross]     = useState(0)
   const [gongguMargin, setGongguMargin]   = useState(0)
+  const [vatRate, setVatRate]             = useState(0.1)
   const [alerts, setAlerts]               = useState<DashAlert[]>([])
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
   const [permanentDismissed, setPermanentDismissed] = useState<Set<string>>(new Set())
@@ -57,103 +74,110 @@ export default function DashboardPage() {
 
   // ── 동기화 ────────────────────────────────────────────────
   const [syncing, setSyncing]             = useState(false)
-  const [lastSyncTime, setLastSyncTime]   = useState<string | null>(null)
+  const [lastSync, setLastSync]           = useState<{ runAt: string; synced: number; updated: number } | null>(null)
   const [syncFrom, setSyncFrom]           = useState(() => {
-    // 기본: 현재 월 1일
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
   })
   const [showSyncOptions, setShowSyncOptions] = useState(false)
 
+  // 다시 안보기 목록 — app_prefs에 저장되어 PC·모바일 간 공유된다
   useEffect(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem('dash_alerts_dismissed') ?? '[]')
-      setPermanentDismissed(new Set(stored as string[]))
-    } catch { /* ignore */ }
+    supabase.from('app_prefs').select('value').eq('key', DISMISSED_PREF_KEY).maybeSingle()
+      .then(({ data }) => {
+        if (Array.isArray(data?.value)) setPermanentDismissed(new Set(data.value as string[]))
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => { load() }, [selYear, selMonth])
+  useEffect(() => { load() }, [selYear, selMonth])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // 선택 월 변경 시 세션 알림 초기화
   useEffect(() => { setDismissedAlerts(new Set()) }, [selYear, selMonth])
 
   async function load() {
-    const start = `${selYear}-${String(selMonth).padStart(2, '0')}-01`
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const start = `${selYear}-${pad(selMonth)}-01`
     const lastDay = new Date(selYear, selMonth, 0).getDate()
-    const end   = `${selYear}-${String(selMonth).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    const end   = `${selYear}-${pad(selMonth)}-${pad(lastDay)}`
 
-    // 정산
-    const { data: s } = await supabase
-      .from('monthly_settlements').select('*')
-      .eq('year', selYear).eq('month', selMonth).single()
+    const prevYear  = selMonth === 1 ? selYear - 1 : selYear
+    const prevMonth = selMonth === 1 ? 12 : selMonth - 1
+    const prevStart = `${prevYear}-${pad(prevMonth)}-01`
+    const prevLastDay = new Date(prevYear, prevMonth, 0).getDate()
+    const prevEnd   = `${prevYear}-${pad(prevMonth)}-${pad(prevLastDay)}`
+
+    // 병렬 로드 — 페이지 진입 속도 개선
+    const [
+      settlementRes, prevSettlementRes, settlementsRes,
+      paymentsRes, prevPaymentsRes, pendingRes,
+      gongguRes, yearPaymentsRes, settingsRes, syncLogRes,
+    ] = await Promise.all([
+      supabase.from('monthly_settlements').select('*').eq('year', selYear).eq('month', selMonth).maybeSingle(),
+      supabase.from('monthly_settlements').select('*').eq('year', prevYear).eq('month', prevMonth).maybeSingle(),
+      supabase.from('monthly_settlements').select('year, month, total_revenue, operating_profit').eq('year', selYear).order('month'),
+      supabase.from('payments').select('amount, matched, excluded, status, projects(status)')
+        .gte('payment_date', start).lte('payment_date', end),
+      supabase.from('payments').select('amount, excluded, projects(status)')
+        .eq('status', 'confirmed').gte('payment_date', prevStart).lte('payment_date', prevEnd),
+      supabase.from('payments').select('amount, projects(status)').in('status', ['balance_due', 'unpaid']),
+      supabase.from('gonggu_sales').select('gross_sales, margin').eq('year', selYear).eq('month', selMonth),
+      supabase.from('payments').select('payment_date, amount, status, excluded, projects(status)')
+        .gte('payment_date', `${selYear}-01-01`).lte('payment_date', `${selYear}-12-31`),
+      supabase.from('settings').select('*').eq('key', 'vat_rate').maybeSingle(),
+      supabase.from('sync_logs').select('run_at, synced, updated').order('run_at', { ascending: false }).limit(1).maybeSingle(),
+    ])
+
+    const s = settlementRes.data
     setSettlement(s)
+    setPrevSettlement(prevSettlementRes.data)
 
-    // 연간 추이 (선택 연도 기준)
-    const { data: settlements } = await supabase
-      .from('monthly_settlements')
-      .select('year, month, total_revenue, operating_profit')
-      .eq('year', selYear).order('month')
-    setMonthlyData((settlements ?? []).map((r) => ({
+    setMonthlyData((settlementsRes.data ?? []).map((r) => ({
       month: MONTH_LABELS[r.month - 1],
       revenue: r.total_revenue,
       profit: r.operating_profit,
     })))
 
-    // 결제 (이번 달 — 확정 입금액·미매칭 알림용, 취소 프로젝트 제외)
-    const { data: payments } = await supabase
-      .from('payments')
-      .select('amount, matched, memo, projects(status)')
-      .gte('payment_date', start)
-      .lte('payment_date', end)
-
-    const isPending = (p: { memo: string | null }) =>
-      !!(p.memo?.includes('⚠ 잔금 처리 요망') || p.memo?.includes('🔴 미입금'))
-
-    const isExcluded = (p: { memo: string | null }) =>
-      !!(p.memo?.includes('🚫 집계 제외'))
-
-    type PaymentRow = { amount: number; matched: boolean; memo: string | null; projects: { status: string } | null }
-    const paymentRows = (payments as unknown as PaymentRow[]) ?? []
-
-    const confirmed = paymentRows.filter((p) => !isPending(p) && !isExcluded(p) && p.projects?.status !== 'cancelled')
+    // 이번 달 결제 (확정 입금액·미매칭 알림용, 취소 프로젝트 제외)
+    type PaymentRow = { amount: number; matched: boolean; excluded: boolean; status: string; projects: { status: string } | null }
+    const paymentRows = (paymentsRes.data as unknown as PaymentRow[]) ?? []
+    const confirmed = paymentRows.filter(
+      (p) => p.status === 'confirmed' && !p.excluded && p.projects?.status !== 'cancelled'
+    )
     const unmatched = paymentRows.filter((p) => !p.matched)
-
-    // 수금 예정 — 수금 관리 탭과 동일하게 전체 기간 미수금 합산 (취소 프로젝트 제외)
-    const { data: allPending } = await supabase
-      .from('payments')
-      .select('amount, projects(status)')
-      .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
-
-    type PendingRow = { amount: number; projects: { status: string } | null }
     const refunds = confirmed.filter((p) => p.amount < 0)
-    setPaymentTotal(confirmed.reduce((s, p) => s + p.amount, 0))
-    setRefundTotal(refunds.reduce((s, p) => s + p.amount, 0))
-    setPendingTotal(((allPending as unknown as PendingRow[]) ?? [])
-      .filter((p) => p.projects?.status !== 'cancelled')
-      .reduce((s, p) => s + p.amount, 0))
+    setPaymentTotal(confirmed.reduce((sum, p) => sum + p.amount, 0))
+    setRefundTotal(refunds.reduce((sum, p) => sum + p.amount, 0))
 
+    // 전월 입금액 (전월 대비 표시용)
+    type PrevRow = { amount: number; excluded: boolean; projects: { status: string } | null }
+    const prevRows = (prevPaymentsRes.data as unknown as PrevRow[]) ?? []
+    setPrevPaymentTotal(
+      prevRows.filter((p) => !p.excluded && p.projects?.status !== 'cancelled')
+        .reduce((sum, p) => sum + p.amount, 0)
+    )
+
+    // 수금 예정 — 전체 기간 미수금 합산 (취소 프로젝트 제외)
+    type PendingRow = { amount: number; projects: { status: string } | null }
+    setPendingTotal(((pendingRes.data as unknown as PendingRow[]) ?? [])
+      .filter((p) => p.projects?.status !== 'cancelled')
+      .reduce((sum, p) => sum + p.amount, 0))
 
     // 공구 사업부 실적 (선택 월)
-    const { data: gongguRows } = await supabase
-      .from('gonggu_sales')
-      .select('gross_sales, margin')
-      .eq('year', selYear)
-      .eq('month', selMonth)
-    setGongguGross((gongguRows ?? []).reduce((s, r) => s + r.gross_sales, 0))
-    setGongguMargin((gongguRows ?? []).reduce((s, r) => s + r.margin, 0))
+    setGongguGross((gongguRes.data ?? []).reduce((sum, r) => sum + r.gross_sales, 0))
+    setGongguMargin((gongguRes.data ?? []).reduce((sum, r) => sum + r.margin, 0))
+
+    setVatRate(settingsRes.data ? Number(settingsRes.data.value) : 0.1)
+
+    if (syncLogRes.data) {
+      setLastSync({ runAt: syncLogRes.data.run_at, synced: syncLogRes.data.synced, updated: syncLogRes.data.updated })
+    }
 
     // ── 초·중·후순 / 누적 추이 차트 ────────────────────────
-    const { data: yrRaw } = await supabase
-      .from('payments')
-      .select('payment_date, amount, memo, projects(status)')
-      .gte('payment_date', `${selYear}-01-01`)
-      .lte('payment_date', `${selYear}-12-31`)
-
-    type YrRow = { payment_date: string; amount: number; memo: string | null; projects: { status: string } | null }
-    const yrFiltered = ((yrRaw as unknown as YrRow[]) ?? [])
+    type YrRow = { payment_date: string; amount: number; status: string; excluded: boolean; projects: { status: string } | null }
+    const yrFiltered = ((yearPaymentsRes.data as unknown as YrRow[]) ?? [])
       .filter((p) => p.amount > 0)
-      .filter((p) => !p.memo?.includes('🚫 집계 제외'))
-      .filter((p) => !p.memo?.includes('⚠ 잔금 처리 요망') && !p.memo?.includes('🔴 미입금'))
+      .filter((p) => p.status === 'confirmed' && !p.excluded)
       .filter((p) => p.projects?.status !== 'cancelled')
 
     const periodAgg: Record<number, { 초순: number; 중순: number; 후순: number }> = {}
@@ -188,8 +212,8 @@ export default function DashboardPage() {
       const day = i + 1
       const row: Record<string, number> = { day }
       for (const m of yrMonths) {
-        const lastDay = new Date(selYear, m, 0).getDate()
-        if (day > lastDay) continue
+        const lastD = new Date(selYear, m, 0).getDate()
+        if (day > lastD) continue
         let cum = 0
         for (let d = 1; d <= day; d++) cum += dailyAgg[m][d] ?? 0
         row[`${m}월`] = cum
@@ -212,14 +236,15 @@ export default function DashboardPage() {
           message: `미연결 결제 ${unmatched.length}건 — 프로젝트를 연결해주세요.`,
           href: '/payments' })
       }
-      const { data: exp } = await supabase.from('monthly_expenses').select('id')
-        .eq('year', selYear).eq('month', selMonth).limit(1)
-      if (!exp || exp.length === 0)
+      const [expRes, empRes] = await Promise.all([
+        supabase.from('monthly_expenses').select('id').eq('year', selYear).eq('month', selMonth).limit(1),
+        supabase.from('employees').select('id').eq('active', true).limit(1),
+      ])
+      if (!expRes.data || expRes.data.length === 0)
         newAlerts.push({ id: `expenses_${ym}`, level: 'info',
           message: `${selMonth}월 지출이 아직 입력되지 않았습니다.`, href: '/expenses' })
 
-      const { data: emps } = await supabase.from('employees').select('id').eq('active', true).limit(1)
-      if (emps && emps.length > 0) {
+      if (empRes.data && empRes.data.length > 0) {
         const { data: pay } = await supabase.from('monthly_payroll').select('id')
           .eq('year', selYear).eq('month', selMonth).limit(1)
         if (!pay || pay.length === 0)
@@ -231,15 +256,7 @@ export default function DashboardPage() {
           message: `${selMonth}월 정산이 아직 계산되지 않았습니다.`, href: '/reports/monthly' })
     }
     setAlerts(newAlerts)
-  }
-
-  function prevMonth() {
-    if (selMonth === 1) { setSelYear(y => y - 1); setSelMonth(12) }
-    else setSelMonth(m => m - 1)
-  }
-  function nextMonth() {
-    if (selMonth === 12) { setSelYear(y => y + 1); setSelMonth(1) }
-    else setSelMonth(m => m + 1)
+    setInitialLoading(false)
   }
 
   async function handleSync() {
@@ -253,12 +270,16 @@ export default function DashboardPage() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
-      const parts = [`${data.synced}건 추가`, `${data.skipped}건 중복`]
+      const parts = [`${data.synced}건 추가`]
+      if (data.updated > 0) parts.push(`${data.updated}건 갱신`)
+      parts.push(`${data.skipped}건 변동 없음`)
       if (data.created > 0) parts.push(`프로젝트 ${data.created}개 생성`)
       if (data.pending > 0) parts.push(`⚠ 수금 예정 ${data.pending}건`)
       if (data.unmatched > 0) parts.push(`미매칭 ${data.unmatched}건`)
       toast.success(`동기화 완료: ${parts.join(', ')}`)
-      setLastSyncTime(new Date().toLocaleTimeString('ko-KR'))
+      if (data.writeBackError) {
+        toast.warning(`시트 ID 기록 실패 — 서비스 계정에 시트 편집 권한을 확인해주세요. (${data.writeBackError})`)
+      }
       load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '동기화 실패')
@@ -274,7 +295,9 @@ export default function DashboardPage() {
   function dismissPermanent(id: string) {
     setPermanentDismissed((prev) => {
       const next = new Set([...prev, id])
-      try { localStorage.setItem('dash_alerts_dismissed', JSON.stringify([...next])) } catch { /* ignore */ }
+      supabase.from('app_prefs')
+        .upsert({ key: DISMISSED_PREF_KEY, value: [...next], updated_at: new Date().toISOString() }, { onConflict: 'key' })
+        .then(({ error }) => { if (error) toast.error('알림 설정 저장 실패: ' + error.message) })
       return next
     })
     setDismissedAlerts((prev) => new Set([...prev, id]))
@@ -289,6 +312,16 @@ export default function DashboardPage() {
   )
   const hasWarnAlert = visibleAlerts.some((a) => a.level === 'warn')
 
+  const supplyValue = settlement?.supply_value ?? paymentTotal / (1 + vatRate)
+
+  function formatSyncTime(iso: string) {
+    const d = new Date(iso)
+    const today = new Date()
+    const sameDay = d.toDateString() === today.toDateString()
+    const time = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+    return sameDay ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`
+  }
+
   return (
     <div className="space-y-6">
 
@@ -296,41 +329,7 @@ export default function DashboardPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-bold">대시보드</h1>
-          {/* 월 네비게이터 */}
-          <div className="flex items-center gap-1 bg-gray-100 rounded-lg px-1 py-1">
-            <button onClick={prevMonth} className="p-1 rounded hover:bg-white text-gray-500 hover:text-gray-900 transition-colors">
-              <ChevronLeft size={16} />
-            </button>
-            <div className="flex items-center gap-1.5 px-2">
-              <select
-                className="bg-transparent text-sm font-semibold focus:outline-none cursor-pointer"
-                value={selYear}
-                onChange={(e) => setSelYear(Number(e.target.value))}
-              >
-                {[2023, 2024, 2025, 2026, 2027].map((y) => <option key={y} value={y}>{y}년</option>)}
-              </select>
-              <select
-                className="bg-transparent text-sm font-semibold focus:outline-none cursor-pointer"
-                value={selMonth}
-                onChange={(e) => setSelMonth(Number(e.target.value))}
-              >
-                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                  <option key={m} value={m}>{m}월</option>
-                ))}
-              </select>
-            </div>
-            <button onClick={nextMonth} className="p-1 rounded hover:bg-white text-gray-500 hover:text-gray-900 transition-colors">
-              <ChevronRight size={16} />
-            </button>
-            {!isCurrentMonth && (
-              <button
-                onClick={() => { setSelYear(now.getFullYear()); setSelMonth(now.getMonth() + 1) }}
-                className="text-xs text-blue-500 hover:text-blue-700 px-1.5"
-              >
-                오늘
-              </button>
-            )}
-          </div>
+          <MonthNavigator />
           {!isCurrentMonth && (
             <Badge variant="secondary" className="text-xs">과거 데이터</Badge>
           )}
@@ -338,7 +337,11 @@ export default function DashboardPage() {
 
         {/* 동기화 */}
         <div className="flex items-center gap-2 relative self-start sm:self-auto">
-          {lastSyncTime && <span className="text-xs text-gray-400">마지막 동기화: {lastSyncTime}</span>}
+          {lastSync && (
+            <span className="text-xs text-gray-400">
+              마지막 동기화: {formatSyncTime(lastSync.runAt)}
+            </span>
+          )}
           <div className="relative">
             <div className="flex items-center border rounded-md overflow-hidden">
               <Button
@@ -405,12 +408,13 @@ export default function DashboardPage() {
               </span>
             )}
             {alertsOpen && (
-              <button
+              <span
+                role="button"
                 onClick={(e) => { e.stopPropagation(); dismissAllSession() }}
                 className="ml-auto text-xs text-gray-400 hover:text-gray-600 mr-1"
               >
                 모두 닫기
-              </button>
+              </span>
             )}
             {!alertsOpen && <span className="flex-1" />}
             <ChevronDown size={14} className={`text-gray-400 transition-transform flex-shrink-0 ${alertsOpen ? 'rotate-180' : ''}`} />
@@ -448,16 +452,45 @@ export default function DashboardPage() {
       )}
 
       {/* ── 지표 카드 ── */}
+      {initialLoading ? (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[0, 1, 2].map((i) => (
+              <Card key={i}>
+                <CardHeader className="pb-1"><Skeleton className="h-4 w-24" /></CardHeader>
+                <CardContent className="space-y-2">
+                  <Skeleton className="h-8 w-36" />
+                  <Skeleton className="h-3 w-20" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[0, 1].map((i) => (
+              <Card key={i}>
+                <CardHeader className="pb-1"><Skeleton className="h-4 w-20" /></CardHeader>
+                <CardContent><Skeleton className="h-8 w-32" /></CardContent>
+              </Card>
+            ))}
+          </div>
+          <Card>
+            <CardHeader><Skeleton className="h-5 w-48" /></CardHeader>
+            <CardContent><Skeleton className="h-64 w-full" /></CardContent>
+          </Card>
+        </>
+      ) : (
+        <>
       <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${gongguGross > 0 || gongguMargin > 0 ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
         <Card className="border-green-200">
           <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">{selMonth}월 입금액 (바이럴)</CardTitle></CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-700">{formatKRW(paymentTotal)}</div>
-            {refundTotal < 0 ? (
-              <p className="text-xs text-red-500 mt-1">환불 {formatKRW(refundTotal)} 차감 후</p>
-            ) : (
-              <p className="text-xs text-gray-400 mt-1">입금완료 건 합계</p>
-            )}
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <MoMDelta current={paymentTotal} prev={prevPaymentTotal} />
+              {refundTotal < 0 && (
+                <p className="text-xs text-red-500">환불 {formatKRW(refundTotal)} 차감 후</p>
+              )}
+            </div>
           </CardContent>
         </Card>
         <Card className="border-yellow-200 bg-yellow-50">
@@ -470,7 +503,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">공급가액</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatKRW(settlement?.supply_value ?? paymentTotal / 1.1)}</div>
+            <div className="text-2xl font-bold">{formatKRW(supplyValue)}</div>
             <p className="text-xs text-gray-400 mt-1">VAT 제외</p>
           </CardContent>
         </Card>
@@ -495,9 +528,14 @@ export default function DashboardPage() {
             <div className={`text-2xl font-bold ${(settlement?.operating_profit ?? 0) < 0 ? 'text-red-600' : 'text-green-600'}`}>
               {settlement ? formatKRW(settlement.operating_profit) : <span className="text-gray-400 text-base">정산 전</span>}
             </div>
-            {settlement && (
-              <Link href="/reports/monthly" className="text-xs text-blue-400 hover:underline">상세 보기</Link>
-            )}
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              {settlement && prevSettlement && (
+                <MoMDelta current={settlement.operating_profit} prev={prevSettlement.operating_profit} />
+              )}
+              {settlement && (
+                <Link href="/reports/monthly" className="text-xs text-blue-400 hover:underline">상세 보기</Link>
+              )}
+            </div>
           </CardContent>
         </Card>
         <Card className="border-blue-200 bg-blue-50">
@@ -617,6 +655,8 @@ export default function DashboardPage() {
             </ResponsiveContainer>
           </CardContent>
         </Card>
+      )}
+        </>
       )}
     </div>
   )

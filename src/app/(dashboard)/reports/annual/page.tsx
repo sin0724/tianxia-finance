@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { formatKRW } from '@/lib/calculations/settlement'
+import { yearOptions } from '@/components/shared/month-context'
 import {
   ComposedChart, Bar, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -68,22 +69,21 @@ export default function AnnualReportPage() {
     // payments 기반으로 정산 미계산 월도 채우기
     const { data: paymentData } = await supabase
       .from('payments')
-      .select('payment_date, amount, memo')
+      .select('payment_date, amount, status, excluded')
       .gte('payment_date', `${year}-01-01`)
       .lte('payment_date', `${year}-12-31`)
 
     let pendingSum = 0
     for (const p of paymentData ?? []) {
-      const memo = p.memo ?? ''
-      const isPending = memo.includes('⚠ 잔금 처리 요망') || memo.includes('🔴 미입금')
-      const isExcluded = memo.includes('🚫 집계 제외')
-      if (isPending && !isExcluded) pendingSum += p.amount
+      const isPending = p.status !== 'confirmed'
+      if (isPending && !p.excluded) pendingSum += p.amount
 
       const m = parseInt(p.payment_date.split('-')[1])
       if (!summaryMap[m]) {
         summaryMap[m] = { month: m, revenue: 0, supply_value: 0, gross_profit: 0, operating_profit: 0, distributable_profit: 0 }
       }
-      if (!settlements?.find((s) => s.month === m)) {
+      // 정산 미계산 월은 확정 입금만으로 매출 추정
+      if (!settlements?.find((s) => s.month === m) && p.status === 'confirmed' && !p.excluded) {
         summaryMap[m].revenue += p.amount
         summaryMap[m].supply_value += p.amount / 1.1
       }
@@ -132,11 +132,10 @@ export default function AnnualReportPage() {
     // 3. 클라이언트별 매출 TOP 10 (미수금 제외)
     const { data: clientPayments } = await supabase
       .from('payments')
-      .select('amount, memo, projects(clients(name))')
+      .select('amount, projects(clients(name))')
       .gte('payment_date', `${year}-01-01`)
       .lte('payment_date', `${year}-12-31`)
-      .not('memo', 'ilike', '%⚠ 잔금 처리 요망%')
-      .not('memo', 'ilike', '%🔴 미입금%')
+      .eq('status', 'confirmed')
 
     const clientMap: Record<string, number> = {}
     for (const p of (clientPayments as unknown as {
@@ -157,16 +156,16 @@ export default function AnnualReportPage() {
     // 4. 담당자별 실적
     const { data: managerData } = await supabase
       .from('payments')
-      .select('manager, amount, memo')
+      .select('manager, amount')
       .gte('payment_date', `${year}-01-01`)
       .lte('payment_date', `${year}-12-31`)
+      .eq('status', 'confirmed')
+      .eq('excluded', false)
       .not('manager', 'is', null)
       .not('manager', 'eq', '')
 
     const managerMap: Record<string, { count: number; revenue: number }> = {}
     for (const p of managerData ?? []) {
-      const memo = p.memo ?? ''
-      if (memo.includes('⚠ 잔금 처리 요망') || memo.includes('🔴 미입금') || memo.includes('🚫 집계 제외')) continue
       if (!p.manager?.trim()) continue
       const name = p.manager.trim()
       if (!managerMap[name]) managerMap[name] = { count: 0, revenue: 0 }
@@ -219,7 +218,7 @@ export default function AnnualReportPage() {
           value={year}
           onChange={(e) => setYear(Number(e.target.value))}
         >
-          {[2023, 2024, 2025, 2026].map((y) => <option key={y} value={y}>{y}년</option>)}
+          {yearOptions().map((y) => <option key={y} value={y}>{y}년</option>)}
         </select>
       </div>
 

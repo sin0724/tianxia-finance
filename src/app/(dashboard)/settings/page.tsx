@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { Pencil } from 'lucide-react'
 import type { Representative } from '@/types/database'
 
@@ -119,7 +119,11 @@ export default function SettingsPage() {
             <div>CRON_SECRET={"<"}Cron 인증 시크릿{">"}</div>
           </div>
           <p className="text-xs text-gray-400">
-            시트 컬럼 순서: A=날짜, B=상호명, C=담당자, D=금액, E=비고
+            시트 컬럼: A=동기화 ID(자동 기록 — 수정 금지), B=날짜, C=상호명, D=대표자, E=전화번호, F=담당자, G=금액, H=특이사항, I=입금상태
+          </p>
+          <p className="text-xs text-gray-400">
+            동기화 시 A열에 고유 ID가 자동 기록되어, 이후 상호명·금액을 수정해도 중복 집계되지 않습니다.
+            (서비스 계정에 시트 <strong>편집</strong> 권한 필요)
           </p>
           <p className="text-xs text-gray-400">
             Cron 자동 동기화: <code className="bg-gray-100 px-1 rounded">POST /api/sync-sheets</code> (Authorization: Bearer CRON_SECRET)
@@ -128,11 +132,10 @@ export default function SettingsPage() {
             variant="outline"
             size="sm"
             onClick={async () => {
-              const { toast: t } = await import('sonner')
               const res = await fetch('/api/sync-sheets', { method: 'POST' })
               const data = await res.json()
-              if (!res.ok) t.error(data.error)
-              else t.success(`동기화 완료: ${data.synced}건 추가`)
+              if (!res.ok) toast.error(data.error)
+              else toast.success(`동기화 완료: ${data.synced}건 추가${data.updated > 0 ? `, ${data.updated}건 갱신` : ''}`)
             }}
           >
             지금 동기화 실행

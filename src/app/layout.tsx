@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
@@ -11,6 +11,20 @@ const geistSans = Geist({
 export const metadata: Metadata = {
   title: "티엔샤 재무관리",
   description: "티엔샤 코퍼레이션 월별 정산 관리 시스템",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "티엔샤 재무",
+  },
+  icons: {
+    apple: "/icons/icon-192.png",
+  },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#111827",
 };
 
 export default function RootLayout({
@@ -22,7 +36,7 @@ export default function RootLayout({
     <html lang="ko" className={`${geistSans.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col">
         {children}
-        <Toaster richColors position="bottom-right" duration={2000} />
+        <Toaster richColors position="bottom-right" duration={3000} />
       </body>
     </html>
   );

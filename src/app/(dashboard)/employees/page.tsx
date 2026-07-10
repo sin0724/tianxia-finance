@@ -8,9 +8,12 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { Plus, Pencil, Check } from 'lucide-react'
 import { formatKRW } from '@/lib/calculations/settlement'
+import { CurrencyInput } from '@/components/ui/currency-input'
+import { useMonth } from '@/components/shared/month-context'
+import { MonthNavigator } from '@/components/shared/month-navigator'
 import type { Employee, MonthlyPayroll } from '@/types/database'
 
 type PayrollRow = MonthlyPayroll & { employees: { name: string } | null }
@@ -46,7 +49,6 @@ function calcPartTimePay(hours: number, hourlyWage: number, includeHoliday = tru
 
 export default function EmployeesPage() {
   const supabase = createClient()
-  const now = new Date()
   const [employees, setEmployees] = useState<Employee[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -65,9 +67,8 @@ export default function EmployeesPage() {
     hired_at: '',
   })
 
-  // 월별 급여
-  const [payYear, setPayYear] = useState(now.getFullYear())
-  const [payMonth, setPayMonth] = useState(now.getMonth() + 1)
+  // 월별 급여 — 전역 선택 월 사용
+  const { year: payYear, month: payMonth } = useMonth()
   const [payrollRows, setPayrollRows] = useState<PayrollRow[]>([])
   const [terminatedPayrollRows, setTerminatedPayrollRows] = useState<PayrollRow[]>([])
   const [payForms, setPayForms] = useState<Record<string, PayFormEntry>>({})
@@ -144,8 +145,8 @@ export default function EmployeesPage() {
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
-  useEffect(() => { loadPayroll() }, [payYear, payMonth])
+  useEffect(() => { load() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadPayroll() }, [payYear, payMonth])  // eslint-disable-line react-hooks/exhaustive-deps
 
   function openAdd() {
     setEditing(null)
@@ -337,7 +338,7 @@ export default function EmployeesPage() {
       </div>
 
       {/* 직원 목록 - 데스크톱 테이블 */}
-      <div className="hidden md:block bg-white rounded-lg border">
+      <div className="hidden md:block bg-white rounded-lg border overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -399,13 +400,8 @@ export default function EmployeesPage() {
       <div className="bg-white rounded-lg border">
         <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b">
           <h2 className="font-semibold text-gray-800">월별 급여 입력</h2>
-          <div className="flex items-center gap-2">
-            <select className="border rounded-md px-2 py-1.5 text-sm" value={payYear} onChange={(e) => setPayYear(Number(e.target.value))}>
-              {[2023, 2024, 2025, 2026].map((y) => <option key={y} value={y}>{y}년</option>)}
-            </select>
-            <select className="border rounded-md px-2 py-1.5 text-sm" value={payMonth} onChange={(e) => setPayMonth(Number(e.target.value))}>
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}월</option>)}
-            </select>
+          <div className="flex items-center gap-2 flex-wrap">
+            <MonthNavigator />
             <Button size="sm" onClick={saveAllPayroll}>전체 저장</Button>
           </div>
         </div>
@@ -413,6 +409,7 @@ export default function EmployeesPage() {
         {employees.length === 0 && terminatedPayrollRows.length === 0 ? (
           <div className="text-center py-8 text-gray-400 text-sm">등록된 직원이 없습니다.</div>
         ) : (
+          <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -496,37 +493,33 @@ export default function EmployeesPage() {
                           </div>
                         )
                       })() : (
-                        <Input
-                          type="number"
-                          className="h-8 text-sm text-right"
+                        <CurrencyInput
+                          className="h-8 text-sm"
                           value={f.base_salary}
-                          onChange={(e) => updatePayForm(emp.id, 'base_salary', e.target.value)}
+                          onChange={(v) => updatePayForm(emp.id, 'base_salary', v)}
                         />
                       )}
                     </TableCell>
                     <TableCell>
-                      <Input
-                        type="number"
-                        className="h-8 text-sm text-right"
+                      <CurrencyInput
+                        className="h-8 text-sm"
                         value={f.deductions}
-                        onChange={(e) => updatePayForm(emp.id, 'deductions', e.target.value)}
+                        onChange={(v) => updatePayForm(emp.id, 'deductions', v)}
                       />
                     </TableCell>
                     <TableCell>
-                      <Input
-                        type="number"
-                        className="h-8 text-sm text-right"
+                      <CurrencyInput
+                        className="h-8 text-sm"
                         value={f.net_pay}
-                        onChange={(e) => updatePayForm(emp.id, 'net_pay', e.target.value)}
+                        onChange={(v) => updatePayForm(emp.id, 'net_pay', v)}
                       />
                     </TableCell>
                     <TableCell>
-                      <Input
-                        type="number"
-                        className="h-8 text-sm text-right"
+                      <CurrencyInput
+                        className="h-8 text-sm"
                         placeholder="0"
                         value={f.incentive_deductions}
-                        onChange={(e) => updatePayForm(emp.id, 'incentive_deductions', e.target.value)}
+                        onChange={(v) => updatePayForm(emp.id, 'incentive_deductions', v)}
                       />
                     </TableCell>
                     <TableCell>
@@ -574,6 +567,7 @@ export default function EmployeesPage() {
               )}
             </TableBody>
           </Table>
+          </div>
         )}
       </div>
 
@@ -596,12 +590,12 @@ export default function EmployeesPage() {
               </select>
             </div>
             {form.employee_type === 'full_time' ? (
-              <div className="space-y-1"><Label>기본급 (월)</Label><Input type="number" value={form.base_salary} onChange={(e) => setForm({ ...form, base_salary: e.target.value })} /></div>
+              <div className="space-y-1"><Label>기본급 (월)</Label><CurrencyInput value={form.base_salary} onChange={(v) => setForm({ ...form, base_salary: v })} /></div>
             ) : (
               <>
                 <div className="space-y-1">
                   <Label>시급 (원/시간)</Label>
-                  <Input type="number" placeholder="예: 10030" value={form.hourly_wage} onChange={(e) => setForm({ ...form, hourly_wage: e.target.value })} />
+                  <CurrencyInput placeholder="예: 10,030" value={form.hourly_wage} onChange={(v) => setForm({ ...form, hourly_wage: v })} />
                   <p className="text-xs text-gray-400">2025년 최저임금: 10,030원/h</p>
                 </div>
                 <div className="space-y-1">

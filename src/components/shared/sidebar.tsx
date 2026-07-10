@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
@@ -21,19 +22,51 @@ import {
   X,
 } from 'lucide-react'
 
-const navItems = [
-  { href: '/',                  label: '대시보드',    icon: LayoutDashboard },
-  { href: '/products',          label: '상품 관리',    icon: Package },
-  { href: '/clients',           label: '클라이언트',   icon: Building2 },
-  { href: '/projects',          label: '프로젝트',     icon: FolderKanban },
-  { href: '/gonggu',            label: '공구 사업부',  icon: ShoppingBag },
-  { href: '/employees',         label: '직원/급여',    icon: Users },
-  { href: '/payments',          label: '결제 내역',    icon: CreditCard },
-  { href: '/expenses',          label: '월별 지출',    icon: Receipt },
-  { href: '/reports/monthly',   label: '월별 정산',    icon: BarChart3 },
-  { href: '/reports/annual',    label: '연간 분석',    icon: TrendingUp },
-  { href: '/payroll',           label: '급여대장',      icon: FileSpreadsheet },
-  { href: '/settings',          label: '설정',        icon: Settings },
+type NavItem = {
+  href: string
+  label: string
+  icon: typeof LayoutDashboard
+  badge?: 'unmatched'
+}
+
+const navGroups: { title: string | null; items: NavItem[] }[] = [
+  {
+    title: null,
+    items: [
+      { href: '/', label: '대시보드', icon: LayoutDashboard },
+    ],
+  },
+  {
+    title: '영업',
+    items: [
+      { href: '/products',  label: '상품 관리',   icon: Package },
+      { href: '/clients',   label: '클라이언트',  icon: Building2 },
+      { href: '/projects',  label: '프로젝트',    icon: FolderKanban },
+      { href: '/gonggu',    label: '공구 사업부', icon: ShoppingBag },
+    ],
+  },
+  {
+    title: '자금',
+    items: [
+      { href: '/payments',  label: '결제 내역', icon: CreditCard, badge: 'unmatched' },
+      { href: '/expenses',  label: '월별 지출', icon: Receipt },
+      { href: '/employees', label: '직원/급여', icon: Users },
+      { href: '/payroll',   label: '급여대장',  icon: FileSpreadsheet },
+    ],
+  },
+  {
+    title: '리포트',
+    items: [
+      { href: '/reports/monthly', label: '월별 정산', icon: BarChart3 },
+      { href: '/reports/annual',  label: '연간 분석', icon: TrendingUp },
+    ],
+  },
+  {
+    title: null,
+    items: [
+      { href: '/settings', label: '설정', icon: Settings },
+    ],
+  },
 ]
 
 interface SidebarProps {
@@ -44,6 +77,17 @@ interface SidebarProps {
 export function Sidebar({ open = false, onClose }: SidebarProps) {
   const pathname = usePathname()
   const router = useRouter()
+  const [unmatchedCount, setUnmatchedCount] = useState(0)
+
+  // 미연결 결제 건수 배지 — 페이지 이동 시마다 갱신
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from('payments')
+      .select('id', { count: 'exact', head: true })
+      .eq('matched', false)
+      .then(({ count }) => setUnmatchedCount(count ?? 0))
+  }, [pathname])
 
   async function handleLogout() {
     const supabase = createClient()
@@ -75,22 +119,38 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
         </button>
       </div>
 
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {navItems.map(({ href, label, icon: Icon }) => (
-          <Link
-            key={href}
-            href={href}
-            onClick={onClose}
-            className={cn(
-              'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
-              pathname === href
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+      <nav className="flex-1 px-3 py-4 overflow-y-auto">
+        {navGroups.map((group, gi) => (
+          <div key={gi} className={gi > 0 ? 'mt-4' : ''}>
+            {group.title && (
+              <p className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                {group.title}
+              </p>
             )}
-          >
-            <Icon size={16} />
-            {label}
-          </Link>
+            <div className="space-y-1">
+              {group.items.map(({ href, label, icon: Icon, badge }) => (
+                <Link
+                  key={href}
+                  href={href}
+                  onClick={onClose}
+                  className={cn(
+                    'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
+                    pathname === href
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                  )}
+                >
+                  <Icon size={16} />
+                  <span className="flex-1">{label}</span>
+                  {badge === 'unmatched' && unmatchedCount > 0 && (
+                    <span className="text-[11px] font-semibold bg-orange-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center">
+                      {unmatchedCount}
+                    </span>
+                  )}
+                </Link>
+              ))}
+            </div>
+          </div>
         ))}
       </nav>
 

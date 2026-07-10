@@ -2,12 +2,6 @@ import { createClient } from '@/lib/supabase/server'
 import { calculateMonthlySettlement, type SettlementResult } from '@/lib/calculations/settlement'
 import { NextResponse } from 'next/server'
 
-const isPendingMemo = (memo: string | null) =>
-  !!(memo?.includes('⚠ 잔금 처리 요망') || memo?.includes('🔴 미입금'))
-
-const isExcludedMemo = (memo: string | null) =>
-  !!(memo?.includes('🚫 집계 제외'))
-
 type EmployeeRow = { id: string; name: string; incentive_type: string | null; incentive_value: number }
 type PaymentRow = { manager?: string | null; amount: number }
 
@@ -89,14 +83,14 @@ async function computeBothSettlements(year: number, month: number) {
 
   const allPaymentsInMonth = rawAllPayments ?? []
   const confirmedPayments = allPaymentsInMonth.filter(
-    (p) => !isPendingMemo(p.memo) && !isExcludedMemo(p.memo) && !(p.project_id && cancelledIds.has(p.project_id))
+    (p) => p.status === 'confirmed' && !p.excluded && !(p.project_id && cancelledIds.has(p.project_id))
   )
 
   // 전체 기간 미수금 (날짜 무관) — 수금 관리 탭·대시보드와 동일 기준
   const { data: rawAllPending } = await supabase
     .from('payments')
     .select('*')
-    .or('memo.ilike.*⚠ 잔금 처리 요망*,memo.ilike.*🔴 미입금*')
+    .in('status', ['balance_due', 'unpaid'])
 
   const allPendingPayments = (rawAllPending ?? []).filter(
     (p) => !(p.project_id && cancelledIds.has(p.project_id))
@@ -115,7 +109,7 @@ async function computeBothSettlements(year: number, month: number) {
     projectIds.length > 0
       ? await supabase
           .from('payments')
-          .select('project_id, payment_date, memo')
+          .select('project_id, payment_date, status')
           .in('project_id', projectIds)
           .eq('matched', true)
           .order('payment_date', { ascending: true })
@@ -123,7 +117,7 @@ async function computeBothSettlements(year: number, month: number) {
 
   const firstPaymentMonthMap: Record<string, string> = {}
   for (const p of allProjectPaymentHistory ?? []) {
-    if (!p.project_id || isPendingMemo(p.memo)) continue
+    if (!p.project_id || p.status !== 'confirmed') continue
     if (!firstPaymentMonthMap[p.project_id]) {
       firstPaymentMonthMap[p.project_id] = p.payment_date.slice(0, 7)
     }
@@ -148,7 +142,7 @@ async function computeBothSettlements(year: number, month: number) {
     pendingOnlyProjectIds.length > 0
       ? await supabase
           .from('payments')
-          .select('project_id, payment_date, memo')
+          .select('project_id, payment_date, status')
           .in('project_id', pendingOnlyProjectIds)
           .eq('matched', true)
           .order('payment_date', { ascending: true })
@@ -156,7 +150,7 @@ async function computeBothSettlements(year: number, month: number) {
 
   const extendedFirstPaymentMonthMap = { ...firstPaymentMonthMap }
   for (const p of pendingOnlyHistory ?? []) {
-    if (!p.project_id || isPendingMemo(p.memo)) continue
+    if (!p.project_id || p.status !== 'confirmed') continue
     if (!extendedFirstPaymentMonthMap[p.project_id]) {
       extendedFirstPaymentMonthMap[p.project_id] = p.payment_date.slice(0, 7)
     }

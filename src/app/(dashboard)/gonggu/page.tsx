@@ -11,9 +11,12 @@ import { Badge } from '@/components/ui/badge'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { Plus, Pencil, Trash2, Link2, Link2Off, RefreshCw } from 'lucide-react'
 import { formatKRW } from '@/lib/calculations/settlement'
+import { CurrencyInput } from '@/components/ui/currency-input'
+import { useMonth } from '@/components/shared/month-context'
+import { MonthNavigator } from '@/components/shared/month-navigator'
 import type { GongguSale } from '@/types/database'
 
 type GongguCampaign = {
@@ -35,9 +38,7 @@ const emptyForm = {
 
 export default function GongguPage() {
   const supabase = createClient()
-  const now = new Date()
-  const [year, setYear]   = useState(now.getFullYear())
-  const [month, setMonth] = useState(now.getMonth() + 1)
+  const { year, month } = useMonth()
 
   const [items, setItems] = useState<GongguSale[]>([])
   const [cumGross, setCumGross]   = useState(0)
@@ -202,15 +203,8 @@ export default function GongguPage() {
             캠페인별 취급액·마진 관리 — 저장 시 취급액만 공구 캠페인 관리 시스템에 표시됩니다 (마진 비공개)
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <select className="border rounded-md px-3 py-2 text-sm" value={year}
-            onChange={(e) => setYear(Number(e.target.value))}>
-            {[2025, 2026, 2027].map((y) => <option key={y} value={y}>{y}년</option>)}
-          </select>
-          <select className="border rounded-md px-3 py-2 text-sm" value={month}
-            onChange={(e) => setMonth(Number(e.target.value))}>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}월</option>)}
-          </select>
+        <div className="flex items-center gap-2 flex-wrap">
+          <MonthNavigator />
           <Button onClick={openAdd}>
             <Plus size={14} className="mr-1" />
             실적 추가
@@ -265,6 +259,7 @@ export default function GongguPage() {
               등록된 실적이 없습니다. &ldquo;실적 추가&rdquo;로 캠페인 취급액과 마진을 입력해주세요.
             </div>
           ) : (
+            <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -323,6 +318,7 @@ export default function GongguPage() {
                 </TableRow>
               </TableBody>
             </Table>
+            </div>
           )}
           <p className="mt-3 pt-3 border-t text-xs text-gray-400">
             공구는 실행비 없이 RS수수료·공급가 마진이 곧 수익입니다. 대만 셀러 대상 수출 건으로 부가세 영세율(0%)이 적용되므로
@@ -402,19 +398,17 @@ export default function GongguPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>취급액 (원 · 영세율 0%)</Label>
-                <Input
-                  type="number"
+                <CurrencyInput
                   value={form.gross_sales}
-                  onChange={(e) => setForm({ ...form, gross_sales: e.target.value })}
+                  onChange={(v) => setForm({ ...form, gross_sales: v })}
                   placeholder="전체 판매액"
                 />
               </div>
               <div className="space-y-1.5">
                 <Label>우리 마진 (원 · 영세율 0%)</Label>
-                <Input
-                  type="number"
+                <CurrencyInput
                   value={form.margin}
-                  onChange={(e) => setForm({ ...form, margin: e.target.value })}
+                  onChange={(v) => setForm({ ...form, margin: v })}
                   placeholder="RS수수료·마진"
                 />
               </div>

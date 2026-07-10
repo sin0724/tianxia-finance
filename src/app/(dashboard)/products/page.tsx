@@ -11,7 +11,8 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
+import { CurrencyInput } from '@/components/ui/currency-input'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { Plus, Pencil, History } from 'lucide-react'
 import type { Product, ProductCostHistory } from '@/types/database'
@@ -250,7 +251,7 @@ export default function ProductsPage() {
       </div>
 
       {/* 데스크톱 테이블 */}
-      <div className="hidden md:block bg-white rounded-lg border">
+      <div className="hidden md:block bg-white rounded-lg border overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -352,20 +353,18 @@ export default function ProductsPage() {
             </div>
             <div className="space-y-1">
               <Label>단가(부가세 포함) *</Label>
-              <Input
-                type="number"
+              <CurrencyInput
                 placeholder="0"
                 value={form.price_vat_incl}
-                onChange={(e) => setForm({ ...form, price_vat_incl: e.target.value })}
+                onChange={(v) => setForm({ ...form, price_vat_incl: v })}
               />
             </div>
             <div className="space-y-1">
               <Label>현재 원가 *</Label>
-              <Input
-                type="number"
+              <CurrencyInput
                 placeholder="0"
                 value={form.current_cost}
-                onChange={(e) => setForm({ ...form, current_cost: e.target.value })}
+                onChange={(v) => setForm({ ...form, current_cost: v })}
               />
             </div>
           </div>

@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { Download } from 'lucide-react'
 
 type ExportScope = 'month' | 'year'
@@ -73,6 +73,7 @@ export default function ExportPage() {
         const pay = p as {
           payment_date: string; amount: number; payment_type: string | null
           manager: string | null; memo: string | null
+          status: 'confirmed' | 'balance_due' | 'unpaid'; excluded: boolean
           projects: { name: string; clients: { name: string } | null } | null
         }
         return {
@@ -82,10 +83,11 @@ export default function ExportPage() {
           유형: pay.payment_type ?? '',
           담당자: pay.manager ?? '',
           금액: pay.amount,
+          상태: pay.status === 'confirmed' ? (pay.excluded ? '집계 제외' : '입금완료') : pay.status === 'balance_due' ? '잔금 처리 요망' : '미입금',
           메모: pay.memo ?? '',
         }
       })
-      const ws1 = XLSX.utils.json_to_sheet(paymentRows.length ? paymentRows : [{ 결제일: '', 클라이언트: '', 프로젝트: '', 유형: '', 담당자: '', 금액: '', 메모: '' }])
+      const ws1 = XLSX.utils.json_to_sheet(paymentRows.length ? paymentRows : [{ 결제일: '', 클라이언트: '', 프로젝트: '', 유형: '', 담당자: '', 금액: '', 상태: '', 메모: '' }])
       XLSX.utils.book_append_sheet(wb, ws1, '매출상세')
 
       // 시트 2: 지출 상세

@@ -58,9 +58,21 @@ export interface Database {
         Relationships: []
       }
       payments: {
-        Row: { id: string; project_id: string | null; amount: number; payment_date: string; payment_type: '계약금' | '중도금' | '잔금' | '기타' | null; manager: string | null; memo: string | null; source: 'slack' | 'manual'; external_id: string | null; client_name_raw: string | null; matched: boolean; created_at: string; updated_at: string }
-        Insert: { id?: string; project_id?: string | null; amount: number; payment_date: string; payment_type?: '계약금' | '중도금' | '잔금' | '기타' | null; manager?: string | null; memo?: string | null; source?: 'slack' | 'manual'; external_id?: string | null; client_name_raw?: string | null; matched?: boolean; created_at?: string; updated_at?: string }
-        Update: { id?: string; project_id?: string | null; amount?: number; payment_date?: string; payment_type?: '계약금' | '중도금' | '잔금' | '기타' | null; manager?: string | null; memo?: string | null; source?: 'slack' | 'manual'; external_id?: string | null; client_name_raw?: string | null; matched?: boolean; created_at?: string; updated_at?: string }
+        Row: { id: string; project_id: string | null; amount: number; payment_date: string; payment_type: '계약금' | '중도금' | '잔금' | '기타' | null; manager: string | null; memo: string | null; source: 'slack' | 'manual'; external_id: string | null; client_name_raw: string | null; matched: boolean; status: 'confirmed' | 'balance_due' | 'unpaid'; excluded: boolean; created_at: string; updated_at: string }
+        Insert: { id?: string; project_id?: string | null; amount: number; payment_date: string; payment_type?: '계약금' | '중도금' | '잔금' | '기타' | null; manager?: string | null; memo?: string | null; source?: 'slack' | 'manual'; external_id?: string | null; client_name_raw?: string | null; matched?: boolean; status?: 'confirmed' | 'balance_due' | 'unpaid'; excluded?: boolean; created_at?: string; updated_at?: string }
+        Update: { id?: string; project_id?: string | null; amount?: number; payment_date?: string; payment_type?: '계약금' | '중도금' | '잔금' | '기타' | null; manager?: string | null; memo?: string | null; source?: 'slack' | 'manual'; external_id?: string | null; client_name_raw?: string | null; matched?: boolean; status?: 'confirmed' | 'balance_due' | 'unpaid'; excluded?: boolean; created_at?: string; updated_at?: string }
+        Relationships: []
+      }
+      sync_logs: {
+        Row: { id: string; run_at: string; trigger: string; from_date: string | null; synced: number; updated: number; skipped: number; created_projects: number; pending: number; unmatched: number; error: string | null }
+        Insert: { id?: string; run_at?: string; trigger?: string; from_date?: string | null; synced?: number; updated?: number; skipped?: number; created_projects?: number; pending?: number; unmatched?: number; error?: string | null }
+        Update: { id?: string; run_at?: string; trigger?: string; from_date?: string | null; synced?: number; updated?: number; skipped?: number; created_projects?: number; pending?: number; unmatched?: number; error?: string | null }
+        Relationships: []
+      }
+      app_prefs: {
+        Row: { key: string; value: Json; updated_at: string }
+        Insert: { key: string; value: Json; updated_at?: string }
+        Update: { key?: string; value?: Json; updated_at?: string }
         Relationships: []
       }
       monthly_expenses: {
@@ -95,7 +107,16 @@ export interface Database {
       }
     }
     Views: { [_ in never]: never }
-    Functions: { [_ in never]: never }
+    Functions: {
+      confirm_pending_payment: {
+        Args: { p_payment_id: string; p_amount: number; p_payment_date: string; p_project_id?: string | null }
+        Returns: Json
+      }
+      add_payment_with_auto_project: {
+        Args: { p_amount: number; p_payment_date: string; p_payment_type?: string | null; p_manager?: string | null; p_memo?: string | null; p_client_name?: string | null; p_project_id?: string | null; p_status?: string }
+        Returns: Json
+      }
+    }
     Enums: { [_ in never]: never }
     CompositeTypes: { [_ in never]: never }
   }
@@ -117,3 +138,5 @@ export type MonthlyIncentive = Database['public']['Tables']['monthly_incentives'
 export type MonthlyPayroll = Database['public']['Tables']['monthly_payroll']['Row']
 export type MonthlySettlement = Database['public']['Tables']['monthly_settlements']['Row']
 export type GongguSale = Database['public']['Tables']['gonggu_sales']['Row']
+export type SyncLog = Database['public']['Tables']['sync_logs']['Row']
+export type PaymentStatus = Payment['status']

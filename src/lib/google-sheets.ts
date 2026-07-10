@@ -1,9 +1,11 @@
 import { google } from 'googleapis'
+import type { sheets_v4 } from 'googleapis'
 
 export type PaymentStatus = '입금완료' | '잔금처리요망' | '미입금' | '추가계약'
 
 export type SheetRow = {
-  rowIndex: number       // 시트 내 행 번호 (1-based, 헤더 제외)
+  rowIndex: number       // 시트 내 실제 행 번호 (1-based)
+  syncId: string         // A열에 기록된 고유 동기화 ID (없으면 '')
   date: string           // YYYY-MM-DD (B열)
   clientName: string     // 상호명 (C열)
   representative: string // 대표자 (D열)
@@ -14,11 +16,7 @@ export type SheetRow = {
   status: PaymentStatus  // 입금상태 (I열)
 }
 
-/**
- * 시트 컬럼 구조: A(미사용) B=날짜 C=상호명 D=대표자 E=전화번호 F=담당자 G=금액 H=특이사항
- * 4월(2026-04-01) 이후 데이터만 반환
- */
-export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[]> {
+function getSheetsClient(readonly: boolean): { sheets: sheets_v4.Sheets; sheetId: string; sheetName: string } {
   const credentialsRaw = process.env.GOOGLE_SHEETS_CREDENTIALS
   const sheetId = process.env.GOOGLE_SHEETS_ID
   const sheetName = process.env.GOOGLE_SHEETS_SHEET_NAME ?? 'Sheet1'
@@ -30,23 +28,34 @@ export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[
   const credentials = JSON.parse(credentialsRaw)
   const auth = new google.auth.GoogleAuth({
     credentials,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    scopes: [readonly
+      ? 'https://www.googleapis.com/auth/spreadsheets.readonly'
+      : 'https://www.googleapis.com/auth/spreadsheets'],
   })
 
-  const sheets = google.sheets({ version: 'v4', auth })
+  return { sheets: google.sheets({ version: 'v4', auth }), sheetId, sheetName }
+}
+
+/**
+ * 시트 컬럼 구조: A=동기화ID(자동 기록) B=날짜 C=상호명 D=대표자 E=전화번호 F=담당자 G=금액 H=특이사항 I=입금상태
+ * fromDate 이후 데이터만 반환. A열 ID는 앱이 write-back하며 사용자는 건드리지 않는다.
+ */
+export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[]> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(true)
+
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${sheetName}!B2:I`,  // B열(날짜)부터 I열(입금상태)까지, 헤더 제외
+    range: `${sheetName}!A2:I`,  // A열(동기화 ID)부터 I열(입금상태)까지, 헤더 제외
   })
 
   const rows = response.data.values ?? []
-  const cutoff = fromDate  // 이 날짜 이후만 동기화
+  const cutoff = fromDate
 
   return rows
     .map((row, idx) => {
-      // B=row[0], C=row[1], D=row[2], E=row[3], F=row[4], G=row[5], H=row[6]
-      const rawDate = String(row[0] ?? '').trim()
-      const rawAmount = String(row[5] ?? '').trim().replace(/,/g, '').replace(/[^\d.-]/g, '')
+      // A=row[0], B=row[1], C=row[2], D=row[3], E=row[4], F=row[5], G=row[6], H=row[7], I=row[8]
+      const rawDate = String(row[1] ?? '').trim()
+      const rawAmount = String(row[6] ?? '').trim().replace(/,/g, '').replace(/[^\d.-]/g, '')
       const amount = parseFloat(rawAmount)
 
       if (!rawDate || isNaN(amount) || amount <= 0) return null
@@ -54,24 +63,50 @@ export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[
       const date = parseDate(rawDate)
       if (!date) return null
 
-      // cutoff 이전 데이터는 건너뜀
       if (date < cutoff) return null
 
-      const status = normalizeStatus(String(row[7] ?? '').trim())
+      const status = normalizeStatus(String(row[8] ?? '').trim())
 
       return {
         rowIndex: idx + 2,
+        syncId: String(row[0] ?? '').trim(),
         date,
-        clientName: String(row[1] ?? '').trim(),
-        representative: String(row[2] ?? '').trim(),
-        phone: String(row[3] ?? '').trim(),
-        manager: String(row[4] ?? '').trim(),
+        clientName: String(row[2] ?? '').trim(),
+        representative: String(row[3] ?? '').trim(),
+        phone: String(row[4] ?? '').trim(),
+        manager: String(row[5] ?? '').trim(),
         amount,
-        memo: String(row[6] ?? '').trim(),
+        memo: String(row[7] ?? '').trim(),
         status,
       }
     })
     .filter((r): r is NonNullable<typeof r> => r !== null) as SheetRow[]
+}
+
+/**
+ * 동기화 ID를 시트 A열에 기록 (write-back).
+ * 이후에는 상호명·금액·메모를 수정해도 같은 행으로 인식되어 중복 집계가 발생하지 않는다.
+ * 서비스 계정에 시트 편집 권한이 필요하다.
+ */
+export async function writeBackSyncIds(entries: { rowIndex: number; syncId: string }[]): Promise<void> {
+  if (entries.length === 0) return
+  const { sheets, sheetId, sheetName } = getSheetsClient(false)
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: sheetId,
+    requestBody: {
+      valueInputOption: 'RAW',
+      data: entries.map((e) => ({
+        range: `${sheetName}!A${e.rowIndex}`,
+        values: [[e.syncId]],
+      })),
+    },
+  })
+}
+
+/** 새 동기화 ID 생성 — 행 내용과 무관한 불변 ID */
+export function makeSyncId(): string {
+  return `tx_${crypto.randomUUID()}`
 }
 
 /** I열 드롭다운 값을 입금 상태로 정규화 */
@@ -107,10 +142,10 @@ function parseDate(raw: string): string | null {
 }
 
 /**
- * external_id 생성: 날짜 + 상호명 + 금액 + 메모 + 담당자 기반 (행 번호 미사용)
- * 메모/담당자를 포함해 같은 날 동일 금액 중복 계약도 구분 가능
+ * (레거시) 내용 기반 external_id — A열 ID가 없는 기존 데이터와의 매칭에만 사용.
+ * 새 행에는 makeSyncId()로 생성한 불변 ID를 쓴다.
  */
-export function makeExternalId(row: SheetRow): string {
+export function makeLegacyExternalId(row: SheetRow): string {
   const normalize = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '-')
   const key = [
     row.date,

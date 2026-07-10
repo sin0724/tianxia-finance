@@ -5,9 +5,11 @@ import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
-import { Download, ChevronLeft, ChevronRight, Pencil, Check, X } from 'lucide-react'
+import { Download, Pencil, Check, X } from 'lucide-react'
+import { useMonth } from '@/components/shared/month-context'
+import { MonthNavigator } from '@/components/shared/month-navigator'
 
 type PayrollRow = {
   employee_id: string
@@ -90,9 +92,7 @@ function IncentiveCell({ row, editingValue, isSaving, onStartEdit, onCancelEdit,
 
 export default function PayrollPage() {
   const supabase = createClient()
-  const now = new Date()
-  const [year, setYear] = useState(now.getFullYear())
-  const [month, setMonth] = useState(now.getMonth() + 1)
+  const { year, month } = useMonth()
   const [rows, setRows] = useState<PayrollRow[]>([])
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -119,7 +119,7 @@ export default function PayrollPage() {
       supabase.from('monthly_payroll').select('*, employees(name)').eq('year', year).eq('month', month),
       supabase.from('employees').select('id, name, incentive_type, incentive_value').eq('active', true),
       supabase.from('monthly_incentives').select('*').eq('year', year).eq('month', month),
-      supabase.from('payments').select('amount, manager, memo, project_id')
+      supabase.from('payments').select('amount, manager, status, excluded, project_id')
         .gte('payment_date', start).lte('payment_date', end),
       supabase.from('settings').select('*'),
       supabase.from('projects').select('id').eq('status', 'cancelled'),
@@ -129,12 +129,9 @@ export default function PayrollPage() {
     const vatRate = settings.vat_rate ?? 0.1
 
     // 정산 API(calculate-settlement)와 동일한 제외 기준 적용
-    const isPending = (memo: string | null) =>
-      !!(memo?.includes('⚠ 잔금 처리 요망') || memo?.includes('🔴 미입금'))
-    const isExcluded = (memo: string | null) => !!(memo?.includes('🚫 집계 제외'))
     const cancelledIds = new Set((cancelledProjects ?? []).map((p) => p.id))
     const confirmedPayments = (payments ?? []).filter(
-      (p) => !isPending(p.memo) && !isExcluded(p.memo) && !(p.project_id && cancelledIds.has(p.project_id))
+      (p) => p.status === 'confirmed' && !p.excluded && !(p.project_id && cancelledIds.has(p.project_id))
     )
 
     const manualEmployeeIds = new Set((manualIncentives ?? []).map((i) => i.employee_id))
@@ -297,15 +294,6 @@ export default function PayrollPage() {
     }
   }
 
-  function prevMonth() {
-    if (month === 1) { setYear((y) => y - 1); setMonth(12) }
-    else setMonth((m) => m - 1)
-  }
-  function nextMonth() {
-    if (month === 12) { setYear((y) => y + 1); setMonth(1) }
-    else setMonth((m) => m + 1)
-  }
-
   const incentiveCellProps = (row: PayrollRow): IncentiveCellProps => ({
     row,
     editingValue: editingIncentive[row.employee_id],
@@ -321,32 +309,8 @@ export default function PayrollPage() {
       {/* 헤더 */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">급여대장</h1>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 bg-gray-100 rounded-lg px-1 py-1">
-            <button onClick={prevMonth} className="p-1 rounded hover:bg-white text-gray-500 hover:text-gray-900">
-              <ChevronLeft size={16} />
-            </button>
-            <select
-              className="bg-transparent text-sm font-semibold focus:outline-none cursor-pointer"
-              value={year}
-              onChange={(e) => setYear(Number(e.target.value))}
-            >
-              {[2023, 2024, 2025, 2026].map((y) => <option key={y} value={y}>{y}년</option>)}
-            </select>
-            <select
-              className="bg-transparent text-sm font-semibold focus:outline-none cursor-pointer"
-              value={month}
-              onChange={(e) => setMonth(Number(e.target.value))}
-            >
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                <option key={m} value={m}>{m}월</option>
-              ))}
-            </select>
-            <button onClick={nextMonth} className="p-1 rounded hover:bg-white text-gray-500 hover:text-gray-900">
-              <ChevronRight size={16} />
-            </button>
-          </div>
-
+        <div className="flex items-center gap-2 flex-wrap">
+          <MonthNavigator />
           <Button onClick={handleExport} disabled={exporting || rows.length === 0} size="sm">
             <Download size={14} className="mr-1" />
             {exporting ? '생성 중...' : '엑셀 내보내기'}
@@ -461,7 +425,7 @@ export default function PayrollPage() {
       </div>
 
       {/* 급여 테이블 - 데스크톱 */}
-      <div className="hidden md:block bg-white rounded-lg border">
+      <div className="hidden md:block bg-white rounded-lg border overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>

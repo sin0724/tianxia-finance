@@ -1,7 +1,9 @@
 import { createClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
-import { fetchSheetRows, makeExternalId } from '@/lib/google-sheets'
+import {
+  fetchSheetRows, writeBackSyncIds, makeSyncId, makeLegacyExternalId, type SheetRow,
+} from '@/lib/google-sheets'
 import { findSimilar } from '@/lib/utils/levenshtein'
 import type { Database } from '@/types/database'
 
@@ -9,6 +11,31 @@ const supabase = createClient<Database>(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 )
+
+type ExistingPayment = {
+  id: string
+  external_id: string | null
+  payment_date: string
+  client_name_raw: string | null
+  amount: number
+  memo: string | null
+  manager: string | null
+  status: 'confirmed' | 'balance_due' | 'unpaid'
+  source: string
+}
+
+const toDbStatus = (s: SheetRow['status']): 'confirmed' | 'balance_due' | 'unpaid' =>
+  s === '잔금처리요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
+
+/** 시트 행 → DB 메모 (상태 태그 없이 순수 메모만) */
+const buildMemo = (row: SheetRow): string | null => {
+  const parts = [
+    row.memo,
+    row.representative ? `대표: ${row.representative}` : '',
+    row.phone ? `연락처: ${row.phone}` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' | ') : null
+}
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get('authorization')
@@ -34,9 +61,10 @@ export async function POST(request: Request) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const trigger = hasCronAuth ? 'cron' : 'manual'
+  let fromDate = '2026-04-01'
+
   try {
-    // 동기화 시작 날짜 (body 또는 기본값)
-    let fromDate = '2026-04-01'
     try {
       const body = await request.json()
       if (body?.fromDate) fromDate = body.fromDate
@@ -44,105 +72,146 @@ export async function POST(request: Request) {
 
     const rows = await fetchSheetRows(fromDate)
     if (rows.length === 0) {
-      return Response.json({ synced: 0, skipped: 0, unmatched: 0, pending: 0, created: 0 })
+      await logSync({ trigger, fromDate })
+      return Response.json({ synced: 0, updated: 0, skipped: 0, unmatched: 0, pending: 0, created: 0 })
     }
 
-    // 기존 결제 조회 — external_id 중복 방지 + 날짜·상호명·금액·메모 soft 중복 방지 (수기 입력 포함)
-    const { data: existingPayments } = await supabase
+    const { data: existingRaw } = await supabase
       .from('payments')
-      .select('external_id, payment_date, client_name_raw, amount, memo')
+      .select('id, external_id, payment_date, client_name_raw, amount, memo, manager, status, source')
+    const existing = (existingRaw ?? []) as ExistingPayment[]
 
-    const existingIds = new Set(
-      (existingPayments ?? []).filter((p) => p.external_id).map((p) => p.external_id)
-    )
-    // external_id 접두어(날짜+상호명+금액) 목록 — 메모·담당자가 수정돼도 같은 시트 행임을 인식
-    // 앱에서 입금 확정 시 payment_date·금액·메모가 바뀌어 softKey 매칭이 깨지는 경우를 보완
-    const existingExternalIds = (existingPayments ?? [])
-      .map((p) => p.external_id)
-      .filter((id): id is string => !!id)
-    // 날짜+상호명+금액+메모 기준 soft 중복 방지 — 메모 포함으로 재계약·추가계약 구분 가능
-    const softDupSet = new Set(
-      (existingPayments ?? [])
-        .filter((p) => p.client_name_raw)
-        .map((p) => {
-          const memoClean = (p.memo ?? '').toLowerCase().replace(/\s+/g, '')
-          return `${p.payment_date}|${(p.client_name_raw ?? '').toLowerCase().replace(/\s+/g, '')}|${p.amount}|${memoClean}`
-        })
-    )
-    // 수기 입력(수금예정 추가 등 external_id 없는) 항목과 시트 행이 겹칠 때 중복 방지.
-    // 메모를 뺀 날짜+상호명+금액으로 매칭 — 수기 메모와 시트 메모가 달라도 같은 건으로 인식.
-    // external_id 있는 항목은 제외하므로 시트끼리의 재계약·추가계약 구분에는 영향 없음.
+    // A열 동기화 ID 기준 매칭 (신규 방식 — 내용이 바뀌어도 같은 행으로 인식)
+    const byExternalId = new Map<string, ExistingPayment>()
+    for (const p of existing) {
+      if (p.external_id) byExternalId.set(p.external_id, p)
+    }
+
+    // ── 레거시 매칭용 (A열 ID가 아직 없는 기존 데이터) ──────────────
     const normName = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '-')
-    const manualDupSet = new Set(
-      (existingPayments ?? [])
-        .filter((p) => !p.external_id && p.client_name_raw)
-        .map((p) => `${p.payment_date}|${normName(p.client_name_raw ?? '')}|${p.amount}`)
-    )
+    const normMemo = (s: string | null) => (s ?? '').toLowerCase().replace(/\s+/g, '')
+    const legacyList = existing.filter((p) => p.external_id?.startsWith('sheet_'))
+    // 날짜+상호명+금액+메모 soft 매칭 — 메모 포함으로 같은 날 동일 금액의 추가·재계약 구분 유지
+    const softDupMap = new Map<string, ExistingPayment>()
+    for (const p of existing) {
+      if (!p.client_name_raw) continue
+      const key = `${p.payment_date}|${normName(p.client_name_raw)}|${p.amount}|${normMemo(p.memo)}`
+      if (!softDupMap.has(key)) softDupMap.set(key, p)
+    }
+    // 수기 입력(external_id 없는) 항목 — 메모가 달라도 날짜+상호명+금액이 같으면 같은 건으로 인식
+    const manualDupMap = new Map<string, ExistingPayment>()
+    for (const p of existing) {
+      if (p.external_id || !p.client_name_raw) continue
+      const key = `${p.payment_date}|${normName(p.client_name_raw)}|${p.amount}`
+      if (!manualDupMap.has(key)) manualDupMap.set(key, p)
+    }
 
     // 클라이언트 목록 (매칭·자동생성용) — 동기화 중 생성된 항목도 누적
-    const { data: clients } = await supabase
-      .from('clients')
-      .select('id, name')
-
+    const { data: clients } = await supabase.from('clients').select('id, name')
     const clientList: { id: string; name: string }[] = (clients ?? []).map((c) => ({ id: c.id, name: c.name }))
 
     let synced = 0
-    let skipped = 0       // 이미 존재하는 행
+    let updated = 0       // 시트 수정이 기존 건에 반영됨
+    let skipped = 0       // 변경 없음
     let unmatched = 0     // 클라이언트명 없어서 미매칭
-    let pending = 0       // 잔금 처리 요망
+    let pending = 0       // 잔금/미입금
     let created = 0       // 자동 생성된 프로젝트 수
     const errors: { row: number; reason: string }[] = []
+    const writeBacks: { rowIndex: number; syncId: string }[] = []
 
     for (const row of rows) {
-      const externalId = makeExternalId(row)
+      const dbStatus = toDbStatus(row.status)
+      const dbMemo = buildMemo(row)
 
-      // DB에 저장될 메모와 동일한 형식으로 softKey 구성 (statusTag + memo + 대표자 + 연락처)
-      const statusTagForKey =
-        row.status === '잔금처리요망' ? '⚠ 잔금 처리 요망' :
-        row.status === '미입금' ? '🔴 미입금' : ''
-      const dbMemoForKey = [
-        statusTagForKey,
-        row.memo,
-        row.representative ? `대표: ${row.representative}` : '',
-        row.phone ? `연락처: ${row.phone}` : '',
-      ].filter(Boolean).join(' | ').toLowerCase().replace(/\s+/g, '')
+      // ── 1) A열 동기화 ID로 기존 건 매칭 ─────────────────────────
+      if (row.syncId) {
+        const found = byExternalId.get(row.syncId)
+        if (found) {
+          if (found.status !== 'confirmed') {
+            // 미확정(수금 예정) 건 — 시트가 원본이므로 수정 사항을 그대로 반영
+            const changed =
+              found.client_name_raw !== (row.clientName || null) ||
+              found.amount !== row.amount ||
+              found.payment_date !== row.date ||
+              found.manager !== (row.manager || null) ||
+              found.memo !== dbMemo ||
+              found.status !== dbStatus
+            if (changed) {
+              const { error } = await supabase.from('payments').update({
+                client_name_raw: row.clientName || null,
+                amount: row.amount,
+                payment_date: row.date,
+                manager: row.manager || null,
+                memo: dbMemo,
+                status: dbStatus,
+              }).eq('id', found.id)
+              if (error) errors.push({ row: row.rowIndex, reason: `업데이트 실패: ${error.message}` })
+              else updated++
+            } else skipped++
+          } else {
+            // 확정 건 — 금액·날짜는 앱에서 확정한 값을 유지하고 표시 필드만 반영
+            const changed =
+              found.client_name_raw !== (row.clientName || null) ||
+              found.manager !== (row.manager || null)
+            if (changed) {
+              const { error } = await supabase.from('payments').update({
+                client_name_raw: row.clientName || null,
+                manager: row.manager || null,
+              }).eq('id', found.id)
+              if (error) errors.push({ row: row.rowIndex, reason: `업데이트 실패: ${error.message}` })
+              else updated++
+            } else skipped++
+          }
+        } else {
+          // ID는 있는데 DB에 없음 → 앱에서 삭제된 건. 재생성하지 않는다.
+          skipped++
+        }
+        continue
+      }
 
-      const softKey = row.clientName
-        ? `${row.date}|${row.clientName.toLowerCase().replace(/\s+/g, '')}|${row.amount}|${dbMemoForKey}`
-        : null
-
-      // external_id 접두어 매칭 — 같은 시트 행이 재동기화될 때 중복 생성 방지.
-      //  - 구버전 external_id(`sheet_날짜_상호_금액`, 접미사 없음)는 정확히 일치할 때만 중복 처리.
-      //  - 신버전은 메모까지 같을 때(담당자만 달라도) 같은 행으로 인식해 중복 생성을 막는다.
-      //  - 메모가 다르면 같은 날·같은 금액이라도 별개의 추가·재계약으로 보고 통과시킨다.
-      //    (과거에는 날짜+상호+금액만 비교해 같은 날 동일 금액의 추가계약이 누락되던 버그를 수정)
+      // ── 2) A열 ID가 없는 행 — 레거시 방식으로 기존 건 탐색 ───────
+      const legacyId = makeLegacyExternalId(row)
       const baseKeyNoMemo = row.clientName
         ? `sheet_${row.date}_${normName(row.clientName)}_${row.amount}`
         : null
       const baseKeyWithMemo = baseKeyNoMemo ? `${baseKeyNoMemo}_${normName(row.memo)}` : null
-      const baseDup = !!baseKeyNoMemo && existingExternalIds.some(
-        (id) =>
-          id === baseKeyNoMemo ||                  // 구버전(접미사 없음) 정확 일치
-          id === baseKeyWithMemo ||                // 메모까지 동일
-          id.startsWith(`${baseKeyWithMemo}_`)     // 메모 동일 + 담당자만 다름
-      )
+      const legacyMatch =
+        byExternalId.get(legacyId) ??
+        (baseKeyNoMemo
+          ? legacyList.find((p) =>
+              p.external_id === baseKeyNoMemo ||
+              p.external_id === baseKeyWithMemo ||
+              (baseKeyWithMemo && p.external_id!.startsWith(`${baseKeyWithMemo}_`)))
+          : undefined) ??
+        (row.clientName
+          ? softDupMap.get(`${row.date}|${normName(row.clientName)}|${row.amount}|${normMemo(buildMemo(row))}`)
+          : undefined) ??
+        (row.clientName
+          ? manualDupMap.get(`${row.date}|${normName(row.clientName)}|${row.amount}`)
+          : undefined)
 
-      // 수기 입력 항목과의 중복 — 날짜+상호명+금액으로 매칭
-      const manualKey = row.clientName ? `${row.date}|${normName(row.clientName)}|${row.amount}` : null
-      const manualDup = !!manualKey && manualDupSet.has(manualKey)
+      const newSyncId = makeSyncId()
 
-      if (existingIds.has(externalId) || (softKey && softDupSet.has(softKey)) || baseDup || manualDup) {
+      if (legacyMatch) {
+        // 기존 건에 새 동기화 ID를 부여하고 시트에도 기록 — 다음부터는 내용이 바뀌어도 중복되지 않는다
+        const { error } = await supabase.from('payments')
+          .update({ external_id: newSyncId }).eq('id', legacyMatch.id)
+        if (!error) {
+          byExternalId.set(newSyncId, { ...legacyMatch, external_id: newSyncId })
+          writeBacks.push({ rowIndex: row.rowIndex, syncId: newSyncId })
+        }
         skipped++
         continue
       }
 
-      const isPending = row.status === '잔금처리요망' || row.status === '미입금'
+      // ── 3) 신규 행 — 결제 생성 ──────────────────────────────────
+      const isPending = dbStatus !== 'confirmed'
 
       let projectId: string | null = null
       let matched = false
 
       if (row.clientName) {
-        // 1. 클라이언트 찾기 (없으면 자동 생성)
+        // 클라이언트 찾기 (없으면 자동 생성)
         let clientId: string | null = null
         const exactClient = clientList.find(
           (c) => c.name.toLowerCase() === row.clientName.toLowerCase()
@@ -151,7 +220,6 @@ export async function POST(request: Request) {
         if (exactClient) {
           clientId = exactClient.id
         } else {
-          // 신규 클라이언트 자동 생성
           const { data: newClient, error: clientErr } = await supabase
             .from('clients')
             .insert({
@@ -169,10 +237,9 @@ export async function POST(request: Request) {
           }
         }
 
-        // 2. 프로젝트 찾기 / 생성
+        // 프로젝트 찾기 / 생성
         //    연결 우선순위: 잔여 결제가 남은 진행중 → 잔여 있는 완료(잔금)
-        //    완납된 진행중 프로젝트엔 합치지 않는다 — 같은 클라이언트라도 별개 계약으로 보고
-        //    새 프로젝트를 자동 생성한다 (분할납부는 '잔금처리요망' 상태로 들어와 잔여가 남으므로 위에서 매칭됨)
+        //    완납된 프로젝트엔 합치지 않는다 — 같은 클라이언트라도 별개 계약으로 보고 새로 생성
         if (clientId) {
           const { data: clientProjects } = await supabase
             .from('projects')
@@ -183,7 +250,6 @@ export async function POST(request: Request) {
 
           const projs = clientProjects ?? []
 
-          // 프로젝트별 입금 합계 (총액 갱신·잔여 판단용)
           const paidByProject: Record<string, number> = {}
           if (projs.length > 0) {
             const { data: projPays } = await supabase
@@ -203,19 +269,14 @@ export async function POST(request: Request) {
             (p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount
           )
 
-          // '추가계약' 상태이거나 특이사항(메모)에 재계약·추가계약 표기가 있으면
-          // 진행 중인 프로젝트가 있어도 새 프로젝트로 분리 — 기존 프로젝트에 합치지 않는다.
-          // (입금상태 I열을 '입금완료'로 두고 특이사항에만 '재계약'이라 적는 경우 대응)
-          //  → 당월 매출과 실행비를 같은 달에 매칭 (이익 과대계상 방지)
+          // '추가계약' 상태이거나 특이사항에 재계약·추가계약 표기가 있으면 새 프로젝트로 분리
           const memoRenewal = /재\s*계약|추가\s*계약/.test(row.memo)
           const forceNewProject = row.status === '추가계약' || memoRenewal
-          // 완납된 ongoing 프로젝트는 폴백 대상에서 제외 — 잔여가 남은 건에만 합친다
           const target = forceNewProject
             ? null
             : (ongoingWithBalance[0] ?? completedWithBalance[0] ?? null)
 
           if (target) {
-            // 기존 프로젝트에 결제 연결
             projectId = target.id
             matched = true
             // 누적 결제가 기존 계약금액을 넘으면 총액 상향 (분할 납부·추가 결제 반영)
@@ -224,10 +285,8 @@ export async function POST(request: Request) {
               await supabase.from('projects').update({ total_amount: newPaidTotal }).eq('id', target.id)
             }
           } else {
-            // 연결 가능한 프로젝트 없음 → 신규·재계약으로 판단해 프로젝트 자동 생성
-            const priorCount = projs.length            // 기존(비취소) 계약 수
+            const priorCount = projs.length
             const isRenewal = priorCount > 0
-            // 특이사항에 '재계약'이라 적혀 있으면 재계약, 아니면 추가계약으로 표기
             const forceTag = /재\s*계약/.test(row.memo) ? '재계약' : '추가계약'
             const projectName = forceNewProject && isRenewal
               ? `${row.clientName} (${forceTag} ${priorCount}차)`
@@ -253,8 +312,6 @@ export async function POST(request: Request) {
               projectId = newProject.id
               matched = true
               created++
-              // 재계약은 다른 상품으로 계약하는 경우가 많아 직전 프로젝트의 구성 상품을
-              // 복제하지 않는다 — 구성 상품은 직접 입력 (미입력 시 월별 리포트에 경고 표시됨)
             }
           }
         }
@@ -262,18 +319,6 @@ export async function POST(request: Request) {
 
       if (!matched) unmatched++
       if (isPending) pending++
-
-      // 메모 구성: 상태 태그 + 특이사항 + 대표자·연락처
-      const statusTag =
-        row.status === '잔금처리요망' ? '⚠ 잔금 처리 요망' :
-        row.status === '미입금' ? '🔴 미입금' : ''
-
-      const memoParts = [
-        statusTag,
-        row.memo,
-        row.representative ? `대표: ${row.representative}` : '',
-        row.phone ? `연락처: ${row.phone}` : '',
-      ].filter(Boolean)
 
       const paymentType =
         row.status === '잔금처리요망' ? '잔금' :
@@ -285,42 +330,76 @@ export async function POST(request: Request) {
         payment_date: row.date,
         payment_type: paymentType,
         manager: row.manager || null,
-        memo: memoParts.length ? memoParts.join(' | ') : null,
+        memo: dbMemo,
         source: 'slack',
-        external_id: externalId,
+        external_id: newSyncId,
         client_name_raw: row.clientName || null,
         matched,
+        status: dbStatus,
       })
 
       if (insertErr) {
         errors.push({ row: row.rowIndex, reason: `결제 저장 실패: ${insertErr.message}` })
-        // 중복 키 에러는 이미 DB에 있는 것으로 처리 (외부 id 중복)
-        if (!insertErr.message.includes('duplicate') && !insertErr.message.includes('unique')) {
-          unmatched = Math.max(0, unmatched - (matched ? 0 : 1))
-        }
       } else {
         synced++
-        // 새로 추가된 항목을 중복 검사 집합에 반영해 루프 내 중복 방지
-        if (softKey) softDupSet.add(softKey)
-        existingIds.add(externalId)
-        existingExternalIds.push(externalId)
+        writeBacks.push({ rowIndex: row.rowIndex, syncId: newSyncId })
+        if (row.clientName) {
+          softDupMap.set(`${row.date}|${normName(row.clientName)}|${row.amount}|${normMemo(dbMemo)}`, {
+            id: '', external_id: newSyncId, payment_date: row.date,
+            client_name_raw: row.clientName, amount: row.amount,
+            memo: dbMemo, manager: row.manager || null, status: dbStatus, source: 'slack',
+          })
+        }
       }
     }
 
+    // 시트 A열에 동기화 ID 기록 — 실패해도 동기화 자체는 성공 처리 (다음 실행에서 레거시 매칭으로 복구됨)
+    let writeBackError: string | null = null
+    try {
+      await writeBackSyncIds(writeBacks)
+    } catch (e) {
+      writeBackError = e instanceof Error ? e.message : '시트 ID 기록 실패'
+    }
+
+    await logSync({ trigger, fromDate, synced, updated, skipped, created, pending, unmatched })
+
     return Response.json({
       synced,
+      updated,
       skipped,
       unmatched,
       pending,
       created,
       errors: errors.length > 0 ? errors : undefined,
+      writeBackError: writeBackError ?? undefined,
       total: rows.length,
       timestamp: new Date().toISOString(),
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : '알 수 없는 오류'
+    await logSync({ trigger, fromDate, error: message })
     return Response.json({ error: message }, { status: 500 })
   }
+}
+
+async function logSync(log: {
+  trigger: string; fromDate: string
+  synced?: number; updated?: number; skipped?: number
+  created?: number; pending?: number; unmatched?: number; error?: string
+}) {
+  try {
+    await supabase.from('sync_logs').insert({
+      trigger: log.trigger,
+      from_date: log.fromDate,
+      synced: log.synced ?? 0,
+      updated: log.updated ?? 0,
+      skipped: log.skipped ?? 0,
+      created_projects: log.created ?? 0,
+      pending: log.pending ?? 0,
+      unmatched: log.unmatched ?? 0,
+      error: log.error ?? null,
+    })
+  } catch { /* 로그 실패는 무시 */ }
 }
 
 /** 유사 클라이언트 제안 (미매칭 결제의 상호명 기반) — 세션 인증 필요 */

@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -135,7 +135,7 @@ export default function ClientsPage() {
       </div>
 
       {/* 데스크톱 테이블 */}
-      <div className="hidden md:block bg-white rounded-lg border">
+      <div className="hidden md:block bg-white rounded-lg border overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>

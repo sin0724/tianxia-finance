@@ -16,9 +16,11 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, Check, X, Ban, Copy } from 'lucide-react'
+import { CurrencyInput } from '@/components/ui/currency-input'
+import { yearOptions } from '@/components/shared/month-context'
 import type { Project, Client, Product, ProjectItem } from '@/types/database'
 
 type ProjectWithRelations = Project & {
@@ -85,14 +87,14 @@ export default function ProjectsPage() {
     // 각 프로젝트의 결제 합계 계산 (입금완료 vs 수금 예정 분리)
     const { data: paymentData } = await supabase
       .from('payments')
-      .select('project_id, amount, memo')
+      .select('project_id, amount, status')
       .not('project_id', 'is', null)
 
     const paidMap: Record<string, number> = {}
     const pendingMap: Record<string, number> = {}
     for (const p of paymentData ?? []) {
       if (!p.project_id) continue
-      const isPending = !!(p.memo?.includes('⚠ 잔금 처리 요망') || p.memo?.includes('🔴 미입금'))
+      const isPending = p.status !== 'confirmed'
       if (isPending) {
         pendingMap[p.project_id] = (pendingMap[p.project_id] ?? 0) + p.amount
       } else {
@@ -377,7 +379,7 @@ export default function ProjectsPage() {
           value={filterYear ?? ''}
           onChange={(e) => { setFilterYear(e.target.value ? Number(e.target.value) : null); setFilterMonth(null) }}>
           <option value="">연도 전체</option>
-          {[2023, 2024, 2025, 2026].map((y) => <option key={y} value={y}>{y}년</option>)}
+          {yearOptions().map((y) => <option key={y} value={y}>{y}년</option>)}
         </select>
 
         {filterYear && (
@@ -405,7 +407,7 @@ export default function ProjectsPage() {
         </span>
       </div>
 
-      <div className="bg-white rounded-lg border">
+      <div className="bg-white rounded-lg border overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -569,7 +571,7 @@ export default function ProjectsPage() {
               </div>
               <div className="space-y-1">
                 <Label>계약금액 (VAT포함) *</Label>
-                <Input type="number" value={form.total_amount} onChange={(e) => setForm({ ...form, total_amount: e.target.value })} />
+                <CurrencyInput value={form.total_amount} onChange={(v) => setForm({ ...form, total_amount: v })} />
               </div>
               <div className="space-y-1">
                 <Label>계약일</Label>
@@ -616,19 +618,17 @@ export default function ProjectsPage() {
                         value={item.quantity}
                         onChange={(e) => setItems((prev) => prev.map((it, i) => i === idx ? { ...it, quantity: e.target.value } : it))}
                       />
-                      <Input
-                        type="number"
+                      <CurrencyInput
                         className="flex-1 text-sm"
                         placeholder="판매가 (VAT포함)"
                         value={item.unit_price_snapshot}
-                        onChange={(e) => setItems((prev) => prev.map((it, i) => i === idx ? { ...it, unit_price_snapshot: e.target.value } : it))}
+                        onChange={(v) => setItems((prev) => prev.map((it, i) => i === idx ? { ...it, unit_price_snapshot: v } : it))}
                       />
-                      <Input
-                        type="number"
+                      <CurrencyInput
                         className="flex-1 text-sm"
                         placeholder="실행비 (원가)"
                         value={item.unit_cost_snapshot}
-                        onChange={(e) => setItems((prev) => prev.map((it, i) => i === idx ? { ...it, unit_cost_snapshot: e.target.value } : it))}
+                        onChange={(v) => setItems((prev) => prev.map((it, i) => i === idx ? { ...it, unit_cost_snapshot: v } : it))}
                       />
                     </div>
                   </div>
@@ -650,7 +650,8 @@ export default function ProjectsPage() {
             <DialogTitle>{selectedProject?.name} — 구성 상품</DialogTitle>
           </DialogHeader>
 
-          <div className="flex-1 overflow-y-auto overflow-x-hidden px-6 pb-2">
+          <div className="flex-1 overflow-y-auto overflow-x-auto px-6 pb-2">
+            <div className="min-w-[720px]">
             {/* 헤더 행 */}
             <div className="flex items-center gap-3 py-2 border-b text-xs font-medium text-gray-500 sticky top-0 bg-white z-10">
               <div className="flex-1 min-w-0">항목명</div>
@@ -723,13 +724,13 @@ export default function ProjectsPage() {
                       </div>
                       <div className="w-36 shrink-0 space-y-1">
                         <Label className="text-xs text-gray-500">판매가 (VAT포함)</Label>
-                        <Input type="number" className="text-sm h-8 text-right" value={editingItemForm.unit_price_snapshot}
-                          onChange={(e) => setEditingItemForm({ ...editingItemForm, unit_price_snapshot: e.target.value })} />
+                        <CurrencyInput className="text-sm h-8" value={editingItemForm.unit_price_snapshot}
+                          onChange={(v) => setEditingItemForm({ ...editingItemForm, unit_price_snapshot: v })} />
                       </div>
                       <div className="w-36 shrink-0 space-y-1">
                         <Label className="text-xs text-gray-500">실행비 (원가)</Label>
-                        <Input type="number" className="text-sm h-8 text-right" value={editingItemForm.unit_cost_snapshot}
-                          onChange={(e) => setEditingItemForm({ ...editingItemForm, unit_cost_snapshot: e.target.value })} />
+                        <CurrencyInput className="text-sm h-8" value={editingItemForm.unit_cost_snapshot}
+                          onChange={(v) => setEditingItemForm({ ...editingItemForm, unit_cost_snapshot: v })} />
                       </div>
                       <div className="w-16 shrink-0 flex gap-1 pb-0.5">
                         <Button size="sm" className="h-8 px-2" onClick={() => handleUpdateItem(item.id)}>
@@ -778,13 +779,13 @@ export default function ProjectsPage() {
               </div>
               <div className="w-36 shrink-0 space-y-1">
                 <Label className="text-xs font-medium text-gray-600">판매가 (VAT포함)</Label>
-                <Input type="number" className="h-9 text-right" placeholder="0" value={newItem.unit_price_snapshot}
-                  onChange={(e) => setNewItem({ ...newItem, unit_price_snapshot: e.target.value })} />
+                <CurrencyInput className="h-9" placeholder="0" value={newItem.unit_price_snapshot}
+                  onChange={(v) => setNewItem({ ...newItem, unit_price_snapshot: v })} />
               </div>
               <div className="w-36 shrink-0 space-y-1">
                 <Label className="text-xs font-medium text-gray-600">실행비 (원가)</Label>
-                <Input type="number" className="h-9 text-right" placeholder="0" value={newItem.unit_cost_snapshot}
-                  onChange={(e) => setNewItem({ ...newItem, unit_cost_snapshot: e.target.value })} />
+                <CurrencyInput className="h-9" placeholder="0" value={newItem.unit_cost_snapshot}
+                  onChange={(v) => setNewItem({ ...newItem, unit_cost_snapshot: v })} />
               </div>
               <div className="w-16 shrink-0 pb-0.5">
                 <Button className="h-9 w-full" onClick={() => {
@@ -795,6 +796,7 @@ export default function ProjectsPage() {
                   <Plus size={14} className="mr-1" />추가
                 </Button>
               </div>
+            </div>
             </div>
           </div>
 

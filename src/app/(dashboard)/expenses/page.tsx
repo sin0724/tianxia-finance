@@ -7,9 +7,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { toast } from 'sonner'
+import { toast } from '@/lib/toast'
 import { Copy, Plus, Pencil, Trash2, Check, RefreshCw } from 'lucide-react'
 import { formatKRW } from '@/lib/calculations/settlement'
+import { CurrencyInput } from '@/components/ui/currency-input'
+import { useMonth } from '@/components/shared/month-context'
+import { MonthNavigator } from '@/components/shared/month-navigator'
 import type { ExpenseCategory } from '@/types/database'
 
 const TYPE_LABEL: Record<string, string> = { fixed: '고정비', variable: '변동비', special: '특수비용' }
@@ -31,9 +34,7 @@ type ExpenseItem = {
 
 export default function ExpensesPage() {
   const supabase = createClient()
-  const now = new Date()
-  const [year, setYear]   = useState(now.getFullYear())
-  const [month, setMonth] = useState(now.getMonth() + 1)
+  const { year, month } = useMonth()
 
   const [items, setItems]     = useState<ExpenseItem[]>([])
   const [amounts, setAmounts] = useState<Record<string, string>>({})
@@ -242,13 +243,8 @@ export default function ExpensesPage() {
       {/* 헤더 */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">월별 지출 입력</h1>
-        <div className="flex items-center gap-2">
-          <select className="border rounded-md px-3 py-2 text-sm" value={year} onChange={e => setYear(Number(e.target.value))}>
-            {[2023, 2024, 2025, 2026].map(y => <option key={y} value={y}>{y}년</option>)}
-          </select>
-          <select className="border rounded-md px-3 py-2 text-sm" value={month} onChange={e => setMonth(Number(e.target.value))}>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}월</option>)}
-          </select>
+        <div className="flex items-center gap-2 flex-wrap">
+          <MonthNavigator />
           <Button variant="outline" size="sm" onClick={openCopy}>
             <Copy size={14} className="mr-1" />지난달 복사
           </Button>
@@ -303,12 +299,11 @@ export default function ExpensesPage() {
 
                     {/* 금액 + 메모 + 저장 */}
                     <div className="flex items-center gap-2 flex-1">
-                      <Input
-                        type="number"
-                        className="w-28 sm:w-36 h-8 text-sm text-right bg-white shrink-0"
+                      <CurrencyInput
+                        className="w-28 sm:w-36 h-8 text-sm bg-white shrink-0"
                         placeholder="0"
                         value={amounts[item.id] ?? ''}
-                        onChange={e => setAmounts(prev => ({ ...prev, [item.id]: e.target.value }))}
+                        onChange={v => setAmounts(prev => ({ ...prev, [item.id]: v }))}
                         onKeyDown={e => { if (e.key === 'Enter') saveSingle(item) }}
                       />
                       <Input

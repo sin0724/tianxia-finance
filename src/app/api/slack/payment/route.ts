@@ -219,12 +219,11 @@ export async function POST(request: Request) {
   // 프로젝트 조회/생성
   const project = await findOrCreateProject(clientId, clientName, amount, today)
 
-  // 메모 구성
+  const paymentType = status === '잔금처리요망' ? '잔금' : status === '미입금' ? '기타' : null
+  const dbStatus = status === '잔금처리요망' ? 'balance_due' : status === '미입금' ? 'unpaid' : 'confirmed'
   const statusTag =
     status === '잔금처리요망' ? '⚠ 잔금 처리 요망' :
     status === '미입금' ? '🔴 미입금' : ''
-  const paymentType = status === '잔금처리요망' ? '잔금' : status === '미입금' ? '기타' : null
-  const fullMemo = [statusTag, memo].filter(Boolean).join(' | ') || null
 
   const { error: insertErr } = await supabase.from('payments').insert({
     project_id: project?.id ?? null,
@@ -232,11 +231,12 @@ export async function POST(request: Request) {
     payment_date: today,
     payment_type: paymentType,
     manager: manager || null,
-    memo: fullMemo,
+    memo: memo || null,
     source: 'slack',
     external_id: `slack_direct_${today}_${clientName.replace(/\s+/g, '-')}_${amount}_${Date.now()}`,
     client_name_raw: clientName,
     matched: !!project,
+    status: dbStatus,
   })
 
   if (insertErr) {

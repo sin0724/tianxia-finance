@@ -3,11 +3,13 @@
 import { useState } from 'react'
 import { Menu } from 'lucide-react'
 import { Sidebar } from './sidebar'
+import { MonthProvider } from './month-context'
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
+    <MonthProvider>
     <div className="flex min-h-screen">
       {/* Mobile backdrop */}
       {sidebarOpen && (
@@ -37,5 +39,6 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
     </div>
+    </MonthProvider>
   )
 }
