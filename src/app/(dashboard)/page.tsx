@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatKRW } from '@/lib/calculations/settlement'
+import { countUnmatchedPayments } from '@/lib/payments/unmatched'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend, ReferenceLine,
@@ -116,7 +117,7 @@ export default function DashboardPage() {
       supabase.from('monthly_settlements').select('*').eq('year', selYear).eq('month', selMonth).maybeSingle(),
       supabase.from('monthly_settlements').select('*').eq('year', prevYear).eq('month', prevMonth).maybeSingle(),
       supabase.from('monthly_settlements').select('year, month, total_revenue, operating_profit').eq('year', selYear).order('month'),
-      supabase.from('payments').select('amount, matched, excluded, status, projects(status)')
+      supabase.from('payments').select('amount, excluded, status, projects(status)')
         .gte('payment_date', start).lte('payment_date', end),
       supabase.from('payments').select('amount, excluded, projects(status)')
         .eq('status', 'confirmed').gte('payment_date', prevStart).lte('payment_date', prevEnd),
@@ -139,13 +140,13 @@ export default function DashboardPage() {
     })))
 
     // 이번 달 결제 (확정 입금액·미매칭 알림용, 취소 프로젝트 제외)
-    type PaymentRow = { amount: number; matched: boolean; excluded: boolean; status: string; projects: { status: string } | null }
+    type PaymentRow = { amount: number; excluded: boolean; status: string; projects: { status: string } | null }
     const paymentRows = (paymentsRes.data as unknown as PaymentRow[]) ?? []
     const confirmed = paymentRows.filter(
       (p) => p.status === 'confirmed' && !p.excluded && p.projects?.status !== 'cancelled'
     )
-    // 미연결 알림은 확정 입금만 대상 (수금 예정은 수금 관리 탭에서 관리)
-    const unmatched = paymentRows.filter((p) => !p.matched && p.status === 'confirmed')
+    // 미연결 알림은 사이드바 배지와 같은 기준 — 전체 기간·확정 입금·집계 제외 건 제외
+    const unmatchedCount = await countUnmatchedPayments(supabase)
     const refunds = confirmed.filter((p) => p.amount < 0)
     setPaymentTotal(confirmed.reduce((sum, p) => sum + p.amount, 0))
     setRefundTotal(refunds.reduce((sum, p) => sum + p.amount, 0))
@@ -232,9 +233,9 @@ export default function DashboardPage() {
           message: '월말입니다. 지출·급여를 입력하고 정산을 완료해주세요.',
           href: '/reports/monthly' })
       }
-      if (unmatched.length > 0) {
+      if (unmatchedCount > 0) {
         newAlerts.push({ id: 'unmatched', level: 'warn',
-          message: `미연결 결제 ${unmatched.length}건 — 프로젝트를 연결해주세요.`,
+          message: `미연결 결제 ${unmatchedCount}건 — 프로젝트를 연결해주세요.`,
           href: '/payments' })
       }
       const [expRes, empRes] = await Promise.all([

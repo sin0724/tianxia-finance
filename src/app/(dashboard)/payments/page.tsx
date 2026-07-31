@@ -22,6 +22,7 @@ import { formatKRW } from '@/lib/calculations/settlement'
 import { findSimilar } from '@/lib/utils/levenshtein'
 import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
+import { unmatchedPaymentsQuery, isUnmatchedPayment, refreshBadges } from '@/lib/payments/unmatched'
 import type { Payment, Project, Client, PaymentStatus } from '@/types/database'
 
 type PaymentWithRelations = Payment & {
@@ -66,6 +67,9 @@ export default function PaymentsPage() {
 
   // 검색·정렬
   const [search, setSearch] = useState('')
+  // 미연결만 보기 — 사이드바 배지와 같은 기준(전체 기간)이라 월 필터를 무시한다
+  const [unmatchedOnly, setUnmatchedOnly] = useState(false)
+  const [unmatchedAll, setUnmatchedAll] = useState<PaymentWithRelations[]>([])
   const [sortKey, setSortKey] = useState<SortKey>('payment_date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -116,7 +120,7 @@ export default function PaymentsPage() {
     const lastDay = new Date(year, month, 0).getDate()
     const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 
-    const [paymentsRes, pendingRes, projRes, clientRes] = await Promise.all([
+    const [paymentsRes, pendingRes, projRes, clientRes, unmatchedRes] = await Promise.all([
       supabase
         .from('payments')
         .select('*, projects(name, status, clients(name))')
@@ -135,6 +139,8 @@ export default function PaymentsPage() {
         .in('status', ['ongoing', 'completed'])
         .order('name'),
       supabase.from('clients').select('*').order('name'),
+      // 미연결 확정 입금 — 전체 기간 (사이드바 배지와 동일 기준)
+      unmatchedPaymentsQuery(supabase).order('payment_date', { ascending: false }),
     ])
 
     if (paymentsRes.error) toast.error('데이터 로드 실패: ' + paymentsRes.error.message)
@@ -145,9 +151,10 @@ export default function PaymentsPage() {
     )
     setProjects(projRes.data ?? [])
     setClients(clientRes.data ?? [])
+    setUnmatchedAll((unmatchedRes.data as unknown as PaymentWithRelations[]) ?? [])
     setLoading(false)
     // 사이드바 미연결 배지 즉시 갱신
-    window.dispatchEvent(new Event('refresh-badges'))
+    refreshBadges()
   }
 
   useEffect(() => { load() }, [year, month])  // eslint-disable-line react-hooks/exhaustive-deps
@@ -367,7 +374,9 @@ export default function PaymentsPage() {
   const q = search.trim().toLowerCase()
 
   const confirmedList = useMemo(() => {
-    const filtered = payments.filter((p) => matchesSearch(p, q))
+    // 미연결만 보기일 땐 월 필터를 무시하고 전체 기간 미연결 건을 보여준다
+    const source = unmatchedOnly ? unmatchedAll : payments
+    const filtered = source.filter((p) => matchesSearch(p, q))
     const dir = sortDir === 'asc' ? 1 : -1
     return [...filtered].sort((a, b) => {
       if (sortKey === 'amount') return (a.amount - b.amount) * dir
@@ -378,7 +387,7 @@ export default function PaymentsPage() {
       }
       return a.payment_date.localeCompare(b.payment_date) * dir
     })
-  }, [payments, q, sortKey, sortDir])
+  }, [payments, unmatchedAll, unmatchedOnly, q, sortKey, sortDir])
 
   const pendingList = allPending.filter((p) => matchesSearch(p, q))
 
@@ -441,7 +450,11 @@ export default function PaymentsPage() {
             )}
           </button>
         </div>
-        {tab === 'confirmed' && <div className="pb-1"><MonthNavigator /></div>}
+        {tab === 'confirmed' && (
+          unmatchedOnly
+            ? <span className="text-xs text-orange-500 pb-1">전체 기간 미연결 건 표시</span>
+            : <div className="pb-1"><MonthNavigator /></div>
+        )}
         {tab === 'pending' && (
           <span className="text-xs text-gray-400 pb-1">전체 기간 미수금 표시</span>
         )}
@@ -458,6 +471,19 @@ export default function PaymentsPage() {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+        {tab === 'confirmed' && (unmatchedAll.length > 0 || unmatchedOnly) && (
+          <button
+            onClick={() => setUnmatchedOnly((v) => !v)}
+            className={`text-xs rounded-full px-2.5 py-1 border transition-colors ${
+              unmatchedOnly
+                ? 'bg-orange-500 border-orange-500 text-white'
+                : 'border-orange-300 text-orange-600 hover:bg-orange-50'
+            }`}
+            title="프로젝트가 연결되지 않은 확정 입금 — 전체 기간"
+          >
+            미연결만 {unmatchedAll.length}건
+          </button>
+        )}
         {search && (
           <button onClick={() => setSearch('')} className="text-xs text-gray-400 hover:text-gray-600">
             초기화
@@ -480,7 +506,8 @@ export default function PaymentsPage() {
               </div>
             )}
             <div className="text-sm text-gray-600">
-              순 입금 <strong className="text-gray-900">{formatKRW(confirmedTotal)}</strong> ({activeConfirmed.length}건)
+              {unmatchedOnly ? '미연결 합계' : '순 입금'}{' '}
+              <strong className="text-gray-900">{formatKRW(confirmedTotal)}</strong> ({activeConfirmed.length}건)
             </div>
           </div>
 
@@ -490,10 +517,10 @@ export default function PaymentsPage() {
               <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
             ) : confirmedList.length === 0 ? (
               <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">
-                {search ? '검색 결과가 없습니다.' : '입금 내역이 없습니다.'}
+                {search ? '검색 결과가 없습니다.' : unmatchedOnly ? '미연결 건이 없습니다.' : '입금 내역이 없습니다.'}
               </div>
             ) : confirmedList.map((p) => (
-              <div key={p.id} className={`bg-white rounded-lg border p-4 ${isRefundPayment(p) ? 'border-l-4 border-l-red-400 bg-red-50/30' : !p.matched ? 'border-l-4 border-l-blue-300' : ''} ${p.excluded ? 'opacity-50' : ''}`}>
+              <div key={p.id} className={`bg-white rounded-lg border p-4 ${isRefundPayment(p) ? 'border-l-4 border-l-red-400 bg-red-50/30' : isUnmatchedPayment(p) ? 'border-l-4 border-l-blue-300' : ''} ${p.excluded ? 'opacity-50' : ''}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -518,7 +545,7 @@ export default function PaymentsPage() {
                     </div>
                   </div>
                   <div className="flex gap-1 shrink-0">
-                    {!p.matched && (
+                    {isUnmatchedPayment(p) && (
                       <Button size="sm" variant="ghost" className="text-blue-400" onClick={() => openMatch(p)}>
                         <Link2 size={14} />
                       </Button>
@@ -560,10 +587,10 @@ export default function PaymentsPage() {
                   <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
                 ) : confirmedList.length === 0 ? (
                   <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">
-                    {search ? '검색 결과가 없습니다.' : '입금 내역이 없습니다.'}
+                    {search ? '검색 결과가 없습니다.' : unmatchedOnly ? '미연결 건이 없습니다.' : '입금 내역이 없습니다.'}
                   </TableCell></TableRow>
                 ) : confirmedList.map((p) => (
-                  <TableRow key={p.id} className={`${isRefundPayment(p) ? 'bg-red-50/40' : !p.matched ? 'bg-blue-50/30' : ''}${p.excluded ? ' opacity-50' : ''}`}>
+                  <TableRow key={p.id} className={`${isRefundPayment(p) ? 'bg-red-50/40' : isUnmatchedPayment(p) ? 'bg-blue-50/30' : ''}${p.excluded ? ' opacity-50' : ''}`}>
                     <TableCell>{p.payment_date}</TableCell>
                     <TableCell>
                       {p.projects?.clients?.name ?? (
@@ -595,7 +622,7 @@ export default function PaymentsPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-1 justify-end">
-                        {!p.matched && (
+                        {isUnmatchedPayment(p) && (
                           <Button size="sm" variant="ghost" className="text-blue-400" onClick={() => openMatch(p)}>
                             <Link2 size={14} />
                           </Button>
@@ -697,7 +724,7 @@ export default function PaymentsPage() {
                     </div>
 
                     {/* 유사 클라이언트 제안 */}
-                    {!p.matched && suggestions.length > 0 && (
+                    {!p.project_id && suggestions.length > 0 && (
                       <div className="flex items-center gap-2 flex-wrap pt-1 border-t border-gray-100">
                         <span className="text-xs text-gray-400">유사 클라이언트:</span>
                         {suggestions.map((s) => (

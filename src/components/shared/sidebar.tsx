@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { countUnmatchedPayments } from '@/lib/payments/unmatched'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard,
@@ -80,23 +81,24 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const [unmatchedCount, setUnmatchedCount] = useState(0)
 
   // 프로젝트 미연결 "확정 입금" 건수 배지 — 페이지 이동·창 포커스 시 갱신
-  // (수금 예정 건은 수금 관리 탭에서 따로 관리되므로 제외)
+  // 기준은 countUnmatchedPayments() 한 곳에서만 정의한다 (대시보드 알림·결제 내역 필터와 동일)
   useEffect(() => {
+    let alive = true
     const supabase = createClient()
-    const refresh = () => {
-      supabase
-        .from('payments')
-        .select('id', { count: 'exact', head: true })
-        .eq('matched', false)
-        .eq('status', 'confirmed')
-        .then(({ count }) => setUnmatchedCount(count ?? 0))
+    const refresh = async () => {
+      const count = await countUnmatchedPayments(supabase)
+      if (alive) setUnmatchedCount(count)
     }
     refresh()
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh() }
     window.addEventListener('focus', refresh)
     window.addEventListener('refresh-badges', refresh)
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
+      alive = false
       window.removeEventListener('focus', refresh)
       window.removeEventListener('refresh-badges', refresh)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [pathname])
 
@@ -156,7 +158,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                   {badge === 'unmatched' && unmatchedCount > 0 && (
                     <span
                       className="text-[11px] font-semibold bg-orange-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"
-                      title={`프로젝트 미연결 입금 ${unmatchedCount}건 — 결제 내역에서 연결해주세요`}
+                      title={`프로젝트 미연결 입금 ${unmatchedCount}건 (전체 기간) — 결제 내역의 '미연결만' 필터에서 연결해주세요`}
                     >
                       {unmatchedCount}
                     </span>
