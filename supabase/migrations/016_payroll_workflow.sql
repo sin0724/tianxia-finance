@@ -36,7 +36,7 @@ ALTER TABLE monthly_payroll
 
 COMMENT ON COLUMN monthly_payroll.base_salary          IS '기본급 — 세전(원천징수 전) 지급액. 알바는 시급×시간+주휴 합계';
 COMMENT ON COLUMN monthly_payroll.employer_insurance   IS '4대보험 회사부담분 — 원천징수와 별개로 회사에서 나가는 돈. 영업이익에서 차감된다';
-COMMENT ON COLUMN monthly_payroll.incentive_deductions IS '인센티브 차감액 — 대장 지급액과 정산 인센티브에서 모두 빠진다';
+-- (incentive_deductions 는 017에서 incentive_income_tax / incentive_local_tax 로 이관되며 폐기된다)
 COMMENT ON COLUMN monthly_payroll.deductions           IS '(파생) 기본급분 원천징수 합계 = base_income_tax + base_local_tax';
 COMMENT ON COLUMN monthly_payroll.net_pay              IS '(파생) 기본급 차인지급액 = base_salary - deductions';
 

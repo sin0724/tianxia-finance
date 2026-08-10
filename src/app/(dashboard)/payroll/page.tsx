@@ -26,7 +26,6 @@ type FormEntry = {
   work_hours: string
   include_weekly_holiday: boolean
   base_salary: string
-  incentive_deductions: string
   base_income_tax: string
   base_local_tax: string
   incentive_income_tax: string
@@ -45,7 +44,6 @@ function emptyForm(emp: Employee): FormEntry {
     work_hours: '0',
     include_weekly_holiday: true,
     base_salary: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary ?? 0),
-    incentive_deductions: '0',
     base_income_tax: '0',
     base_local_tax: '0',
     incentive_income_tax: '0',
@@ -164,7 +162,6 @@ export default function PayrollPage() {
         work_hours: String(p.work_hours ?? 0),
         include_weekly_holiday: p.include_weekly_holiday !== false,
         base_salary: String(p.base_salary ?? 0),
-        incentive_deductions: String(p.incentive_deductions ?? 0),
         base_income_tax: String(p.base_income_tax ?? 0),
         base_local_tax: String(p.base_local_tax ?? 0),
         incentive_income_tax: String(p.incentive_income_tax ?? 0),
@@ -187,17 +184,17 @@ export default function PayrollPage() {
     const isPartTime = emp.employee_type === 'part_time'
     const partTime = calcPartTimePay(num(f.work_hours), emp.hourly_wage ?? 0, f.include_weekly_holiday)
     const base = isPartTime ? partTime.total : num(f.base_salary)
-    const incGross = incentiveGross[emp.id] ?? 0
-    const incNet = Math.max(0, incGross - num(f.incentive_deductions))
-    const gross = base + incNet
+    // 인센티브는 세전액이 그대로 지급액에 들어간다. 3.3%는 ② 확정 단계의 세액 칸에서 뺀다.
+    const incentive = incentiveGross[emp.id] ?? 0
+    const gross = base + incentive
 
     const tax = num(f.base_income_tax) + num(f.base_local_tax) + num(f.incentive_income_tax) + num(f.incentive_local_tax)
-    const suggested = { base: withhold(base), incentive: withhold(incNet) }
+    const suggested = { base: withhold(base), incentive: withhold(incentive) }
     const suggestedTax = suggested.base.totalTax + suggested.incentive.totalTax
 
     return {
       emp, form: f, isPartTime, partTime,
-      base, incGross, incNet, gross,
+      base, incentive, gross,
       isManualIncentive: manualIds.has(emp.id),
       tax, net: gross - tax,
       employerInsurance: num(f.employer_insurance),
@@ -209,7 +206,7 @@ export default function PayrollPage() {
 
   const totals = useMemo(() => rows.reduce((t, r) => ({
     base: t.base + r.base,
-    incentive: t.incentive + r.incNet,
+    incentive: t.incentive + r.incentive,
     gross: t.gross + r.gross,
     tax: t.tax + r.tax,
     net: t.net + r.net,
@@ -240,7 +237,7 @@ export default function PayrollPage() {
         base_salary: r.base,
         work_hours: num(f.work_hours),
         include_weekly_holiday: f.include_weekly_holiday,
-        incentive_deductions: num(f.incentive_deductions),
+        incentive_deductions: 0, // [DEPRECATED 017] 인센티브 3.3%는 incentive_*_tax로 이관
         base_income_tax: num(f.base_income_tax),
         base_local_tax: num(f.base_local_tax),
         incentive_income_tax: num(f.incentive_income_tax),
@@ -362,7 +359,7 @@ export default function PayrollPage() {
         // 확정 세액이 있으면 그것을, 없으면 3.3% 예상값을 넣는다
         baseIncomeTax: r.taxEntered ? num(r.form.base_income_tax) : r.suggested.base.incomeTax,
         baseLocalTax: r.taxEntered ? num(r.form.base_local_tax) : r.suggested.base.localTax,
-        incentive: r.incNet,
+        incentive: r.incentive,
         incentiveIncomeTax: r.taxEntered ? num(r.form.incentive_income_tax) : r.suggested.incentive.incomeTax,
         incentiveLocalTax: r.taxEntered ? num(r.form.incentive_local_tax) : r.suggested.incentive.localTax,
       }))
@@ -405,7 +402,7 @@ export default function PayrollPage() {
   const showDoubleCountWarning = insuranceTotalInExpense > 0 && totals.insurance > 0
 
   // ── 렌더 ─────────────────────────────────────────────────────
-  const GRID_ESTIMATE = 'md:grid md:grid-cols-[1.4fr_1.3fr_1.2fr_1fr_1.1fr_1.1fr] md:gap-3'
+  const GRID_ESTIMATE = 'md:grid md:grid-cols-[1.4fr_1.3fr_1.2fr_1.1fr_1.1fr] md:gap-3'
   const GRID_CONFIRM = 'md:grid md:grid-cols-[1.4fr_1.1fr_1.1fr_1.1fr_1.1fr_1fr] md:gap-3'
   const GRID_PAY = 'md:grid md:grid-cols-[1.4fr_1.2fr_1.2fr_1.4fr] md:gap-3'
 
@@ -522,8 +519,7 @@ export default function PayrollPage() {
             <div className={`hidden ${GRID_ESTIMATE} px-4 py-2 border-b bg-gray-50 text-xs font-medium text-gray-500`}>
               <div>직원</div>
               <div>근무시간 / 기본급</div>
-              <div>인센티브</div>
-              <div>인센티브 차감</div>
+              <div>인센티브 (세전)</div>
               <div className="text-right">지급액 (세전)</div>
               <div>4대보험 회사부담</div>
             </div>
@@ -599,8 +595,8 @@ export default function PayrollPage() {
                     )}
                   </Cell>
 
-                  {/* 인센티브 */}
-                  <Cell label="인센티브">
+                  {/* 인센티브 (세전) */}
+                  <Cell label="인센티브 (세전)">
                     {editingIncentive[r.emp.id] !== undefined ? (
                       <div className="flex items-center gap-1">
                         <CurrencyInput
@@ -621,26 +617,16 @@ export default function PayrollPage() {
                     ) : (
                       <button
                         className="group flex items-center gap-1 justify-end md:justify-start w-full"
-                        onClick={() => setEditingIncentive((p) => ({ ...p, [r.emp.id]: String(r.incGross) }))}
+                        onClick={() => setEditingIncentive((p) => ({ ...p, [r.emp.id]: String(r.incentive) }))}
                         title="클릭해서 수동 지정 (0으로 저장하면 자동 계산 복원)"
                       >
-                        {r.incGross > 0
-                          ? <span className="text-blue-600 font-medium text-sm">{formatKRW(r.incGross)}</span>
+                        {r.incentive > 0
+                          ? <span className="text-blue-600 font-medium text-sm">{formatKRW(r.incentive)}</span>
                           : <span className="text-gray-300 text-sm">-</span>}
                         {r.isManualIncentive && <span className="text-xs text-orange-400">수동</span>}
                         <Pencil size={11} className="text-gray-300 opacity-0 group-hover:opacity-100" />
                       </button>
                     )}
-                  </Cell>
-
-                  {/* 인센티브 차감 */}
-                  <Cell label="인센티브 차감">
-                    <CurrencyInput
-                      className="h-8 text-sm w-24 md:w-full"
-                      placeholder="0"
-                      value={r.form.incentive_deductions}
-                      onChange={(v) => update(r.emp.id, { incentive_deductions: v })}
-                    />
                   </Cell>
 
                   {/* 지급액 세전 */}
@@ -670,7 +656,6 @@ export default function PayrollPage() {
                 <div>합계</div>
                 <div className="text-gray-600">{formatKRW(totals.base)}</div>
                 <div className="text-blue-600">{formatKRW(totals.incentive)}</div>
-                <div />
                 <div className="md:text-right text-amber-700">{formatKRW(totals.gross)}</div>
                 <div className="text-purple-700">{formatKRW(totals.insurance)}</div>
               </div>
@@ -679,7 +664,7 @@ export default function PayrollPage() {
 
           <p className="text-xs text-gray-400 mt-2 leading-relaxed">
             * 인센티브는 이번 달 확정 입금 실적으로 자동 산출됩니다. 금액을 클릭하면 수동으로 덮어쓸 수 있고, 0으로 저장하면 자동 계산으로 돌아갑니다.<br />
-            * &quot;인센티브 차감&quot;은 대장 지급액과 정산 인센티브에서 모두 빠집니다.<br />
+            * 여기 넣는 금액은 모두 <strong>세전</strong>입니다. 인센티브 3.3% 원천징수는 ② 확정 단계에서 소득세·지방소득세로 나눠 기록합니다.<br />
             * 대장을 내보내면 자동으로 <strong>세무사 확정 대기</strong> 상태로 넘어갑니다.
           </p>
         </TabsContent>
@@ -720,7 +705,7 @@ export default function PayrollPage() {
                 <div key={r.emp.id} className={`px-4 py-3 space-y-2 md:space-y-0 ${GRID_CONFIRM} md:items-center`}>
                   <div className="min-w-0">
                     <span className="font-medium text-gray-900">{r.emp.name}</span>
-                    {r.incNet > 0 && (
+                    {r.incentive > 0 && (
                       <div className="text-xs text-gray-400 mt-0.5">기본급 + 인센티브 (2줄)</div>
                     )}
                   </div>
@@ -728,9 +713,9 @@ export default function PayrollPage() {
                   <Cell label="지급액 (세전)" className="md:text-right">
                     <div className="text-sm">
                       <div className="font-medium text-amber-700">{formatKRW(r.gross)}</div>
-                      {r.incNet > 0 && (
+                      {r.incentive > 0 && (
                         <div className="text-xs text-gray-400">
-                          {formatKRW(r.base)} + {formatKRW(r.incNet)}
+                          {formatKRW(r.base)} + {formatKRW(r.incentive)}
                         </div>
                       )}
                     </div>
@@ -743,7 +728,7 @@ export default function PayrollPage() {
                         value={r.form.base_income_tax}
                         onChange={(v) => update(r.emp.id, { base_income_tax: v })}
                       />
-                      {r.incNet > 0 && (
+                      {r.incentive > 0 && (
                         <CurrencyInput
                           className="h-8 text-sm w-28 md:w-full border-blue-200"
                           value={r.form.incentive_income_tax}
@@ -760,7 +745,7 @@ export default function PayrollPage() {
                         value={r.form.base_local_tax}
                         onChange={(v) => update(r.emp.id, { base_local_tax: v })}
                       />
-                      {r.incNet > 0 && (
+                      {r.incentive > 0 && (
                         <CurrencyInput
                           className="h-8 text-sm w-28 md:w-full border-blue-200"
                           value={r.form.incentive_local_tax}
@@ -814,7 +799,8 @@ export default function PayrollPage() {
           </div>
 
           <p className="text-xs text-gray-400 mt-2 leading-relaxed">
-            * 인센티브가 있는 직원은 대장과 같이 <strong>윗칸 기본급분 / 아랫칸(파란 테두리) 인센티브분</strong>으로 나눠 입력합니다.<br />
+            * 인센티브가 있는 직원은 대장과 같이 <strong>윗칸 기본급분 / 아랫칸(파란 테두리) 인센티브분</strong>으로 나눠 입력합니다.
+            인센티브 3.3%는 여기 아랫칸에 들어갑니다.<br />
             * 검산 칸은 3.3% 계산과의 차액입니다. 4대보험 가입자나 연말정산 반영이 있으면 차이가 날 수 있으니 세무사 값을 그대로 두세요.
           </p>
         </TabsContent>

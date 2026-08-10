@@ -79,16 +79,15 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
   // 3. 상품 실행비 (스냅샷 기준)
   const totalProductCost = calculateProductCost(input.payments, input.projectItems)
 
-  // 4. 인센티브 합계 (월별급여에서 입력한 인센티브 공제액 반영)
-  const grossIncentive = input.incentives.reduce(
+  // 4. 인센티브 합계 — 세전(원천징수 전) 기준.
+  //    인센티브 3.3%는 직원이 부담하나 회사가 대신 납부하는 돈이므로 비용은 세전액이다.
+  //    (예: 인센티브 100만 → 직원에게 967,000 + 국세청에 33,000 = 회사 지출 100만)
+  //    017 이전에는 incentive_deductions를 빼서 세후로 잡고 있었고, 그만큼 영업이익이
+  //    과대계상됐다. 해당 칸은 incentive_income_tax / incentive_local_tax로 이관됐다.
+  const totalIncentive = input.incentives.reduce(
     (sum, i) => sum.plus(i.amount),
     new Decimal(0)
   )
-  const totalIncentiveDeductions = input.payroll.reduce(
-    (sum, p) => sum.plus(p.incentive_deductions ?? 0),
-    new Decimal(0)
-  )
-  const totalIncentive = grossIncentive.minus(totalIncentiveDeductions)
 
   // 5. 매출총이익
   const grossProfit = supplyValue.minus(totalIncentive).minus(totalProductCost)
