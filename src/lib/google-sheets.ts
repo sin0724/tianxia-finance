@@ -134,12 +134,14 @@ export function makeSyncId(): string {
  * D(대표자)·E(전화번호)는 폼에서 받지 않으므로 빈 값으로 둔다.
  */
 export async function appendSheetRow(row: {
-  date: string          // YYYY-MM-DD
-  clientName: string
-  manager: string
-  amount: number
-  memo: string
-  status: PaymentStatus
+  date: string          // YYYY-MM-DD (B)
+  clientName: string    // 상호명 (C)
+  representative: string // 대표자 (D)
+  phone: string         // 전화번호 (E)
+  manager: string       // 담당자 (F)
+  amount: number        // 금액 (G)
+  memo: string          // 작업내용 및 특이사항 (H)
+  status: PaymentStatus // 입금상태 (I)
 }): Promise<{ rowIndex: number; syncId: string }> {
   const { sheets, sheetId, sheetName } = getSheetsClient(false)
   const syncId = makeSyncId()
@@ -172,8 +174,10 @@ export async function appendSheetRow(row: {
     range: `${sheetName}!B${rowIndex}:I${rowIndex}`,
     valueInputOption: 'USER_ENTERED',
     requestBody: {
-      // D(대표자)·E(전화번호)는 폼에서 받지 않으므로 빈 값 — 대상 행은 비어 있어 지워질 내용이 없다
-      values: [[row.date, row.clientName, '', '', row.manager, row.amount, row.memo, row.status]],
+      values: [[
+        row.date, row.clientName, row.representative, row.phone,
+        row.manager, row.amount, row.memo, row.status,
+      ]],
     },
   })
 

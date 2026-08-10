@@ -121,6 +121,8 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
       const result = await registerPayment(admin, {
         date: input.date,
         clientName: input.clientName,
+        representative: input.representative,
+        phone: input.phone,
         manager: input.manager,
         amount,
         memo: input.memo,
@@ -141,6 +143,8 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
         `${emoji} *결제 등록 완료*${userName ? ` — @${userName}` : ''}`,
         `> 날짜: ${input.date}`,
         `> 상호명: *${input.clientName}*`,
+        input.representative ? `> 대표자: ${input.representative}` : '',
+        input.phone ? `> 전화번호: ${input.phone}` : '',
         `> 담당자: ${input.manager}`,
         `> 금액: *${formatKRW(amount)}* (부가세 포함)`,
         `> 상태: ${input.status}${result.projectCreated ? ' · 신규 프로젝트 자동 생성' : ''}`,

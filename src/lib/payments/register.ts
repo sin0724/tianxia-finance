@@ -18,12 +18,29 @@ import { appendSheetRow, makeSyncId, type PaymentStatus } from '@/lib/google-she
 type Admin = SupabaseClient<Database>
 
 export type PaymentInput = {
-  date: string          // YYYY-MM-DD
-  clientName: string
-  manager: string
+  date: string           // YYYY-MM-DD
+  clientName: string     // 상호명
+  representative: string // 거래처 대표자
+  phone: string          // 거래처 전화번호
+  manager: string        // 우리 쪽 영업 담당자
   amount: number
   memo: string
   status: PaymentStatus
+}
+
+/**
+ * 시트 행 → payments.memo 문자열.
+ *
+ * sync-sheets 도 반드시 이 함수를 써야 한다. 형식이 어긋나면 동기화가 매번
+ * "메모가 바뀌었다"고 판단해 같은 건을 계속 업데이트한다.
+ */
+export function buildPaymentMemo(memo: string | null, representative: string | null, phone: string | null): string | null {
+  const parts = [
+    memo,
+    representative ? `대표: ${representative}` : '',
+    phone ? `연락처: ${phone}` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' | ') : null
 }
 
 export type RegisterResult = {
@@ -38,8 +55,18 @@ export type RegisterResult = {
 const toDbStatus = (s: PaymentStatus): 'confirmed' | 'balance_due' | 'unpaid' =>
   s === '잔금처리요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
 
-/** 클라이언트 조회 또는 생성 */
-async function findOrCreateClient(admin: Admin, name: string, manager: string): Promise<string | null> {
+/**
+ * 클라이언트 조회 또는 생성.
+ *
+ * clients.manager 에는 우리 쪽 영업 담당자가 아니라 **거래처 대표자**가 들어간다.
+ * sync-sheets 가 그렇게 넣고 있어 기준을 맞춘 것이다 (우리 담당자는 payments.manager 에 남는다).
+ */
+async function findOrCreateClient(
+  admin: Admin,
+  name: string,
+  representative: string,
+  phone: string,
+): Promise<string | null> {
   const { data: existing } = await admin
     .from('clients')
     .select('id')
@@ -51,7 +78,7 @@ async function findOrCreateClient(admin: Admin, name: string, manager: string): 
 
   const { data: created } = await admin
     .from('clients')
-    .insert({ name, manager: manager || null })
+    .insert({ name, manager: representative || null, contact: phone || null })
     .select('id')
     .single()
 
@@ -137,7 +164,7 @@ export function formatKRW(n: number): string {
 
 /** 결제 한 건을 시트와 DB 양쪽에 등록한다 */
 export async function registerPayment(admin: Admin, input: PaymentInput): Promise<RegisterResult> {
-  const { date, clientName, manager, amount, memo, status } = input
+  const { date, clientName, representative, phone, manager, amount, memo, status } = input
 
   // ── 1) 시트에 먼저 기재하고 동기화 ID를 확보 ─────────────────────
   // 시트가 팀의 원장이므로 여기부터 남긴다. 실패해도 DB 저장은 계속한다.
@@ -146,7 +173,9 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
   let warning: string | undefined
 
   try {
-    const appended = await appendSheetRow({ date, clientName, manager, amount, memo, status })
+    const appended = await appendSheetRow({
+      date, clientName, representative, phone, manager, amount, memo, status,
+    })
     syncId = appended.syncId
     sheetRow = appended.rowIndex
   } catch (e) {
@@ -155,7 +184,7 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
   }
 
   // ── 2) 클라이언트 / 프로젝트 연결 ────────────────────────────────
-  const clientId = await findOrCreateClient(admin, clientName, manager)
+  const clientId = await findOrCreateClient(admin, clientName, representative, phone)
   if (!clientId) {
     return { ok: false, message: '클라이언트 저장에 실패했습니다. 관리자에게 문의해주세요.', warning }
   }
@@ -171,7 +200,8 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
     payment_date: date,
     payment_type: paymentType,
     manager: manager || null,
-    memo: memo || null,
+    // sync-sheets 와 같은 형식이어야 다음 동기화에서 "변경됨"으로 오인하지 않는다
+    memo: buildPaymentMemo(memo || null, representative || null, phone || null),
     source: 'slack',
     external_id: syncId,   // 시트 M열과 같은 ID — sync-sheets 가 중복 생성하지 않게 하는 열쇠
     client_name_raw: clientName,

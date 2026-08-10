@@ -12,6 +12,8 @@ export const PAYMENT_MODAL_CALLBACK = 'payment_submit'
 export const FIELD = {
   date: 'date',
   client: 'client',
+  representative: 'representative',
+  phone: 'phone',
   manager: 'manager',
   amount: 'amount',
   status: 'status',
@@ -84,6 +86,29 @@ export function buildPaymentModal(params: {
         placeholder: plain('예) ABC마케팅'),
       },
     },
+    // 시트 컬럼 순서(B 날짜 · C 상호명 · D 대표자 · E 전화번호 · F 담당자 · G 금액)를 그대로 따른다
+    {
+      type: 'input',
+      block_id: FIELD.representative,
+      optional: true,
+      label: plain('대표자'),
+      element: {
+        type: 'plain_text_input',
+        action_id: ACTION,
+        placeholder: plain('예) 홍길동'),
+      },
+    },
+    {
+      type: 'input',
+      block_id: FIELD.phone,
+      optional: true,
+      label: plain('전화번호'),
+      element: {
+        type: 'plain_text_input',
+        action_id: ACTION,
+        placeholder: plain('예) 010-1234-5678'),
+      },
+    },
     managerBlock(managers),
     {
       type: 'input',
@@ -146,6 +171,8 @@ export function readSubmission(values: Record<string, Record<string, {
   return {
     date: get(FIELD.date).selected_date ?? '',
     clientName: (get(FIELD.client).value ?? '').trim(),
+    representative: (get(FIELD.representative).value ?? '').trim(),
+    phone: (get(FIELD.phone).value ?? '').trim(),
     // 직원이 없을 땐 자유 입력이라 value 로 들어온다
     manager: (managerField.selected_option?.value ?? managerField.value ?? '').trim(),
     amountRaw: (get(FIELD.amount).value ?? '').trim(),

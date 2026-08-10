@@ -5,6 +5,7 @@ import {
   fetchSheetRows, writeBackSyncIds, makeSyncId, makeLegacyExternalId, type SheetRow,
 } from '@/lib/google-sheets'
 import { findSimilar } from '@/lib/utils/levenshtein'
+import { buildPaymentMemo } from '@/lib/payments/register'
 import type { Database } from '@/types/database'
 
 const supabase = createClient<Database>(
@@ -27,15 +28,12 @@ type ExistingPayment = {
 const toDbStatus = (s: SheetRow['status']): 'confirmed' | 'balance_due' | 'unpaid' =>
   s === '잔금처리요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
 
-/** 시트 행 → DB 메모 (상태 태그 없이 순수 메모만) */
-const buildMemo = (row: SheetRow): string | null => {
-  const parts = [
-    row.memo,
-    row.representative ? `대표: ${row.representative}` : '',
-    row.phone ? `연락처: ${row.phone}` : '',
-  ].filter(Boolean)
-  return parts.length ? parts.join(' | ') : null
-}
+/**
+ * 시트 행 → DB 메모 (상태 태그 없이 순수 메모만).
+ * `/결제` 모달 등록도 같은 함수를 쓴다 — 형식이 갈라지면 동기화가 매번 "변경됨"으로 오인한다.
+ */
+const buildMemo = (row: SheetRow): string | null =>
+  buildPaymentMemo(row.memo, row.representative, row.phone)
 
 export async function POST(request: Request) {
   const authHeader = request.headers.get('authorization')
