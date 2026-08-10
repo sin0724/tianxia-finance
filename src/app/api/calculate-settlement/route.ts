@@ -51,6 +51,7 @@ function toSnakeCase(r: SettlementResult) {
     total_variable_cost: r.totalVariableCost,
     total_special_cost: r.totalSpecialCost,
     total_payroll: r.totalPayroll,
+    total_employer_insurance: r.totalEmployerInsurance,
     gonggu_gross_sales: r.gongguGrossSales,
     gonggu_margin: r.gongguMargin,
     operating_profit: r.operatingProfit,

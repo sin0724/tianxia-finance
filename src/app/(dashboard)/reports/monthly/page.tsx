@@ -49,7 +49,10 @@ function makeRows(s: SettlementData, rates: SettlementRates, reps: Representativ
     { label: '- 고정비',                            value: -s.total_fixed_cost, indent: true, type: 'deduct' },
     { label: '- 변동비',                            value: -s.total_variable_cost, indent: true, type: 'deduct' },
     { label: '- 특수비용',                          value: -s.total_special_cost, indent: true, type: 'deduct' },
-    { label: '- 직원 급여',                         value: -s.total_payroll, indent: true, type: 'deduct' },
+    { label: '- 직원 급여 (세전)',                  value: -s.total_payroll, indent: true, type: 'deduct' },
+    ...((s.total_employer_insurance ?? 0) > 0
+      ? [{ label: '- 4대보험 회사부담', value: -s.total_employer_insurance, indent: true, type: 'deduct' as const }]
+      : []),
     ...gongguRows,
     { label: '영업이익',                            value: s.operating_profit, highlight: true, type: 'result' },
     { label: `- 법인세 적립 (${taxPct}%)`,          value: -s.corporate_tax_reserve, indent: true, type: 'deduct' },

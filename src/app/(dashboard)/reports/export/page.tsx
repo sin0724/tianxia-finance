@@ -111,16 +111,25 @@ export default function ExportPage() {
       // 시트 3: 급여대장
       const payrollRows = (payroll ?? []).map((p: unknown) => {
         const pr = p as {
-          year: number; month: number; base_salary: number; deductions: number; net_pay: number; paid_at: string | null
+          year: number; month: number; base_salary: number; paid_at: string | null
+          base_income_tax: number | null; base_local_tax: number | null
+          incentive_income_tax: number | null; incentive_local_tax: number | null
+          employer_insurance: number | null
           employees: { name: string } | null
         }
+        const incomeTax = (pr.base_income_tax ?? 0) + (pr.incentive_income_tax ?? 0)
+        const localTax = (pr.base_local_tax ?? 0) + (pr.incentive_local_tax ?? 0)
+        const insurance = pr.employer_insurance ?? 0
         return {
           연도: pr.year,
           월: pr.month,
           직원명: pr.employees?.name ?? '',
-          기본급: pr.base_salary,
-          공제액: pr.deductions,
-          실수령액: pr.net_pay,
+          '기본급(세전)': pr.base_salary,
+          소득세: incomeTax,
+          지방소득세: localTax,
+          '차인지급액(세후)': pr.base_salary - incomeTax - localTax,
+          '4대보험_회사부담': insurance,
+          인건비_총원가: pr.base_salary + insurance,
           지급일: pr.paid_at ?? '',
         }
       })
@@ -143,7 +152,7 @@ export default function ExportPage() {
 
       const ws3 = XLSX.utils.json_to_sheet([...payrollRows, ...incentiveRows].length
         ? [...payrollRows, ...incentiveRows]
-        : [{ 연도: '', 월: '', 직원명: '', 기본급: '', 공제액: '', 실수령액: '', 지급일: '' }])
+        : [{ 연도: '', 월: '', 직원명: '', '기본급(세전)': '', 소득세: '', 지방소득세: '', '차인지급액(세후)': '', '4대보험_회사부담': '', 인건비_총원가: '', 지급일: '' }])
       XLSX.utils.book_append_sheet(wb, ws3, '급여대장')
 
       // 시트 4: 정산내역
@@ -151,7 +160,8 @@ export default function ExportPage() {
         year: number; month: number; total_revenue: number; supply_value: number
         total_incentive: number; total_product_cost: number; gross_profit: number
         total_fixed_cost: number; total_variable_cost: number; total_special_cost: number
-        total_payroll: number; operating_profit: number; corporate_tax_reserve: number
+        total_payroll: number; total_employer_insurance: number | null
+        operating_profit: number; corporate_tax_reserve: number
         retained_earnings: number; distributable_profit: number; representative_share: number
       }) => ({
         연도: s.year,
@@ -164,7 +174,8 @@ export default function ExportPage() {
         고정비: s.total_fixed_cost,
         변동비: s.total_variable_cost,
         특수비용: s.total_special_cost,
-        급여: s.total_payroll,
+        '급여(세전)': s.total_payroll,
+        '4대보험_회사부담': s.total_employer_insurance ?? 0,
         영업이익: s.operating_profit,
         법인세적립: s.corporate_tax_reserve,
         유보금적립: s.retained_earnings,
@@ -188,7 +199,8 @@ export default function ExportPage() {
           { 항목: '총 고정비', 금액: (settlements ?? []).reduce((s, r) => s + r.total_fixed_cost, 0) },
           { 항목: '총 변동비', 금액: (settlements ?? []).reduce((s, r) => s + r.total_variable_cost, 0) },
           { 항목: '총 특수비용', 금액: (settlements ?? []).reduce((s, r) => s + r.total_special_cost, 0) },
-          { 항목: '총 급여', 금액: (settlements ?? []).reduce((s, r) => s + r.total_payroll, 0) },
+          { 항목: '총 급여 (세전)', 금액: (settlements ?? []).reduce((s, r) => s + r.total_payroll, 0) },
+          { 항목: '총 4대보험 회사부담', 금액: (settlements ?? []).reduce((s, r) => s + (r.total_employer_insurance ?? 0), 0) },
           { 항목: '영업이익', 금액: totalOp },
           { 항목: '법인세 적립 (10%)', 금액: (settlements ?? []).reduce((s, r) => s + r.corporate_tax_reserve, 0) },
           { 항목: '유보금 적립 (8%)', 금액: (settlements ?? []).reduce((s, r) => s + r.retained_earnings, 0) },

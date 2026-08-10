@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,24 +10,10 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { toast } from '@/lib/toast'
-import { Plus, Pencil, Check } from 'lucide-react'
+import { ArrowRight, Plus, Pencil, UserMinus, UserPlus } from 'lucide-react'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { CurrencyInput } from '@/components/ui/currency-input'
-import { useMonth } from '@/components/shared/month-context'
-import { MonthNavigator } from '@/components/shared/month-navigator'
-import type { Employee, MonthlyPayroll } from '@/types/database'
-
-type PayrollRow = MonthlyPayroll & { employees: { name: string } | null }
-
-type PayFormEntry = {
-  base_salary: string
-  deductions: string
-  incentive_deductions: string
-  net_pay: string
-  work_hours: string
-  paid_at: string
-  include_weekly_holiday: string
-}
+import type { Employee } from '@/types/database'
 
 const WEEK_DAYS = ['월', '화', '수', '목', '금', '토', '일'] as const
 
@@ -38,119 +25,54 @@ function formatWorkSchedule(e: Employee) {
   return [days, time].filter(Boolean).join(' ')
 }
 
-function calcPartTimePay(hours: number, hourlyWage: number, includeHoliday = true) {
-  const hourlyPay = Math.round(hours * hourlyWage)
-  const weeklyAvgHours = hours / 4.345
-  const eligible = weeklyAvgHours >= 15
-  const weeklyHolidayPay = eligible ? Math.round(hourlyPay * 0.2) : 0
-  const total = hourlyPay + (includeHoliday ? weeklyHolidayPay : 0)
-  return { hourlyPay, weeklyHolidayPay, total, eligible }
+const emptyForm = {
+  name: '',
+  position: '',
+  employee_type: 'full_time' as 'full_time' | 'part_time',
+  base_salary: '',
+  hourly_wage: '',
+  work_days: [] as string[],
+  work_start_time: '',
+  work_end_time: '',
+  incentive_type: '' as '' | 'percent' | 'fixed',
+  incentive_value: '',
+  insured: false,
+  sort_order: '',
+  hired_at: '',
 }
 
+/**
+ * 직원 마스터 — 몇 달에 한 번 바뀌는 설정값만 둔다.
+ * 매달 반복되는 급여 산정·확정·지급은 /payroll 에서 처리한다.
+ */
 export default function EmployeesPage() {
   const supabase = createClient()
   const [employees, setEmployees] = useState<Employee[]>([])
+  const [retired, setRetired] = useState<Employee[]>([])
+  const [showRetired, setShowRetired] = useState(false)
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Employee | null>(null)
-  const [form, setForm] = useState({
-    name: '',
-    position: '',
-    employee_type: 'full_time' as 'full_time' | 'part_time',
-    base_salary: '',
-    hourly_wage: '',
-    work_days: [] as string[],
-    work_start_time: '',
-    work_end_time: '',
-    incentive_type: '' as '' | 'percent' | 'fixed',
-    incentive_value: '',
-    hired_at: '',
-  })
+  const [form, setForm] = useState(emptyForm)
 
-  // 월별 급여 — 전역 선택 월 사용
-  const { year: payYear, month: payMonth } = useMonth()
-  const [payrollRows, setPayrollRows] = useState<PayrollRow[]>([])
-  const [terminatedPayrollRows, setTerminatedPayrollRows] = useState<PayrollRow[]>([])
-  const [payForms, setPayForms] = useState<Record<string, PayFormEntry>>({})
-
-  async function load() {
-    const { data } = await supabase.from('employees').select('*').eq('active', true).order('name')
-    setEmployees(data ?? [])
-    setLoading(false)
-  }
-
-  async function loadPayroll() {
+  const load = useCallback(async () => {
     const { data } = await supabase
-      .from('monthly_payroll')
-      .select('*, employees(name)')
-      .eq('year', payYear)
-      .eq('month', payMonth)
-    const allPayroll = (data as unknown as PayrollRow[]) ?? []
-    setPayrollRows(allPayroll)
-
-    const { data: emps } = await supabase.from('employees').select('*').eq('active', true).order('name')
-    const empList = emps ?? []
-
-    const activeIds = new Set(empList.map((e) => e.id))
-    const terminatedMap = new Map<string, PayrollRow>()
-    for (const r of allPayroll) {
-      if (!r.employee_id || activeIds.has(r.employee_id)) continue
-      const existing = terminatedMap.get(r.employee_id)
-      if (!existing || r.created_at > existing.created_at) terminatedMap.set(r.employee_id, r)
-    }
-    setTerminatedPayrollRows([...terminatedMap.values()])
-
-    const existingMap: Record<string, PayrollRow> = {}
-    for (const r of allPayroll) {
-      if (r.employee_id) existingMap[r.employee_id] = r
-    }
-
-    const forms: Record<string, PayFormEntry> = {}
-    for (const emp of empList) {
-      const existing = existingMap[emp.id]
-      if (existing) {
-        forms[emp.id] = {
-          base_salary: String(existing.base_salary),
-          deductions: String(existing.deductions),
-          incentive_deductions: String(existing.incentive_deductions ?? 0),
-          net_pay: String(existing.net_pay),
-          work_hours: String(existing.work_hours ?? 0),
-          paid_at: existing.paid_at ?? '',
-          include_weekly_holiday: existing.include_weekly_holiday === false ? 'false' : 'true',
-        }
-      } else if (emp.employee_type === 'part_time') {
-        forms[emp.id] = {
-          base_salary: '0',
-          deductions: '0',
-          incentive_deductions: '0',
-          net_pay: '0',
-          work_hours: '0',
-          paid_at: '',
-          include_weekly_holiday: 'true',
-        }
-      } else {
-        forms[emp.id] = {
-          base_salary: String(emp.base_salary),
-          deductions: '0',
-          incentive_deductions: '0',
-          net_pay: String(emp.base_salary),
-          work_hours: '0',
-          paid_at: '',
-          include_weekly_holiday: 'true',
-        }
-      }
-    }
-    setPayForms(forms)
-    setEmployees(empList)
+      .from('employees')
+      .select('*')
+      .order('sort_order', { nullsFirst: false })
+      .order('name')
+    const all = data ?? []
+    setEmployees(all.filter((e) => e.active))
+    setRetired(all.filter((e) => !e.active))
     setLoading(false)
-  }
+  }, [supabase])
 
-  useEffect(() => { load() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { loadPayroll() }, [payYear, payMonth])  // eslint-disable-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- 최초 진입 시 마스터 목록 로드
+  useEffect(() => { load() }, [load])
 
   function openAdd() {
     setEditing(null)
-    setForm({ name: '', position: '', employee_type: 'full_time', base_salary: '', hourly_wage: '', work_days: [], work_start_time: '', work_end_time: '', incentive_type: '', incentive_value: '', hired_at: '' })
+    setForm({ ...emptyForm, sort_order: String(employees.length + 1) })
     setDialogOpen(true)
   }
 
@@ -160,130 +82,142 @@ export default function EmployeesPage() {
       name: e.name,
       position: e.position ?? '',
       employee_type: e.employee_type ?? 'full_time',
-      base_salary: String(e.base_salary),
+      base_salary: String(e.base_salary ?? 0),
       hourly_wage: String(e.hourly_wage ?? 0),
       work_days: e.work_days ? e.work_days.split(',') : [],
       work_start_time: e.work_start_time ?? '',
       work_end_time: e.work_end_time ?? '',
       incentive_type: e.incentive_type ?? '',
-      incentive_value: String(e.incentive_value),
+      incentive_value: String(e.incentive_value ?? 0),
+      insured: e.insured ?? false,
+      sort_order: e.sort_order != null ? String(e.sort_order) : '',
       hired_at: e.hired_at ?? '',
     })
     setDialogOpen(true)
   }
 
   async function handleSave() {
-    if (!form.name) { toast.error('이름은 필수입니다.'); return }
+    if (!form.name.trim()) { toast.error('이름은 필수입니다.'); return }
+    const isPartTime = form.employee_type === 'part_time'
     const payload = {
-      name: form.name,
+      name: form.name.trim(),
       position: form.position || null,
       employee_type: form.employee_type,
-      base_salary: form.employee_type === 'full_time' ? (parseFloat(form.base_salary) || 0) : 0,
-      hourly_wage: form.employee_type === 'part_time' ? (parseInt(form.hourly_wage) || 0) : 0,
-      work_days: form.employee_type === 'part_time' && form.work_days.length > 0
+      base_salary: isPartTime ? 0 : (parseFloat(form.base_salary) || 0),
+      hourly_wage: isPartTime ? (parseInt(form.hourly_wage) || 0) : 0,
+      work_days: isPartTime && form.work_days.length > 0
         ? WEEK_DAYS.filter((d) => form.work_days.includes(d)).join(',')
         : null,
-      work_start_time: form.employee_type === 'part_time' ? (form.work_start_time || null) : null,
-      work_end_time: form.employee_type === 'part_time' ? (form.work_end_time || null) : null,
+      work_start_time: isPartTime ? (form.work_start_time || null) : null,
+      work_end_time: isPartTime ? (form.work_end_time || null) : null,
       incentive_type: form.incentive_type || null,
       incentive_value: parseFloat(form.incentive_value) || 0,
+      insured: form.insured,
+      sort_order: form.sort_order ? parseInt(form.sort_order) : null,
       hired_at: form.hired_at || null,
     }
-    if (editing) {
-      const { error } = await supabase.from('employees').update(payload).eq('id', editing.id)
-      if (error) { toast.error(error.message); return }
-      toast.success('직원 정보가 수정되었습니다.')
-    } else {
-      const { error } = await supabase.from('employees').insert(payload)
-      if (error) { toast.error(error.message); return }
-      toast.success('직원이 추가되었습니다.')
-    }
+
+    const { error } = editing
+      ? await supabase.from('employees').update(payload).eq('id', editing.id)
+      : await supabase.from('employees').insert(payload)
+
+    if (error) { toast.error(error.message); return }
+    toast.success(editing ? '직원 정보가 수정되었습니다.' : '직원이 추가되었습니다.')
     setDialogOpen(false)
-    loadPayroll()
+    load()
   }
 
-  async function handleDeactivate(id: string) {
-    await supabase.from('employees').update({ active: false }).eq('id', id)
-    toast.success('직원이 비활성화되었습니다.')
-    loadPayroll()
+  async function handleRetire(e: Employee) {
+    const today = new Date().toISOString().slice(0, 10)
+    const { error } = await supabase
+      .from('employees')
+      .update({ active: false, terminated_at: today })
+      .eq('id', e.id)
+    if (error) { toast.error(error.message); return }
+    toast.success(`${e.name} 님을 퇴사 처리했습니다. 지난 급여 기록은 그대로 남습니다.`)
+    load()
   }
 
-  function updatePayForm(empId: string, field: keyof PayFormEntry, value: string) {
-    setPayForms((prev) => {
-      const emp = employees.find((e) => e.id === empId)
-      const row = { ...prev[empId], [field]: value }
-
-      if (emp?.employee_type === 'part_time') {
-        // 아르바이트: 시간수·공제액·주휴 선택 변경 시 재계산
-        const hours = parseFloat(field === 'work_hours' ? value : row.work_hours) || 0
-        const includeHoliday = row.include_weekly_holiday !== 'false'
-        const { total } = calcPartTimePay(hours, emp.hourly_wage ?? 0, includeHoliday)
-        row.base_salary = String(total)
-        const ded = parseFloat(field === 'deductions' ? value : row.deductions) || 0
-        row.net_pay = String(Math.max(0, total - ded))
-      } else {
-        // 정직원: 기본급 또는 공제액 변경 시 실수령액 자동 계산
-        if (field === 'base_salary' || field === 'deductions') {
-          const base = parseFloat(field === 'base_salary' ? value : row.base_salary) || 0
-          const ded = parseFloat(field === 'deductions' ? value : row.deductions) || 0
-          row.net_pay = String(Math.max(0, base - ded))
-        }
-      }
-
-      return { ...prev, [empId]: row }
-    })
+  async function handleRehire(e: Employee) {
+    const { error } = await supabase
+      .from('employees')
+      .update({ active: true, terminated_at: null })
+      .eq('id', e.id)
+    if (error) { toast.error(error.message); return }
+    toast.success(`${e.name} 님을 재직 상태로 되돌렸습니다.`)
+    load()
   }
 
-  async function savePayroll(empId: string) {
-    const f = payForms[empId]
-    if (!f) return
-    const base = parseFloat(f.base_salary) || 0
-    const ded = parseFloat(f.deductions) || 0
-    const incentiveDed = parseFloat(f.incentive_deductions) || 0
-    const net = parseFloat(f.net_pay) || 0
-    const hours = parseFloat(f.work_hours) || 0
-
-    const existing = payrollRows.find((r) => r.employee_id === empId)
-    if (existing) {
-      const { error } = await supabase.from('monthly_payroll').update({
-        base_salary: base, deductions: ded, incentive_deductions: incentiveDed,
-        net_pay: net, work_hours: hours, include_weekly_holiday: f.include_weekly_holiday !== 'false',
-        paid_at: f.paid_at || null,
-      }).eq('id', existing.id)
-      if (error) { toast.error('수정 실패'); return }
-    } else {
-      const { error } = await supabase.from('monthly_payroll').insert({
-        year: payYear, month: payMonth, employee_id: empId,
-        base_salary: base, deductions: ded, incentive_deductions: incentiveDed,
-        net_pay: net, work_hours: hours, include_weekly_holiday: f.include_weekly_holiday !== 'false',
-        paid_at: f.paid_at || null,
-      })
-      if (error) { toast.error('저장 실패'); return }
-    }
-    toast.success('급여가 저장되었습니다.')
-    loadPayroll()
-  }
-
-  async function saveAllPayroll() {
-    for (const emp of employees) {
-      await savePayroll(emp.id)
-    }
-    toast.success(`${payMonth}월 급여가 모두 저장되었습니다.`)
-  }
-
-  const payrollMap: Record<string, boolean> = {}
-  for (const r of payrollRows) {
-    if (r.employee_id) payrollMap[r.employee_id] = true
+  function renderRow(e: Employee, isRetired = false) {
+    return (
+      <TableRow key={e.id} className={isRetired ? 'opacity-60 bg-gray-50/50' : ''}>
+        <TableCell className="text-center text-xs text-gray-400">{e.sort_order ?? '-'}</TableCell>
+        <TableCell className="font-medium">{e.name}</TableCell>
+        <TableCell>
+          <Badge variant={e.employee_type === 'part_time' ? 'secondary' : 'outline'} className="text-xs">
+            {e.employee_type === 'part_time' ? '아르바이트' : '정직원'}
+          </Badge>
+        </TableCell>
+        <TableCell>{e.position ?? '-'}</TableCell>
+        <TableCell className="text-right">
+          {e.employee_type === 'part_time'
+            ? <span className="text-purple-700">{formatKRW(e.hourly_wage ?? 0)}/h</span>
+            : formatKRW(e.base_salary)}
+        </TableCell>
+        <TableCell className="text-sm text-gray-500">
+          {e.employee_type === 'part_time' ? (formatWorkSchedule(e) || '-') : '-'}
+        </TableCell>
+        <TableCell>
+          {e.incentive_type ? (
+            <Badge variant="outline">
+              {e.incentive_type === 'percent' ? `${e.incentive_value}%` : formatKRW(e.incentive_value)}
+            </Badge>
+          ) : <span className="text-gray-300">-</span>}
+        </TableCell>
+        <TableCell className="text-center">
+          {e.insured
+            ? <Badge variant="outline" className="text-xs text-purple-600 border-purple-300">가입</Badge>
+            : <span className="text-gray-300 text-xs">-</span>}
+        </TableCell>
+        <TableCell className="text-xs text-gray-500">
+          {isRetired ? (e.terminated_at ?? '퇴사') : (e.hired_at ?? '-')}
+        </TableCell>
+        <TableCell>
+          <div className="flex gap-1 justify-end">
+            <Button size="sm" variant="ghost" onClick={() => openEdit(e)}><Pencil size={14} /></Button>
+            {isRetired ? (
+              <Button size="sm" variant="ghost" className="text-blue-600" onClick={() => handleRehire(e)}>
+                <UserPlus size={14} />
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" className="text-gray-400 hover:text-red-500" onClick={() => handleRetire(e)}>
+                <UserMinus size={14} />
+              </Button>
+            )}
+          </div>
+        </TableCell>
+      </TableRow>
+    )
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">직원 / 급여 관리</h1>
-        <Button onClick={openAdd}><Plus size={16} className="mr-1" />직원 추가</Button>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-bold">직원 관리</h1>
+          <p className="text-xs text-gray-400 mt-0.5">기본급·시급·인센티브 조건 등 잘 바뀌지 않는 값만 둡니다.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Link href="/payroll">
+            <Button variant="outline" size="sm">
+              이번 달 급여 처리<ArrowRight size={14} className="ml-1" />
+            </Button>
+          </Link>
+          <Button onClick={openAdd} size="sm"><Plus size={16} className="mr-1" />직원 추가</Button>
+        </div>
       </div>
 
-      {/* 직원 목록 - 모바일 카드 */}
+      {/* 모바일 카드 */}
       <div className="md:hidden space-y-2">
         {loading ? (
           <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
@@ -293,25 +227,25 @@ export default function EmployeesPage() {
           <div key={e.id} className="bg-white rounded-lg border p-4">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium text-gray-900">{e.name}</span>
                   {e.position && <span className="text-sm text-gray-500">{e.position}</span>}
                   <Badge variant={e.employee_type === 'part_time' ? 'secondary' : 'outline'} className="text-xs">
                     {e.employee_type === 'part_time' ? '아르바이트' : '정직원'}
                   </Badge>
+                  {e.insured && (
+                    <Badge variant="outline" className="text-xs text-purple-600 border-purple-300">4대보험</Badge>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-2 mt-2 text-sm">
-                  {e.employee_type === 'part_time' ? (
-                    <div>
-                      <div className="text-xs text-gray-400">시급</div>
-                      <div className="font-medium">{formatKRW(e.hourly_wage ?? 0)}/h</div>
+                  <div>
+                    <div className="text-xs text-gray-400">{e.employee_type === 'part_time' ? '시급' : '기본급'}</div>
+                    <div className="font-medium">
+                      {e.employee_type === 'part_time'
+                        ? `${formatKRW(e.hourly_wage ?? 0)}/h`
+                        : formatKRW(e.base_salary)}
                     </div>
-                  ) : (
-                    <div>
-                      <div className="text-xs text-gray-400">기본급</div>
-                      <div className="font-medium">{formatKRW(e.base_salary)}</div>
-                    </div>
-                  )}
+                  </div>
                   <div>
                     <div className="text-xs text-gray-400">인센티브</div>
                     <div>
@@ -328,256 +262,86 @@ export default function EmployeesPage() {
                 )}
                 {e.hired_at && <div className="text-xs text-gray-400 mt-1">입사일: {e.hired_at}</div>}
               </div>
-              <div className="flex gap-1 shrink-0">
+              <div className="flex flex-col gap-1 shrink-0">
                 <Button size="sm" variant="ghost" onClick={() => openEdit(e)}><Pencil size={14} /></Button>
-                <Button size="sm" variant="ghost" className="text-red-500" onClick={() => handleDeactivate(e.id)}>삭제</Button>
+                <Button size="sm" variant="ghost" className="text-gray-400" onClick={() => handleRetire(e)}>
+                  <UserMinus size={14} />
+                </Button>
               </div>
             </div>
           </div>
         ))}
       </div>
 
-      {/* 직원 목록 - 데스크톱 테이블 */}
+      {/* 데스크톱 테이블 */}
       <div className="hidden md:block bg-white rounded-lg border overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-12 text-center">순번</TableHead>
               <TableHead>이름</TableHead>
               <TableHead>구분</TableHead>
               <TableHead>직책</TableHead>
               <TableHead className="text-right">기본급 / 시급</TableHead>
               <TableHead>근무일정</TableHead>
               <TableHead>인센티브</TableHead>
+              <TableHead className="text-center">4대보험</TableHead>
               <TableHead>입사일</TableHead>
-              <TableHead></TableHead>
+              <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={8} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
+              <TableRow><TableCell colSpan={10} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
             ) : employees.length === 0 ? (
-              <TableRow><TableCell colSpan={8} className="text-center py-8 text-gray-400">등록된 직원이 없습니다.</TableCell></TableRow>
-            ) : employees.map((e) => (
-              <TableRow key={e.id}>
-                <TableCell className="font-medium">{e.name}</TableCell>
-                <TableCell>
-                  <Badge variant={e.employee_type === 'part_time' ? 'secondary' : 'outline'} className="text-xs">
-                    {e.employee_type === 'part_time' ? '아르바이트' : '정직원'}
-                  </Badge>
-                </TableCell>
-                <TableCell>{e.position ?? '-'}</TableCell>
-                <TableCell className="text-right">
-                  {e.employee_type === 'part_time'
-                    ? <span className="text-purple-700">{formatKRW(e.hourly_wage ?? 0)}/h</span>
-                    : formatKRW(e.base_salary)}
-                </TableCell>
-                <TableCell>
-                  {e.employee_type === 'part_time' && formatWorkSchedule(e)
-                    ? <span className="text-sm text-purple-600">{formatWorkSchedule(e)}</span>
-                    : '-'}
-                </TableCell>
-                <TableCell>
-                  {e.incentive_type ? (
-                    <Badge variant="outline">
-                      {e.incentive_type === 'percent' ? `${e.incentive_value}%` : formatKRW(e.incentive_value)}
-                    </Badge>
-                  ) : '-'}
-                </TableCell>
-                <TableCell>{e.hired_at ?? '-'}</TableCell>
-                <TableCell>
-                  <div className="flex gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => openEdit(e)}><Pencil size={14} /></Button>
-                    <Button size="sm" variant="ghost" className="text-red-500" onClick={() => handleDeactivate(e.id)}>삭제</Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
+              <TableRow><TableCell colSpan={10} className="text-center py-8 text-gray-400">등록된 직원이 없습니다.</TableCell></TableRow>
+            ) : employees.map((e) => renderRow(e))}
+
+            {showRetired && retired.length > 0 && (
+              <>
+                <TableRow>
+                  <TableCell colSpan={10} className="bg-gray-50 py-1.5 px-3 text-xs text-gray-400 font-medium border-t">
+                    퇴사 직원
+                  </TableCell>
+                </TableRow>
+                {retired.map((e) => renderRow(e, true))}
+              </>
+            )}
           </TableBody>
         </Table>
       </div>
 
-      {/* 월별 급여 입력 */}
-      <div className="bg-white rounded-lg border">
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b">
-          <h2 className="font-semibold text-gray-800">월별 급여 입력</h2>
-          <div className="flex items-center gap-2 flex-wrap">
-            <MonthNavigator />
-            <Button size="sm" onClick={saveAllPayroll}>전체 저장</Button>
-          </div>
-        </div>
+      {retired.length > 0 && (
+        <button
+          onClick={() => setShowRetired((v) => !v)}
+          className="text-xs text-gray-400 hover:text-gray-700 transition-colors"
+        >
+          {showRetired ? '퇴사 직원 숨기기' : `퇴사 직원 ${retired.length}명 보기`}
+        </button>
+      )}
 
-        {employees.length === 0 && terminatedPayrollRows.length === 0 ? (
-          <div className="text-center py-8 text-gray-400 text-sm">등록된 직원이 없습니다.</div>
-        ) : (
-          <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>직원</TableHead>
-                <TableHead className="text-right">근무시간 / 기본급</TableHead>
-                <TableHead className="text-right">공제액 (기본)</TableHead>
-                <TableHead className="text-right">실수령액</TableHead>
-                <TableHead className="text-right">인센티브 공제</TableHead>
-                <TableHead>지급일</TableHead>
-                <TableHead></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {employees.map((emp) => {
-                const f = payForms[emp.id] ?? {
-                  base_salary: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary),
-                  deductions: '0',
-                  incentive_deductions: '0',
-                  net_pay: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary),
-                  work_hours: '0',
-                  paid_at: '',
-                  include_weekly_holiday: 'true',
-                }
-                const isSaved = payrollMap[emp.id]
-                const isPartTime = emp.employee_type === 'part_time'
+      <p className="text-xs text-gray-400 leading-relaxed">
+        * 순번은 사업소득지급대장의 NO 순서입니다. 비워두면 이름 순으로 나갑니다.<br />
+        * 4대보험 가입으로 표시된 직원만 급여 화면에서 회사부담분 입력칸이 열립니다.<br />
+        * 주민등록번호는 저장하지 않습니다 — 대장의 해당 칸은 비워서 내보냅니다.
+      </p>
 
-                return (
-                  <TableRow key={emp.id} className={isSaved ? 'bg-green-50/40' : ''}>
-                    <TableCell className="font-medium">
-                      <div className="flex items-center gap-1.5">
-                        {emp.name}
-                        {isSaved && <Check size={13} className="text-green-500" />}
-                        {isPartTime && (
-                          <Badge variant="secondary" className="text-xs py-0">
-                            {formatKRW(emp.hourly_wage ?? 0)}/h
-                          </Badge>
-                        )}
-                      </div>
-                      {isPartTime && formatWorkSchedule(emp) && (
-                        <div className="text-xs text-gray-400 font-normal mt-0.5">{formatWorkSchedule(emp)}</div>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {isPartTime ? (() => {
-                        const hours = parseFloat(f.work_hours) || 0
-                        const includeHoliday = f.include_weekly_holiday !== 'false'
-                        const { hourlyPay, weeklyHolidayPay, total, eligible } = calcPartTimePay(hours, emp.hourly_wage ?? 0, includeHoliday)
-                        return (
-                          <div className="space-y-0.5">
-                            <div className="flex items-center gap-1">
-                              <Input
-                                type="number"
-                                className="h-8 text-sm text-right w-20"
-                                placeholder="0"
-                                value={f.work_hours}
-                                onChange={(e) => updatePayForm(emp.id, 'work_hours', e.target.value)}
-                              />
-                              <span className="text-xs text-gray-400">h</span>
-                            </div>
-                            {hours > 0 && (
-                              <div className="text-xs space-y-0.5 pl-1">
-                                <div className="text-gray-500">시급: {formatKRW(hourlyPay)}</div>
-                                {eligible ? (
-                                  <label className="flex items-center gap-1 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={includeHoliday}
-                                      onChange={(e) => updatePayForm(emp.id, 'include_weekly_holiday', e.target.checked ? 'true' : 'false')}
-                                      className="rounded"
-                                    />
-                                    <span className={includeHoliday ? 'text-blue-600' : 'text-gray-400'}>
-                                      주휴: {formatKRW(weeklyHolidayPay)}
-                                    </span>
-                                  </label>
-                                ) : (
-                                  <div className="text-gray-300">주휴: 미해당 (주 15h 미만)</div>
-                                )}
-                                <div className="font-medium text-gray-700">합계: {formatKRW(total)}</div>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })() : (
-                        <CurrencyInput
-                          className="h-8 text-sm"
-                          value={f.base_salary}
-                          onChange={(v) => updatePayForm(emp.id, 'base_salary', v)}
-                        />
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <CurrencyInput
-                        className="h-8 text-sm"
-                        value={f.deductions}
-                        onChange={(v) => updatePayForm(emp.id, 'deductions', v)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <CurrencyInput
-                        className="h-8 text-sm"
-                        value={f.net_pay}
-                        onChange={(v) => updatePayForm(emp.id, 'net_pay', v)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <CurrencyInput
-                        className="h-8 text-sm"
-                        placeholder="0"
-                        value={f.incentive_deductions}
-                        onChange={(v) => updatePayForm(emp.id, 'incentive_deductions', v)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Input
-                        type="date"
-                        className="h-8 text-sm"
-                        value={f.paid_at}
-                        onChange={(e) => updatePayForm(emp.id, 'paid_at', e.target.value)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Button size="sm" variant={isSaved ? 'outline' : 'default'} onClick={() => savePayroll(emp.id)}>
-                        {isSaved ? '수정' : '저장'}
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-              {terminatedPayrollRows.length > 0 && (
-                <>
-                  <TableRow>
-                    <TableCell colSpan={7} className="bg-gray-50 py-1.5 px-3 text-xs text-gray-400 font-medium border-t">
-                      퇴사 직원 기록 (읽기 전용)
-                    </TableCell>
-                  </TableRow>
-                  {terminatedPayrollRows.map((row) => (
-                    <TableRow key={row.id} className="opacity-60 bg-gray-50/50">
-                      <TableCell className="font-medium">
-                        <div className="flex items-center gap-1.5">
-                          {row.employees?.name ?? '(알 수 없음)'}
-                          <Badge variant="outline" className="text-xs py-0 text-gray-400">퇴사</Badge>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right text-sm text-gray-600">
-                        {(row.work_hours ?? 0) > 0 ? `${row.work_hours}h · ` : ''}{formatKRW(row.base_salary)}
-                      </TableCell>
-                      <TableCell className="text-right text-sm text-gray-600">{formatKRW(row.deductions)}</TableCell>
-                      <TableCell className="text-right text-sm text-gray-600">{formatKRW(row.net_pay)}</TableCell>
-                      <TableCell className="text-right text-sm text-gray-600">{formatKRW(row.incentive_deductions ?? 0)}</TableCell>
-                      <TableCell className="text-sm text-gray-600">{row.paid_at ?? '-'}</TableCell>
-                      <TableCell />
-                    </TableRow>
-                  ))}
-                </>
-              )}
-            </TableBody>
-          </Table>
-          </div>
-        )}
-      </div>
-
-      {/* 직원 추가/수정 다이얼로그 */}
+      {/* 추가 / 수정 다이얼로그 */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? '직원 수정' : '직원 추가'}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
-            <div className="space-y-1"><Label>이름 *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
-            <div className="space-y-1"><Label>직책</Label><Input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} /></div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label>이름 *</Label>
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <Label>직책</Label>
+                <Input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} />
+              </div>
+            </div>
+
             <div className="space-y-1">
               <Label>직원 구분</Label>
               <select
@@ -589,8 +353,13 @@ export default function EmployeesPage() {
                 <option value="part_time">아르바이트 (시급)</option>
               </select>
             </div>
+
             {form.employee_type === 'full_time' ? (
-              <div className="space-y-1"><Label>기본급 (월)</Label><CurrencyInput value={form.base_salary} onChange={(v) => setForm({ ...form, base_salary: v })} /></div>
+              <div className="space-y-1">
+                <Label>기본급 (월, 세전)</Label>
+                <CurrencyInput value={form.base_salary} onChange={(v) => setForm({ ...form, base_salary: v })} />
+                <p className="text-xs text-gray-400">급여 화면에서 매달 이 값이 기본으로 채워집니다.</p>
+              </div>
             ) : (
               <>
                 <div className="space-y-1">
@@ -633,11 +402,16 @@ export default function EmployeesPage() {
                 </div>
               </>
             )}
+
             <div className="space-y-1">
               <Label>인센티브 방식</Label>
-              <select className="w-full border rounded-md px-3 py-2 text-sm" value={form.incentive_type} onChange={(e) => setForm({ ...form, incentive_type: e.target.value as '' | 'percent' | 'fixed' })}>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={form.incentive_type}
+                onChange={(e) => setForm({ ...form, incentive_type: e.target.value as '' | 'percent' | 'fixed' })}
+              >
                 <option value="">없음</option>
-                <option value="percent">정률 (%)</option>
+                <option value="percent">정률 (%) — 담당 입금 공급가액 기준</option>
                 <option value="fixed">정액 (원)</option>
               </select>
             </div>
@@ -647,7 +421,37 @@ export default function EmployeesPage() {
                 <Input type="number" value={form.incentive_value} onChange={(e) => setForm({ ...form, incentive_value: e.target.value })} />
               </div>
             )}
-            <div className="space-y-1"><Label>입사일</Label><Input type="date" value={form.hired_at} onChange={(e) => setForm({ ...form, hired_at: e.target.value })} /></div>
+
+            <label className="flex items-start gap-2 cursor-pointer select-none rounded-lg border p-3">
+              <input
+                type="checkbox"
+                checked={form.insured}
+                onChange={(e) => setForm({ ...form, insured: e.target.checked })}
+                className="rounded mt-0.5"
+              />
+              <div>
+                <div className="text-sm font-medium">4대보험 가입</div>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  체크하면 급여 화면에 회사부담분 입력칸이 열리고, 그 금액이 영업이익에서 차감됩니다.
+                </p>
+              </div>
+            </label>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label>대장 순번</Label>
+                <Input
+                  type="number"
+                  placeholder="비우면 이름 순"
+                  value={form.sort_order}
+                  onChange={(e) => setForm({ ...form, sort_order: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>입사일</Label>
+                <Input type="date" value={form.hired_at} onChange={(e) => setForm({ ...form, hired_at: e.target.value })} />
+              </div>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>취소</Button>

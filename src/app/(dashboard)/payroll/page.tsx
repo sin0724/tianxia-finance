@@ -1,91 +1,73 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { CurrencyInput } from '@/components/ui/currency-input'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
-import { Download, Pencil, Check, X } from 'lucide-react'
 import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
+import { LedgerPasteDialog } from '@/components/payroll/ledger-paste-dialog'
+import { buildBusinessIncomeLedger, downloadBlob, type LedgerEntry } from '@/lib/payroll/ledger'
+import { withhold, calcPartTimePay, aggregateStatus, STATUS_LABEL, STATUS_ORDER, type PayrollStatus } from '@/lib/payroll/tax'
+import type { ParsedRow } from '@/lib/payroll/parse'
+import type { Employee } from '@/types/database'
+import {
+  AlertTriangle, Check, ClipboardPaste, Copy, Download, Pencil, Save, Sparkles, X,
+} from 'lucide-react'
 
-type PayrollRow = {
-  employee_id: string
-  name: string
-  base_salary: number
-  incentive: number
-  isManualIncentive: boolean
-  deductions: number
-  incentive_deductions: number
-  net_pay: number
-  gross_pay: number
-  total_pay: number
-  paid_at: string | null
+// ── 폼 상태 ────────────────────────────────────────────────────
+type FormEntry = {
+  work_hours: string
+  include_weekly_holiday: boolean
+  base_salary: string
+  incentive_deductions: string
+  base_income_tax: string
+  base_local_tax: string
+  incentive_income_tax: string
+  incentive_local_tax: string
+  employer_insurance: string
+  paid_at: string
+  status: PayrollStatus
 }
 
-interface IncentiveCellProps {
-  row: PayrollRow
-  editingValue: string | undefined
-  isSaving: boolean
-  onStartEdit: (empId: string, value: number) => void
-  onCancelEdit: (empId: string) => void
-  onSave: (empId: string) => void
-  onChangeValue: (empId: string, value: string) => void
-}
+type StageKey = 'estimate' | 'confirm' | 'pay'
 
-function IncentiveCell({ row, editingValue, isSaving, onStartEdit, onCancelEdit, onSave, onChangeValue }: IncentiveCellProps) {
-  const empId = row.employee_id
+const num = (v: string) => Math.round(Number(String(v).replace(/[^0-9.-]/g, '')) || 0)
 
-  if (editingValue !== undefined) {
-    return (
-      <div className="flex items-center justify-end gap-1">
-        <input
-          type="text"
-          value={editingValue}
-          onChange={(e) => onChangeValue(empId, e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') onSave(empId)
-            if (e.key === 'Escape') onCancelEdit(empId)
-          }}
-          className="w-28 text-right border border-blue-300 rounded px-2 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-          autoFocus
-          disabled={isSaving}
-        />
-        <button
-          onClick={() => onSave(empId)}
-          disabled={isSaving}
-          className="text-green-600 hover:text-green-800 disabled:opacity-50"
-        >
-          <Check size={14} />
-        </button>
-        <button
-          onClick={() => onCancelEdit(empId)}
-          disabled={isSaving}
-          className="text-gray-400 hover:text-gray-600"
-        >
-          <X size={14} />
-        </button>
-      </div>
-    )
+function emptyForm(emp: Employee): FormEntry {
+  return {
+    work_hours: '0',
+    include_weekly_holiday: true,
+    base_salary: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary ?? 0),
+    incentive_deductions: '0',
+    base_income_tax: '0',
+    base_local_tax: '0',
+    incentive_income_tax: '0',
+    incentive_local_tax: '0',
+    employer_insurance: '0',
+    paid_at: '',
+    status: 'draft',
   }
+}
 
+const WEEK_DAYS_LABEL = (e: Employee) => {
+  const days = e.work_days ? e.work_days.split(',').join('·') : ''
+  const time = e.work_start_time && e.work_end_time ? `${e.work_start_time}~${e.work_end_time}` : ''
+  return [days, time].filter(Boolean).join(' ')
+}
+
+/** 모바일에서만 라벨이 보이는 셀 — 데스크톱은 위쪽 헤더 행이 라벨 역할을 한다 */
+function Cell({ label, children, className = '' }: { label: string; children: React.ReactNode; className?: string }) {
   return (
-    <div
-      className="flex items-center justify-end gap-1 group cursor-pointer"
-      onClick={() => onStartEdit(empId, row.incentive)}
-      title="클릭하여 수동 조정 (0 입력 시 자동 계산으로 복원)"
-    >
-      <div className="flex flex-col items-end">
-        {row.incentive > 0
-          ? <span className="text-blue-600 font-medium">{formatKRW(row.incentive)}</span>
-          : <span className="text-gray-300">-</span>}
-        {row.isManualIncentive && (
-          <span className="text-xs text-orange-400 leading-none">수동</span>
-        )}
-      </div>
-      <Pencil size={11} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+    <div className={`flex items-center justify-between gap-2 md:block ${className}`}>
+      <span className="text-xs text-gray-400 md:hidden shrink-0">{label}</span>
+      <div className="min-w-0">{children}</div>
     </div>
   )
 }
@@ -93,407 +75,840 @@ function IncentiveCell({ row, editingValue, isSaving, onStartEdit, onCancelEdit,
 export default function PayrollPage() {
   const supabase = createClient()
   const { year, month } = useMonth()
-  const [rows, setRows] = useState<PayrollRow[]>([])
-  const [loading, setLoading] = useState(false)
+
+  const [employees, setEmployees] = useState<Employee[]>([])
+  const [forms, setForms] = useState<Record<string, FormEntry>>({})
+  const [incentiveGross, setIncentiveGross] = useState<Record<string, number>>({})
+  const [manualIds, setManualIds] = useState<Set<string>>(new Set())
+  const [existingIds, setExistingIds] = useState<Set<string>>(new Set())
+  const [insuranceExpense, setInsuranceExpense] = useState<{ id: string; item_name: string | null; amount: number }[]>([])
+
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [tab, setTab] = useState<StageKey>('estimate')
+  const [pasteOpen, setPasteOpen] = useState(false)
   const [editingIncentive, setEditingIncentive] = useState<Record<string, string>>({})
-  const [savingIncentive, setSavingIncentive] = useState<Set<string>>(new Set())
+  const [bulkPayDate, setBulkPayDate] = useState('')
 
-  useEffect(() => { load() }, [year, month])
-
-  async function load() {
+  // ── 로드 ─────────────────────────────────────────────────────
+  const load = useCallback(async () => {
     setLoading(true)
-
     const start = `${year}-${String(month).padStart(2, '0')}-01`
     const lastDay = new Date(year, month, 0).getDate()
     const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 
     const [
+      { data: emps },
       { data: payroll },
-      { data: employees },
       { data: manualIncentives },
       { data: payments },
       { data: settingsRows },
       { data: cancelledProjects },
+      { data: expenses },
     ] = await Promise.all([
-      supabase.from('monthly_payroll').select('*, employees(name)').eq('year', year).eq('month', month),
-      supabase.from('employees').select('id, name, incentive_type, incentive_value').eq('active', true),
+      supabase.from('employees').select('*').eq('active', true).order('sort_order', { nullsFirst: false }).order('name'),
+      supabase.from('monthly_payroll').select('*').eq('year', year).eq('month', month),
       supabase.from('monthly_incentives').select('*').eq('year', year).eq('month', month),
-      supabase.from('payments').select('amount, manager, status, excluded, project_id')
-        .gte('payment_date', start).lte('payment_date', end),
+      supabase.from('payments').select('amount, manager, status, excluded, project_id').gte('payment_date', start).lte('payment_date', end),
       supabase.from('settings').select('*'),
       supabase.from('projects').select('id').eq('status', 'cancelled'),
+      supabase.from('monthly_expenses').select('id, item_name, amount').eq('year', year).eq('month', month),
     ])
 
-    const settings = Object.fromEntries((settingsRows ?? []).map((s) => [s.key, Number(s.value)]))
-    const vatRate = settings.vat_rate ?? 0.1
+    const empList = emps ?? []
+    setEmployees(empList)
 
-    // 정산 API(calculate-settlement)와 동일한 제외 기준 적용
-    const cancelledIds = new Set((cancelledProjects ?? []).map((p) => p.id))
-    const confirmedPayments = (payments ?? []).filter(
-      (p) => p.status === 'confirmed' && !p.excluded && !(p.project_id && cancelledIds.has(p.project_id))
+    // 4대보험 이중계상 감지 — 급여 화면에서 집계하므로 지출 항목에 또 있으면 안 된다
+    setInsuranceExpense(
+      (expenses ?? []).filter((e) => /4대보험|사대보험|사업주부담|회사부담/.test(e.item_name ?? '') && e.amount > 0)
     )
 
-    const manualEmployeeIds = new Set((manualIncentives ?? []).map((i) => i.employee_id))
+    // ── 인센티브: 수동 지정이 있으면 그 값, 없으면 입금 실적 기반 자동 산출 ──
+    const settings = Object.fromEntries((settingsRows ?? []).map((s) => [s.key, Number(s.value)]))
+    const vatRate = settings.vat_rate ?? 0.1
+    const cancelledIds = new Set((cancelledProjects ?? []).map((p) => p.id))
+    const confirmed = (payments ?? []).filter(
+      (p) => p.status === 'confirmed' && !p.excluded && !(p.project_id && cancelledIds.has(p.project_id))
+    )
+    const manualSet = new Set((manualIncentives ?? []).map((i) => i.employee_id).filter(Boolean) as string[])
+    setManualIds(manualSet)
 
-    const autoIncentiveMap: Record<string, number> = {}
-    for (const emp of employees ?? []) {
+    const gross: Record<string, number> = {}
+    for (const i of manualIncentives ?? []) {
+      if (i.employee_id) gross[i.employee_id] = (gross[i.employee_id] ?? 0) + i.amount
+    }
+    for (const emp of empList) {
+      if (manualSet.has(emp.id)) continue
       if (!emp.incentive_type || emp.incentive_value <= 0) continue
-      if (manualEmployeeIds.has(emp.id)) continue
-
-      const myPayments = confirmedPayments.filter(
-        (p) => p.manager?.trim().toLowerCase() === emp.name.trim().toLowerCase()
-      )
-      if (myPayments.length === 0) continue
-
-      const myRevenue = myPayments.reduce((s, p) => s + p.amount, 0)
-      const mySupplyValue = myRevenue / (1 + vatRate)
-      autoIncentiveMap[emp.id] = emp.incentive_type === 'percent'
-        ? Math.round(mySupplyValue * emp.incentive_value / 100)
+      const mine = confirmed.filter((p) => p.manager?.trim().toLowerCase() === emp.name.trim().toLowerCase())
+      if (mine.length === 0) continue
+      const revenue = mine.reduce((s, p) => s + p.amount, 0)
+      const supply = revenue / (1 + vatRate)
+      gross[emp.id] = emp.incentive_type === 'percent'
+        ? Math.round(supply * emp.incentive_value / 100)
         : emp.incentive_value
     }
+    setIncentiveGross(gross)
 
-    const manualIncentiveMap: Record<string, number> = {}
-    for (const i of manualIncentives ?? []) {
-      if (i.employee_id) manualIncentiveMap[i.employee_id] = (manualIncentiveMap[i.employee_id] ?? 0) + i.amount
+    // ── 폼 채우기 ──────────────────────────────────────────────
+    const saved = new Map((payroll ?? []).map((p) => [p.employee_id ?? '', p]))
+    setExistingIds(new Set([...saved.keys()].filter(Boolean)))
+
+    const next: Record<string, FormEntry> = {}
+    for (const emp of empList) {
+      const p = saved.get(emp.id)
+      if (!p) { next[emp.id] = emptyForm(emp); continue }
+      next[emp.id] = {
+        work_hours: String(p.work_hours ?? 0),
+        include_weekly_holiday: p.include_weekly_holiday !== false,
+        base_salary: String(p.base_salary ?? 0),
+        incentive_deductions: String(p.incentive_deductions ?? 0),
+        base_income_tax: String(p.base_income_tax ?? 0),
+        base_local_tax: String(p.base_local_tax ?? 0),
+        incentive_income_tax: String(p.incentive_income_tax ?? 0),
+        incentive_local_tax: String(p.incentive_local_tax ?? 0),
+        employer_insurance: String(p.employer_insurance ?? 0),
+        paid_at: p.paid_at ?? '',
+        status: (p.status ?? 'draft') as PayrollStatus,
+      }
     }
+    setForms(next)
+    setDirty(false)
+    setLoading(false)
+  }, [supabase, year, month])
 
-    const result: PayrollRow[] = (payroll ?? []).map((p) => {
-      const emp = p as typeof p & { employees: { name: string } | null }
-      const empId = p.employee_id ?? ''
-      const isManual = manualEmployeeIds.has(empId)
-      const incentive = manualIncentiveMap[empId] ?? autoIncentiveMap[empId] ?? 0
-      const incentiveDed = (p as typeof p & { incentive_deductions?: number }).incentive_deductions ?? 0
-      const netIncentive = Math.max(0, incentive - incentiveDed)
+  useEffect(() => { load() }, [load])
+
+  // ── 파생 값 ──────────────────────────────────────────────────
+  const rows = useMemo(() => employees.map((emp) => {
+    const f = forms[emp.id] ?? emptyForm(emp)
+    const isPartTime = emp.employee_type === 'part_time'
+    const partTime = calcPartTimePay(num(f.work_hours), emp.hourly_wage ?? 0, f.include_weekly_holiday)
+    const base = isPartTime ? partTime.total : num(f.base_salary)
+    const incGross = incentiveGross[emp.id] ?? 0
+    const incNet = Math.max(0, incGross - num(f.incentive_deductions))
+    const gross = base + incNet
+
+    const tax = num(f.base_income_tax) + num(f.base_local_tax) + num(f.incentive_income_tax) + num(f.incentive_local_tax)
+    const suggested = { base: withhold(base), incentive: withhold(incNet) }
+    const suggestedTax = suggested.base.totalTax + suggested.incentive.totalTax
+
+    return {
+      emp, form: f, isPartTime, partTime,
+      base, incGross, incNet, gross,
+      isManualIncentive: manualIds.has(emp.id),
+      tax, net: gross - tax,
+      employerInsurance: num(f.employer_insurance),
+      suggested, suggestedTax,
+      taxEntered: tax > 0,
+      taxMatchesSuggestion: tax === suggestedTax,
+    }
+  }), [employees, forms, incentiveGross, manualIds])
+
+  const totals = useMemo(() => rows.reduce((t, r) => ({
+    base: t.base + r.base,
+    incentive: t.incentive + r.incNet,
+    gross: t.gross + r.gross,
+    tax: t.tax + r.tax,
+    net: t.net + r.net,
+    insurance: t.insurance + r.employerInsurance,
+  }), { base: 0, incentive: 0, gross: 0, tax: 0, net: 0, insurance: 0 }), [rows])
+
+  const monthStatus = useMemo(
+    () => aggregateStatus(rows.filter((r) => r.gross > 0).map((r) => r.form.status)),
+    [rows]
+  )
+
+  // ── 폼 수정 ──────────────────────────────────────────────────
+  function update(empId: string, patch: Partial<FormEntry>) {
+    setForms((prev) => ({ ...prev, [empId]: { ...prev[empId], ...patch } }))
+    setDirty(true)
+  }
+
+  // ── 저장 (전 직원 1회 요청) ──────────────────────────────────
+  async function saveAll(statusOverride?: PayrollStatus, silent = false) {
+    setSaving(true)
+    const today = new Date().toISOString().slice(0, 10)
+    const payload = rows.map((r) => {
+      const f = r.form
+      const baseTax = num(f.base_income_tax) + num(f.base_local_tax)
+      const status = statusOverride ?? f.status
       return {
-        employee_id: empId,
-        name: emp.employees?.name ?? '-',
-        base_salary: p.base_salary,
-        incentive,
-        isManualIncentive: isManual,
-        deductions: p.deductions,
-        incentive_deductions: incentiveDed,
-        net_pay: p.net_pay,
-        gross_pay: p.base_salary + incentive,
-        total_pay: p.net_pay + netIncentive,
-        paid_at: p.paid_at,
+        year, month, employee_id: r.emp.id,
+        base_salary: r.base,
+        work_hours: num(f.work_hours),
+        include_weekly_holiday: f.include_weekly_holiday,
+        incentive_deductions: num(f.incentive_deductions),
+        base_income_tax: num(f.base_income_tax),
+        base_local_tax: num(f.base_local_tax),
+        incentive_income_tax: num(f.incentive_income_tax),
+        incentive_local_tax: num(f.incentive_local_tax),
+        employer_insurance: num(f.employer_insurance),
+        // 파생 필드 — 기존 리포트/엑셀 호환 유지
+        deductions: baseTax,
+        net_pay: Math.max(0, r.base - baseTax),
+        paid_at: f.paid_at || (status === 'paid' ? today : null),
+        status,
+        submitted_at: STATUS_ORDER.indexOf(status) >= 1 ? today : null,
+        confirmed_at: STATUS_ORDER.indexOf(status) >= 2 ? today : null,
       }
     })
 
-    setRows(result)
-    setLoading(false)
+    const { error } = await supabase
+      .from('monthly_payroll')
+      .upsert(payload, { onConflict: 'year,month,employee_id' })
+    setSaving(false)
+
+    if (error) { toast.error('저장 실패: ' + error.message); return false }
+    if (!silent) toast.success(`${month}월 급여가 저장되었습니다.`)
+    await load()
+    return true
   }
 
-  function startEdit(empId: string, currentValue: number) {
-    setEditingIncentive((prev) => ({ ...prev, [empId]: String(currentValue) }))
+  // ── 인센티브 수동 조정 ───────────────────────────────────────
+  async function saveIncentive(empId: string) {
+    const amount = num(editingIncentive[empId] ?? '0')
+    await supabase.from('monthly_incentives').delete().eq('year', year).eq('month', month).eq('employee_id', empId)
+    if (amount > 0) {
+      const { error } = await supabase.from('monthly_incentives')
+        .insert({ year, month, employee_id: empId, amount, memo: '수동 조정' })
+      if (error) { toast.error('저장 실패'); return }
+    }
+    toast.success(amount > 0 ? '인센티브를 수동 지정했습니다.' : '자동 계산으로 되돌렸습니다.')
+    setEditingIncentive((prev) => { const n = { ...prev }; delete n[empId]; return n })
+    await load()
   }
 
-  function cancelEdit(empId: string) {
-    setEditingIncentive((prev) => {
+  // ── 지난달 불러오기 ─────────────────────────────────────────
+  async function copyLastMonth() {
+    const ly = month === 1 ? year - 1 : year
+    const lm = month === 1 ? 12 : month - 1
+    const { data } = await supabase.from('monthly_payroll')
+      .select('employee_id, base_salary, work_hours, include_weekly_holiday, employer_insurance')
+      .eq('year', ly).eq('month', lm)
+
+    if (!data || data.length === 0) { toast.info(`${lm}월 급여 기록이 없습니다.`); return }
+    const map = new Map(data.map((d) => [d.employee_id ?? '', d]))
+    let applied = 0
+    setForms((prev) => {
       const next = { ...prev }
-      delete next[empId]
+      for (const emp of employees) {
+        const src = map.get(emp.id)
+        if (!src) continue
+        next[emp.id] = {
+          ...next[emp.id],
+          base_salary: String(src.base_salary ?? 0),
+          work_hours: String(src.work_hours ?? 0),
+          include_weekly_holiday: src.include_weekly_holiday !== false,
+          employer_insurance: String(src.employer_insurance ?? 0),
+        }
+        applied++
+      }
       return next
     })
+    setDirty(true)
+    toast.success(`${lm}월 기준으로 ${applied}명을 채웠습니다. 확인 후 저장하세요.`)
   }
 
-  function changeValue(empId: string, value: string) {
-    setEditingIncentive((prev) => ({ ...prev, [empId]: value }))
-  }
-
-  async function saveIncentive(empId: string) {
-    const rawValue = editingIncentive[empId] ?? '0'
-    const amount = Number(rawValue.replace(/[^0-9]/g, '')) || 0
-
-    setSavingIncentive((prev) => new Set([...prev, empId]))
-    try {
-      // 기존 수동 인센티브 삭제 후 재삽입 (0이면 자동 계산 복원)
-      await supabase.from('monthly_incentives')
-        .delete()
-        .eq('year', year)
-        .eq('month', month)
-        .eq('employee_id', empId)
-
-      if (amount > 0) {
-        await supabase.from('monthly_incentives').insert({
-          year,
-          month,
-          employee_id: empId,
-          amount,
-          memo: '수동 조정',
-        })
+  // ── 3.3% 예상값 채우기 ──────────────────────────────────────
+  function fillSuggestedTax() {
+    setForms((prev) => {
+      const next = { ...prev }
+      for (const r of rows) {
+        next[r.emp.id] = {
+          ...next[r.emp.id],
+          base_income_tax: String(r.suggested.base.incomeTax),
+          base_local_tax: String(r.suggested.base.localTax),
+          incentive_income_tax: String(r.suggested.incentive.incomeTax),
+          incentive_local_tax: String(r.suggested.incentive.localTax),
+        }
       }
-
-      toast.success(amount > 0 ? '인센티브가 저장되었습니다' : '자동 계산으로 복원되었습니다')
-      cancelEdit(empId)
-      await load()
-    } catch {
-      toast.error('저장 실패')
-    } finally {
-      setSavingIncentive((prev) => {
-        const next = new Set(prev)
-        next.delete(empId)
-        return next
-      })
-    }
+      return next
+    })
+    setDirty(true)
+    toast.info('3.3% 예상값으로 채웠습니다. 세무사 확정본과 대조해주세요.')
   }
 
-  const totalBase           = rows.reduce((s, r) => s + r.base_salary, 0)
-  const totalIncentive      = rows.reduce((s, r) => s + r.incentive, 0)
-  const totalIncentiveDed   = rows.reduce((s, r) => s + r.incentive_deductions, 0)
-  const totalDeduct         = rows.reduce((s, r) => s + r.deductions, 0)
-  const totalNet            = rows.reduce((s, r) => s + r.net_pay, 0)
-  const totalGross          = rows.reduce((s, r) => s + r.gross_pay, 0)
-  const totalPay            = rows.reduce((s, r) => s + r.total_pay, 0)
+  // ── 세무사 회신 반영 ────────────────────────────────────────
+  function applyPaste(parsed: ParsedRow[]) {
+    setForms((prev) => {
+      const next = { ...prev }
+      for (const p of parsed) {
+        if (!p.employeeId || !next[p.employeeId]) continue
+        next[p.employeeId] = {
+          ...next[p.employeeId],
+          base_income_tax: String(p.baseIncomeTax),
+          base_local_tax: String(p.baseLocalTax),
+          incentive_income_tax: String(p.incentiveIncomeTax),
+          incentive_local_tax: String(p.incentiveLocalTax),
+          ...(p.employerInsurance > 0 ? { employer_insurance: String(p.employerInsurance) } : {}),
+        }
+      }
+      return next
+    })
+    setDirty(true)
+    toast.success(`${parsed.length}명의 세액을 반영했습니다. 확인 후 저장하세요.`)
+  }
 
-  async function handleExport() {
-    if (rows.length === 0) { toast.error('데이터가 없습니다.'); return }
+  // ── 대장 내보내기 ───────────────────────────────────────────
+  async function exportLedger() {
+    const entries: LedgerEntry[] = rows
+      .filter((r) => r.gross > 0)
+      .map((r) => ({
+        name: r.emp.name,
+        base: r.base,
+        // 확정 세액이 있으면 그것을, 없으면 3.3% 예상값을 넣는다
+        baseIncomeTax: r.taxEntered ? num(r.form.base_income_tax) : r.suggested.base.incomeTax,
+        baseLocalTax: r.taxEntered ? num(r.form.base_local_tax) : r.suggested.base.localTax,
+        incentive: r.incNet,
+        incentiveIncomeTax: r.taxEntered ? num(r.form.incentive_income_tax) : r.suggested.incentive.incomeTax,
+        incentiveLocalTax: r.taxEntered ? num(r.form.incentive_local_tax) : r.suggested.incentive.localTax,
+      }))
+
+    if (entries.length === 0) { toast.error('지급액이 입력된 직원이 없습니다.'); return }
+
     setExporting(true)
     try {
-      const XLSX = await import('xlsx')
-      const wb = XLSX.utils.book_new()
-
-      const sheetRows = [
-        ...rows.map((r) => ({
-          연도: year,
-          월: month,
-          직원명: r.name,
-          기본급: r.base_salary,
-          인센티브: r.incentive,
-          '총지급액_세전(기본+인센티브)': r.gross_pay,
-          인센티브공제: r.incentive_deductions,
-          공제액: r.deductions,
-          '총지급액_공제후(기본+인센티브)': r.total_pay,
-          지급일: r.paid_at ?? '',
-        })),
-        {
-          연도: '',
-          월: '',
-          직원명: '합계',
-          기본급: totalBase,
-          인센티브: totalIncentive,
-          '총지급액_세전(기본+인센티브)': totalGross,
-          인센티브공제: totalIncentiveDed,
-          공제액: totalDeduct,
-          '총지급액_공제후(기본+인센티브)': totalPay,
-          지급일: '',
-        },
-      ]
-
-      const ws = XLSX.utils.json_to_sheet(sheetRows)
-      ws['!cols'] = [
-        { wch: 6 }, { wch: 4 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
-        { wch: 20 }, { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 12 },
-      ]
-      XLSX.utils.book_append_sheet(wb, ws, '급여대장')
-      XLSX.writeFile(wb, `티엔샤_급여대장_${year}년_${month}월.xlsx`)
-      toast.success('급여대장 다운로드 완료')
-    } catch {
-      toast.error('내보내기 실패')
+      const { blob, filename } = await buildBusinessIncomeLedger(year, month, entries)
+      downloadBlob(blob, filename)
+      if (monthStatus === 'draft') await saveAll('submitted', true)
+      toast.success('사업소득지급대장을 내려받았습니다.')
+    } catch (e) {
+      toast.error('생성 실패: ' + (e instanceof Error ? e.message : ''))
     } finally {
       setExporting(false)
     }
   }
 
-  const incentiveCellProps = (row: PayrollRow): IncentiveCellProps => ({
-    row,
-    editingValue: editingIncentive[row.employee_id],
-    isSaving: savingIncentive.has(row.employee_id),
-    onStartEdit: startEdit,
-    onCancelEdit: cancelEdit,
-    onSave: saveIncentive,
-    onChangeValue: changeValue,
-  })
+  // ── 4대보험 지출 항목 정리 ──────────────────────────────────
+  async function clearInsuranceExpense() {
+    const ids = insuranceExpense.map((e) => e.id)
+    const { error } = await supabase.from('monthly_expenses').update({ amount: 0 }).in('id', ids)
+    if (error) { toast.error('정리 실패: ' + error.message); return }
+    toast.success('지출 항목을 0으로 정리했습니다. 이제 급여 화면 값만 반영됩니다.')
+    await load()
+  }
+
+  function applyBulkPayDate() {
+    if (!bulkPayDate) { toast.error('지급일을 선택해주세요.'); return }
+    setForms((prev) => {
+      const next = { ...prev }
+      for (const r of rows) if (r.gross > 0) next[r.emp.id] = { ...next[r.emp.id], paid_at: bulkPayDate }
+      return next
+    })
+    setDirty(true)
+  }
+
+  const insuranceTotalInExpense = insuranceExpense.reduce((s, e) => s + e.amount, 0)
+  const showDoubleCountWarning = insuranceTotalInExpense > 0 && totals.insurance > 0
+
+  // ── 렌더 ─────────────────────────────────────────────────────
+  const GRID_ESTIMATE = 'md:grid md:grid-cols-[1.4fr_1.3fr_1.2fr_1fr_1.1fr_1.1fr] md:gap-3'
+  const GRID_CONFIRM = 'md:grid md:grid-cols-[1.4fr_1.1fr_1.1fr_1.1fr_1.1fr_1fr] md:gap-3'
+  const GRID_PAY = 'md:grid md:grid-cols-[1.4fr_1.2fr_1.2fr_1.4fr] md:gap-3'
 
   return (
     <div className="space-y-4">
       {/* 헤더 */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">급여대장</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold">급여 관리</h1>
+          <Badge variant={monthStatus === 'paid' ? 'default' : 'secondary'} className="text-xs">
+            {STATUS_LABEL[monthStatus]}
+          </Badge>
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <MonthNavigator />
-          <Button onClick={handleExport} disabled={exporting || rows.length === 0} size="sm">
-            <Download size={14} className="mr-1" />
-            {exporting ? '생성 중...' : '엑셀 내보내기'}
+          <Button size="sm" onClick={() => saveAll()} disabled={saving || !dirty}>
+            <Save size={14} className="mr-1" />{saving ? '저장 중...' : '저장'}
           </Button>
         </div>
       </div>
 
-      {/* 요약 카드 */}
-      {rows.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <Card>
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-gray-500">기본급 합계</CardTitle></CardHeader>
-            <CardContent><div className="text-xl font-bold">{formatKRW(totalBase)}</div></CardContent>
-          </Card>
-          <Card className="border-blue-200 bg-blue-50">
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-blue-600">인센티브 합계</CardTitle></CardHeader>
-            <CardContent><div className="text-xl font-bold text-blue-800">{formatKRW(totalIncentive)}</div></CardContent>
-          </Card>
-          <Card className="border-amber-200 bg-amber-50">
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-amber-600">총 지급액 (세전)</CardTitle></CardHeader>
-            <CardContent><div className="text-xl font-bold text-amber-800">{formatKRW(totalGross)}</div></CardContent>
-          </Card>
-          <Card className="border-green-200 bg-green-50">
-            <CardHeader className="pb-1"><CardTitle className="text-xs text-green-600">총 지급액 (공제 후)</CardTitle></CardHeader>
-            <CardContent><div className="text-xl font-bold text-green-800">{formatKRW(totalPay)}</div></CardContent>
-          </Card>
+      {/* 진행 단계 */}
+      <div className="flex items-center gap-1 overflow-x-auto pb-1">
+        {STATUS_ORDER.map((s, i) => {
+          const reached = STATUS_ORDER.indexOf(monthStatus) >= i
+          return (
+            <div key={s} className="flex items-center gap-1 shrink-0">
+              <div className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+                reached ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-400'
+              }`}>
+                {reached && <Check size={11} />}
+                <span>{i + 1}. {STATUS_LABEL[s]}</span>
+              </div>
+              {i < STATUS_ORDER.length - 1 && <div className={`h-px w-4 ${reached ? 'bg-gray-900' : 'bg-gray-200'}`} />}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* 요약 */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
+        <Card>
+          <CardHeader className="pb-1"><CardTitle className="text-xs text-gray-500">지급액 (세전)</CardTitle></CardHeader>
+          <CardContent><div className="text-lg font-bold">{formatKRW(totals.gross)}</div></CardContent>
+        </Card>
+        <Card className="border-red-100 bg-red-50/40">
+          <CardHeader className="pb-1"><CardTitle className="text-xs text-red-500">원천징수 (3.3%)</CardTitle></CardHeader>
+          <CardContent><div className="text-lg font-bold text-red-700">− {formatKRW(totals.tax)}</div></CardContent>
+        </Card>
+        <Card className="border-green-200 bg-green-50">
+          <CardHeader className="pb-1"><CardTitle className="text-xs text-green-600">차인지급액 (입금액)</CardTitle></CardHeader>
+          <CardContent><div className="text-lg font-bold text-green-800">{formatKRW(totals.net)}</div></CardContent>
+        </Card>
+        <Card className="border-purple-200 bg-purple-50/50">
+          <CardHeader className="pb-1"><CardTitle className="text-xs text-purple-600">4대보험 회사부담</CardTitle></CardHeader>
+          <CardContent><div className="text-lg font-bold text-purple-800">{formatKRW(totals.insurance)}</div></CardContent>
+        </Card>
+        <Card className="border-amber-200 bg-amber-50 col-span-2 lg:col-span-1">
+          <CardHeader className="pb-1"><CardTitle className="text-xs text-amber-600">인건비 총원가</CardTitle></CardHeader>
+          <CardContent>
+            <div className="text-lg font-bold text-amber-800">{formatKRW(totals.gross + totals.insurance)}</div>
+            <p className="text-xs text-amber-600/70 mt-0.5">영업이익 차감 기준</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 4대보험 이중계상 경고 */}
+      {showDoubleCountWarning && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+            <div className="text-sm text-amber-900 space-y-1.5 min-w-0">
+              <p className="font-medium">4대보험이 두 번 계산되고 있습니다.</p>
+              <p className="text-xs leading-relaxed">
+                이 화면에서 집계된 회사부담분 <strong>{formatKRW(totals.insurance)}</strong>이 이미 영업이익에서 차감되는데,
+                월별 지출에도 {insuranceExpense.map((e) => `"${e.item_name}"`).join(', ')} 항목으로{' '}
+                <strong>{formatKRW(insuranceTotalInExpense)}</strong>이 들어가 있습니다.
+              </p>
+              <Button size="sm" variant="outline" className="h-7 text-xs border-amber-400" onClick={clearInsuranceExpense}>
+                월별 지출 항목을 0으로 정리
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* 급여 테이블 - 모바일 카드 */}
-      <div className="md:hidden space-y-2">
-        {loading ? (
-          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
-        ) : rows.length === 0 ? (
-          <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">
-            {year}년 {month}월 급여 데이터가 없습니다.<br />
-            <span className="text-xs">직원/급여 메뉴에서 급여를 입력해주세요.</span>
-          </div>
-        ) : (
-          <>
-            {rows.map((r) => (
-              <div key={r.employee_id} className="bg-white rounded-lg border p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-semibold text-gray-900">{r.name}</span>
-                  <span className="font-bold text-green-700">{formatKRW(r.total_pay)}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">기본급</span>
-                    <span>{formatKRW(r.base_salary)}</span>
-                  </div>
-                  <div className="flex justify-between items-start">
-                    <span className="text-gray-400 flex-shrink-0 mr-2">인센티브</span>
-                    <IncentiveCell {...incentiveCellProps(r)} />
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">세전 합계</span>
-                    <span className="text-amber-700">{formatKRW(r.gross_pay)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">인센티브 공제</span>
-                    <span className="text-red-500">{r.incentive_deductions > 0 ? `- ${formatKRW(r.incentive_deductions)}` : '-'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">공제액 (기본)</span>
-                    <span className="text-red-500">{r.deductions > 0 ? `- ${formatKRW(r.deductions)}` : '-'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">실수령</span>
-                    <span className="text-gray-600">{formatKRW(r.net_pay)}</span>
-                  </div>
-                </div>
-                {r.paid_at && (
-                  <div className="text-xs text-gray-400 mt-2">지급일: {new Date(r.paid_at).toLocaleDateString('ko-KR')}</div>
-                )}
+      {/* 단계별 작업 */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as StageKey)}>
+        <TabsList>
+          <TabsTrigger value="estimate">① 산정</TabsTrigger>
+          <TabsTrigger value="confirm">② 세무사 확정</TabsTrigger>
+          <TabsTrigger value="pay">③ 지급</TabsTrigger>
+        </TabsList>
+
+        {/* ─────────── ① 산정 ─────────── */}
+        <TabsContent value="estimate">
+          <div className="bg-white rounded-lg border">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b">
+              <div>
+                <h2 className="font-semibold text-gray-800">세전 지급액 산정</h2>
+                <p className="text-xs text-gray-400 mt-0.5">우리가 정하는 값만 입력합니다. 세금은 다음 단계에서.</p>
               </div>
-            ))}
-            <div className="bg-gray-50 rounded-lg border p-4">
-              <div className="flex items-center justify-between font-bold">
-                <span>합계</span>
-                <span className="text-green-700">{formatKRW(totalPay)}</span>
-              </div>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm mt-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-400">기본급</span>
-                  <span>{formatKRW(totalBase)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">인센티브</span>
-                  <span className="text-blue-600">{formatKRW(totalIncentive)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">세전 합계</span>
-                  <span className="text-amber-700">{formatKRW(totalGross)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">인센티브 공제</span>
-                  <span className="text-red-500">- {formatKRW(totalIncentiveDed)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">공제액 (기본)</span>
-                  <span className="text-red-500">- {formatKRW(totalDeduct)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">실수령</span>
-                  <span>{formatKRW(totalNet)}</span>
-                </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button size="sm" variant="outline" onClick={copyLastMonth}>
+                  <Copy size={13} className="mr-1" />지난달 불러오기
+                </Button>
+                <Button size="sm" onClick={exportLedger} disabled={exporting}>
+                  <Download size={13} className="mr-1" />
+                  {exporting ? '생성 중...' : '사업소득지급대장 내보내기'}
+                </Button>
               </div>
             </div>
-          </>
-        )}
-      </div>
 
-      {/* 급여 테이블 - 데스크톱 */}
-      <div className="hidden md:block bg-white rounded-lg border overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>직원명</TableHead>
-              <TableHead className="text-right">기본급</TableHead>
-              <TableHead className="text-right">인센티브</TableHead>
-              <TableHead className="text-right">총 지급액 (세전)</TableHead>
-              <TableHead className="text-right">인센티브 공제</TableHead>
-              <TableHead className="text-right">공제액 (기본)</TableHead>
-              <TableHead className="text-right">실수령액 (기본)</TableHead>
-              <TableHead className="text-right font-semibold">총 지급액 (공제 후)</TableHead>
-              <TableHead className="text-center">지급일</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow><TableCell colSpan={9} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
-            ) : rows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={9} className="text-center py-8 text-gray-400">
-                  {year}년 {month}월 급여 데이터가 없습니다.<br />
-                  <span className="text-xs">직원/급여 메뉴에서 급여를 입력해주세요.</span>
-                </TableCell>
-              </TableRow>
-            ) : (
+            <div className={`hidden ${GRID_ESTIMATE} px-4 py-2 border-b bg-gray-50 text-xs font-medium text-gray-500`}>
+              <div>직원</div>
+              <div>근무시간 / 기본급</div>
+              <div>인센티브</div>
+              <div>인센티브 차감</div>
+              <div className="text-right">지급액 (세전)</div>
+              <div>4대보험 회사부담</div>
+            </div>
+
+            <div className="divide-y">
+              {loading ? (
+                <div className="py-10 text-center text-sm text-gray-400">불러오는 중...</div>
+              ) : rows.length === 0 ? (
+                <div className="py-10 text-center text-sm text-gray-400">
+                  등록된 직원이 없습니다. 직원 관리에서 먼저 추가해주세요.
+                </div>
+              ) : rows.map((r) => (
+                <div key={r.emp.id} className={`px-4 py-3 space-y-2 md:space-y-0 ${GRID_ESTIMATE} md:items-center ${
+                  existingIds.has(r.emp.id) ? '' : 'bg-yellow-50/30'
+                }`}>
+                  {/* 직원 */}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium text-gray-900">{r.emp.name}</span>
+                      {r.isPartTime && (
+                        <Badge variant="secondary" className="text-xs py-0">{formatKRW(r.emp.hourly_wage ?? 0)}/h</Badge>
+                      )}
+                      {r.emp.insured && (
+                        <Badge variant="outline" className="text-xs py-0 text-purple-600 border-purple-300">4대보험</Badge>
+                      )}
+                    </div>
+                    {r.isPartTime && WEEK_DAYS_LABEL(r.emp) && (
+                      <div className="text-xs text-gray-400 mt-0.5">{WEEK_DAYS_LABEL(r.emp)}</div>
+                    )}
+                  </div>
+
+                  {/* 근무시간 / 기본급 */}
+                  <Cell label={r.isPartTime ? '근무시간' : '기본급'}>
+                    {r.isPartTime ? (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1 justify-end md:justify-start">
+                          <Input
+                            type="number"
+                            className="h-8 w-20 text-sm text-right"
+                            value={r.form.work_hours}
+                            onChange={(e) => update(r.emp.id, { work_hours: e.target.value })}
+                          />
+                          <span className="text-xs text-gray-400">h</span>
+                        </div>
+                        {num(r.form.work_hours) > 0 && (
+                          <div className="text-xs text-right md:text-left space-y-0.5">
+                            <div className="text-gray-500">시급분 {formatKRW(r.partTime.hourlyPay)}</div>
+                            {r.partTime.eligible ? (
+                              <label className="inline-flex items-center gap-1 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={r.form.include_weekly_holiday}
+                                  onChange={(e) => update(r.emp.id, { include_weekly_holiday: e.target.checked })}
+                                  className="rounded"
+                                />
+                                <span className={r.form.include_weekly_holiday ? 'text-blue-600' : 'text-gray-400'}>
+                                  주휴 {formatKRW(r.partTime.weeklyHolidayPay)}
+                                </span>
+                              </label>
+                            ) : (
+                              <div className="text-gray-300">주휴 미해당 (주 15h 미만)</div>
+                            )}
+                            <div className="font-medium text-gray-700">= {formatKRW(r.partTime.total)}</div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <CurrencyInput
+                        className="h-8 text-sm w-32 md:w-full"
+                        value={r.form.base_salary}
+                        onChange={(v) => update(r.emp.id, { base_salary: v })}
+                      />
+                    )}
+                  </Cell>
+
+                  {/* 인센티브 */}
+                  <Cell label="인센티브">
+                    {editingIncentive[r.emp.id] !== undefined ? (
+                      <div className="flex items-center gap-1">
+                        <CurrencyInput
+                          className="h-8 text-sm w-28"
+                          value={editingIncentive[r.emp.id]}
+                          onChange={(v) => setEditingIncentive((p) => ({ ...p, [r.emp.id]: v }))}
+                        />
+                        <button onClick={() => saveIncentive(r.emp.id)} className="text-green-600 hover:text-green-800">
+                          <Check size={14} />
+                        </button>
+                        <button
+                          onClick={() => setEditingIncentive((p) => { const n = { ...p }; delete n[r.emp.id]; return n })}
+                          className="text-gray-400 hover:text-gray-600"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="group flex items-center gap-1 justify-end md:justify-start w-full"
+                        onClick={() => setEditingIncentive((p) => ({ ...p, [r.emp.id]: String(r.incGross) }))}
+                        title="클릭해서 수동 지정 (0으로 저장하면 자동 계산 복원)"
+                      >
+                        {r.incGross > 0
+                          ? <span className="text-blue-600 font-medium text-sm">{formatKRW(r.incGross)}</span>
+                          : <span className="text-gray-300 text-sm">-</span>}
+                        {r.isManualIncentive && <span className="text-xs text-orange-400">수동</span>}
+                        <Pencil size={11} className="text-gray-300 opacity-0 group-hover:opacity-100" />
+                      </button>
+                    )}
+                  </Cell>
+
+                  {/* 인센티브 차감 */}
+                  <Cell label="인센티브 차감">
+                    <CurrencyInput
+                      className="h-8 text-sm w-24 md:w-full"
+                      placeholder="0"
+                      value={r.form.incentive_deductions}
+                      onChange={(v) => update(r.emp.id, { incentive_deductions: v })}
+                    />
+                  </Cell>
+
+                  {/* 지급액 세전 */}
+                  <Cell label="지급액 (세전)" className="md:text-right">
+                    <span className="font-semibold text-amber-700">{formatKRW(r.gross)}</span>
+                  </Cell>
+
+                  {/* 4대보험 */}
+                  <Cell label="4대보험 회사부담">
+                    {r.emp.insured ? (
+                      <CurrencyInput
+                        className="h-8 text-sm w-28 md:w-full"
+                        placeholder="0"
+                        value={r.form.employer_insurance}
+                        onChange={(v) => update(r.emp.id, { employer_insurance: v })}
+                      />
+                    ) : (
+                      <span className="text-xs text-gray-300">미가입</span>
+                    )}
+                  </Cell>
+                </div>
+              ))}
+            </div>
+
+            {rows.length > 0 && (
+              <div className={`px-4 py-3 border-t bg-gray-50 font-semibold text-sm ${GRID_ESTIMATE} md:items-center`}>
+                <div>합계</div>
+                <div className="text-gray-600">{formatKRW(totals.base)}</div>
+                <div className="text-blue-600">{formatKRW(totals.incentive)}</div>
+                <div />
+                <div className="md:text-right text-amber-700">{formatKRW(totals.gross)}</div>
+                <div className="text-purple-700">{formatKRW(totals.insurance)}</div>
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs text-gray-400 mt-2 leading-relaxed">
+            * 인센티브는 이번 달 확정 입금 실적으로 자동 산출됩니다. 금액을 클릭하면 수동으로 덮어쓸 수 있고, 0으로 저장하면 자동 계산으로 돌아갑니다.<br />
+            * &quot;인센티브 차감&quot;은 대장 지급액과 정산 인센티브에서 모두 빠집니다.<br />
+            * 대장을 내보내면 자동으로 <strong>세무사 확정 대기</strong> 상태로 넘어갑니다.
+          </p>
+        </TabsContent>
+
+        {/* ─────────── ② 확정 ─────────── */}
+        <TabsContent value="confirm">
+          <div className="bg-white rounded-lg border">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b">
+              <div>
+                <h2 className="font-semibold text-gray-800">세무사 확정본 입력</h2>
+                <p className="text-xs text-gray-400 mt-0.5">회신받은 급여장부의 세액을 그대로 받아 적습니다.</p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Button size="sm" variant="outline" onClick={fillSuggestedTax}>
+                  <Sparkles size={13} className="mr-1" />3.3% 예상값 채우기
+                </Button>
+                <Button size="sm" onClick={() => setPasteOpen(true)}>
+                  <ClipboardPaste size={13} className="mr-1" />급여장부 붙여넣기
+                </Button>
+              </div>
+            </div>
+
+            <div className={`hidden ${GRID_CONFIRM} px-4 py-2 border-b bg-gray-50 text-xs font-medium text-gray-500`}>
+              <div>직원</div>
+              <div className="text-right">지급액 (세전)</div>
+              <div>소득세</div>
+              <div>지방소득세</div>
+              <div className="text-right">차인지급액</div>
+              <div className="text-center">검산</div>
+            </div>
+
+            <div className="divide-y">
+              {rows.filter((r) => r.gross > 0).length === 0 ? (
+                <div className="py-10 text-center text-sm text-gray-400">
+                  ① 산정 단계에서 지급액을 먼저 입력해주세요.
+                </div>
+              ) : rows.filter((r) => r.gross > 0).map((r) => (
+                <div key={r.emp.id} className={`px-4 py-3 space-y-2 md:space-y-0 ${GRID_CONFIRM} md:items-center`}>
+                  <div className="min-w-0">
+                    <span className="font-medium text-gray-900">{r.emp.name}</span>
+                    {r.incNet > 0 && (
+                      <div className="text-xs text-gray-400 mt-0.5">기본급 + 인센티브 (2줄)</div>
+                    )}
+                  </div>
+
+                  <Cell label="지급액 (세전)" className="md:text-right">
+                    <div className="text-sm">
+                      <div className="font-medium text-amber-700">{formatKRW(r.gross)}</div>
+                      {r.incNet > 0 && (
+                        <div className="text-xs text-gray-400">
+                          {formatKRW(r.base)} + {formatKRW(r.incNet)}
+                        </div>
+                      )}
+                    </div>
+                  </Cell>
+
+                  <Cell label="소득세">
+                    <div className="space-y-1">
+                      <CurrencyInput
+                        className="h-8 text-sm w-28 md:w-full"
+                        value={r.form.base_income_tax}
+                        onChange={(v) => update(r.emp.id, { base_income_tax: v })}
+                      />
+                      {r.incNet > 0 && (
+                        <CurrencyInput
+                          className="h-8 text-sm w-28 md:w-full border-blue-200"
+                          value={r.form.incentive_income_tax}
+                          onChange={(v) => update(r.emp.id, { incentive_income_tax: v })}
+                        />
+                      )}
+                    </div>
+                  </Cell>
+
+                  <Cell label="지방소득세">
+                    <div className="space-y-1">
+                      <CurrencyInput
+                        className="h-8 text-sm w-28 md:w-full"
+                        value={r.form.base_local_tax}
+                        onChange={(v) => update(r.emp.id, { base_local_tax: v })}
+                      />
+                      {r.incNet > 0 && (
+                        <CurrencyInput
+                          className="h-8 text-sm w-28 md:w-full border-blue-200"
+                          value={r.form.incentive_local_tax}
+                          onChange={(v) => update(r.emp.id, { incentive_local_tax: v })}
+                        />
+                      )}
+                    </div>
+                  </Cell>
+
+                  <Cell label="차인지급액" className="md:text-right">
+                    <span className="font-bold text-green-700">{formatKRW(r.net)}</span>
+                  </Cell>
+
+                  <Cell label="검산" className="md:text-center">
+                    {!r.taxEntered ? (
+                      <span className="text-xs text-gray-300">미입력</span>
+                    ) : r.taxMatchesSuggestion ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-green-600">
+                        <Check size={12} />3.3% 일치
+                      </span>
+                    ) : (
+                      <span className="text-xs text-amber-600" title={`3.3% 예상 세액 ${formatKRW(r.suggestedTax)}`}>
+                        {r.tax > r.suggestedTax ? '+' : ''}{formatKRW(r.tax - r.suggestedTax)}
+                      </span>
+                    )}
+                  </Cell>
+                </div>
+              ))}
+            </div>
+
+            {rows.some((r) => r.gross > 0) && (
               <>
-                {rows.map((r) => (
-                  <TableRow key={r.employee_id}>
-                    <TableCell className="font-medium">{r.name}</TableCell>
-                    <TableCell className="text-right">{formatKRW(r.base_salary)}</TableCell>
-                    <TableCell className="text-right">
-                      <IncentiveCell {...incentiveCellProps(r)} />
-                    </TableCell>
-                    <TableCell className="text-right text-amber-700">{formatKRW(r.gross_pay)}</TableCell>
-                    <TableCell className="text-right text-red-500">
-                      {r.incentive_deductions > 0 ? `- ${formatKRW(r.incentive_deductions)}` : '-'}
-                    </TableCell>
-                    <TableCell className="text-right text-red-500">
-                      {r.deductions > 0 ? `- ${formatKRW(r.deductions)}` : '-'}
-                    </TableCell>
-                    <TableCell className="text-right text-gray-600">{formatKRW(r.net_pay)}</TableCell>
-                    <TableCell className="text-right font-bold text-green-700">{formatKRW(r.total_pay)}</TableCell>
-                    <TableCell className="text-center text-xs text-gray-500">
-                      {r.paid_at ? new Date(r.paid_at).toLocaleDateString('ko-KR') : '-'}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                <TableRow className="bg-gray-50 font-bold border-t-2">
-                  <TableCell>합계</TableCell>
-                  <TableCell className="text-right">{formatKRW(totalBase)}</TableCell>
-                  <TableCell className="text-right text-blue-600">{formatKRW(totalIncentive)}</TableCell>
-                  <TableCell className="text-right text-amber-700">{formatKRW(totalGross)}</TableCell>
-                  <TableCell className="text-right text-red-500">- {formatKRW(totalIncentiveDed)}</TableCell>
-                  <TableCell className="text-right text-red-500">- {formatKRW(totalDeduct)}</TableCell>
-                  <TableCell className="text-right">{formatKRW(totalNet)}</TableCell>
-                  <TableCell className="text-right text-green-700">{formatKRW(totalPay)}</TableCell>
-                  <TableCell />
-                </TableRow>
+                <div className={`px-4 py-3 border-t bg-gray-50 font-semibold text-sm ${GRID_CONFIRM} md:items-center`}>
+                  <div>합계</div>
+                  <div className="md:text-right text-amber-700">{formatKRW(totals.gross)}</div>
+                  <div className="text-red-500 md:col-span-2">− {formatKRW(totals.tax)}</div>
+                  <div className="md:text-right text-green-700">{formatKRW(totals.net)}</div>
+                  <div />
+                </div>
+                <div className="px-4 py-3 border-t flex justify-end">
+                  <Button
+                    size="sm"
+                    onClick={async () => { if (await saveAll('confirmed')) setTab('pay') }}
+                    disabled={saving || totals.tax === 0}
+                  >
+                    확정하고 지급 단계로 →
+                  </Button>
+                </div>
               </>
             )}
-          </TableBody>
-        </Table>
-      </div>
+          </div>
 
-      <p className="text-xs text-gray-400">
-        * 인센티브 금액을 클릭하면 수동으로 조정할 수 있습니다. 수동 조정된 값은 정산에 반영됩니다.
-        0으로 저장하면 자동 계산 값으로 복원됩니다.
-      </p>
+          <p className="text-xs text-gray-400 mt-2 leading-relaxed">
+            * 인센티브가 있는 직원은 대장과 같이 <strong>윗칸 기본급분 / 아랫칸(파란 테두리) 인센티브분</strong>으로 나눠 입력합니다.<br />
+            * 검산 칸은 3.3% 계산과의 차액입니다. 4대보험 가입자나 연말정산 반영이 있으면 차이가 날 수 있으니 세무사 값을 그대로 두세요.
+          </p>
+        </TabsContent>
+
+        {/* ─────────── ③ 지급 ─────────── */}
+        <TabsContent value="pay">
+          <div className="bg-white rounded-lg border">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b">
+              <div>
+                <h2 className="font-semibold text-gray-800">입금 처리</h2>
+                <p className="text-xs text-gray-400 mt-0.5">차인지급액을 입금하고 지급일을 남깁니다.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="date"
+                  className="h-8 text-sm w-36"
+                  value={bulkPayDate}
+                  onChange={(e) => setBulkPayDate(e.target.value)}
+                />
+                <Button size="sm" variant="outline" onClick={applyBulkPayDate}>일괄 지정</Button>
+              </div>
+            </div>
+
+            <div className={`hidden ${GRID_PAY} px-4 py-2 border-b bg-gray-50 text-xs font-medium text-gray-500`}>
+              <div>직원</div>
+              <div className="text-right">차인지급액 (입금액)</div>
+              <div className="text-right">4대보험 회사부담</div>
+              <div>지급일</div>
+            </div>
+
+            <div className="divide-y">
+              {rows.filter((r) => r.gross > 0).length === 0 ? (
+                <div className="py-10 text-center text-sm text-gray-400">지급할 급여가 없습니다.</div>
+              ) : rows.filter((r) => r.gross > 0).map((r) => (
+                <div key={r.emp.id} className={`px-4 py-3 space-y-2 md:space-y-0 ${GRID_PAY} md:items-center`}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-gray-900">{r.emp.name}</span>
+                    {r.form.status === 'paid' && <Check size={13} className="text-green-500" />}
+                  </div>
+                  <Cell label="차인지급액" className="md:text-right">
+                    <span className="font-bold text-green-700">{formatKRW(r.net)}</span>
+                  </Cell>
+                  <Cell label="4대보험 회사부담" className="md:text-right">
+                    <span className="text-sm text-purple-700">
+                      {r.employerInsurance > 0 ? formatKRW(r.employerInsurance) : '-'}
+                    </span>
+                  </Cell>
+                  <Cell label="지급일">
+                    <Input
+                      type="date"
+                      className="h-8 text-sm w-36"
+                      value={r.form.paid_at}
+                      onChange={(e) => update(r.emp.id, { paid_at: e.target.value })}
+                    />
+                  </Cell>
+                </div>
+              ))}
+            </div>
+
+            {rows.some((r) => r.gross > 0) && (
+              <>
+                <div className={`px-4 py-3 border-t bg-gray-50 font-semibold text-sm ${GRID_PAY} md:items-center`}>
+                  <div>합계</div>
+                  <div className="md:text-right text-green-700">{formatKRW(totals.net)}</div>
+                  <div className="md:text-right text-purple-700">{formatKRW(totals.insurance)}</div>
+                  <div />
+                </div>
+                <div className="px-4 py-3 border-t flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-gray-500">
+                    실제 통장에서 나가는 금액: <strong>{formatKRW(totals.net + totals.tax + totals.insurance)}</strong>
+                    <span className="text-gray-400"> (차인지급액 + 원천징수 납부 + 4대보험)</span>
+                  </p>
+                  <Button size="sm" onClick={() => saveAll('paid')} disabled={saving || monthStatus === 'paid'}>
+                    <Check size={14} className="mr-1" />
+                    {monthStatus === 'paid' ? '지급 완료됨' : '지급 완료 처리'}
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <p className="text-xs text-gray-400 mt-2 leading-relaxed">
+            * 영업이익에서 차감되는 인건비는 <strong>세전 지급액 + 4대보험 회사부담 = {formatKRW(totals.gross + totals.insurance)}</strong>입니다.
+            원천징수세는 직원이 부담하지만 회사가 대신 납부하므로 비용은 세전 기준으로 잡습니다.
+          </p>
+        </TabsContent>
+      </Tabs>
+
+      <LedgerPasteDialog
+        open={pasteOpen}
+        onOpenChange={setPasteOpen}
+        employees={employees.map((e) => ({ id: e.id, name: e.name }))}
+        onApply={applyPaste}
+      />
     </div>
   )
 }

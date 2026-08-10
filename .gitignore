@@ -37,6 +37,10 @@ yarn-error.log*
 *-credentials.json
 tianxia-finance-*.json
 
+# 실제 급여·인사 데이터가 담긴 로컬 참고 파일 — public 저장소이므로 커밋 금지
+/*.xls
+/*.xlsx
+
 # vercel
 .vercel
 

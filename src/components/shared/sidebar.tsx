@@ -51,8 +51,8 @@ const navGroups: { title: string | null; items: NavItem[] }[] = [
     items: [
       { href: '/payments',  label: '결제 내역', icon: CreditCard, badge: 'unmatched' },
       { href: '/expenses',  label: '월별 지출', icon: Receipt },
-      { href: '/employees', label: '직원/급여', icon: Users },
-      { href: '/payroll',   label: '급여대장',  icon: FileSpreadsheet },
+      { href: '/payroll',   label: '급여 관리', icon: FileSpreadsheet },
+      { href: '/employees', label: '직원 관리', icon: Users },
     ],
   },
   {

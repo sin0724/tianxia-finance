@@ -36,6 +36,7 @@ export interface SettlementResult {
   totalVariableCost: number
   totalSpecialCost: number
   totalPayroll: number
+  totalEmployerInsurance: number
   gongguGrossSales: number
   gongguMargin: number
   operatingProfit: number
@@ -97,9 +98,18 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
   const totalVariableCost = sumByType(input.expenses, 'variable')
   const totalSpecialCost = sumByType(input.expenses, 'special')
 
-  // 7. 급여 합계
+  // 7. 급여 합계 — 세전 기본급 기준.
+  //    원천징수세(3.3%)는 직원이 부담하나 회사가 대신 납부하는 돈이므로
+  //    인건비 비용은 세전 지급액으로 잡는다. (차인지급액으로 잡으면 세액만큼 과소계상)
   const totalPayroll = input.payroll.reduce(
     (sum, p) => sum.plus(p.base_salary),
+    new Decimal(0)
+  )
+
+  // 7-1. 4대보험 회사부담분 — 원천징수와 별개로 회사에서 실제 나가는 인건비.
+  //      그동안 월별 지출에 손으로 넣던 금액을 급여 화면에서 직원별로 집계해 올린다.
+  const totalEmployerInsurance = input.payroll.reduce(
+    (sum, p) => sum.plus(p.employer_insurance ?? 0),
     new Decimal(0)
   )
 
@@ -114,6 +124,7 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
     .minus(totalVariableCost)
     .minus(totalSpecialCost)
     .minus(totalPayroll)
+    .minus(totalEmployerInsurance)
     .plus(gongguMargin)
 
   // 10. 적립금 (영업이익이 음수면 0)
@@ -139,6 +150,7 @@ export function calculateMonthlySettlement(input: SettlementInput): SettlementRe
     totalVariableCost: round2(totalVariableCost),
     totalSpecialCost: round2(totalSpecialCost),
     totalPayroll: round2(totalPayroll),
+    totalEmployerInsurance: round2(totalEmployerInsurance),
     gongguGrossSales: round2(gongguGrossSales),
     gongguMargin: round2(gongguMargin),
     operatingProfit: round2(operatingProfit),

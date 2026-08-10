@@ -247,11 +247,20 @@ export default function DashboardPage() {
           message: `${selMonth}월 지출이 아직 입력되지 않았습니다.`, href: '/expenses' })
 
       if (empRes.data && empRes.data.length > 0) {
-        const { data: pay } = await supabase.from('monthly_payroll').select('id')
-          .eq('year', selYear).eq('month', selMonth).limit(1)
-        if (!pay || pay.length === 0)
+        // 0원 행은 "입력됨"으로 보지 않는다 — 전체 저장 시 미지급 직원도 행이 생기기 때문
+        const { data: pay } = await supabase.from('monthly_payroll').select('status')
+          .eq('year', selYear).eq('month', selMonth).gt('base_salary', 0)
+        if (!pay || pay.length === 0) {
           newAlerts.push({ id: `payroll_${ym}`, level: 'info',
-            message: `${selMonth}월 급여가 입력되지 않았습니다.`, href: '/employees' })
+            message: `${selMonth}월 급여가 아직 산정되지 않았습니다.`, href: '/payroll' })
+        } else if (pay.some((p) => p.status !== 'paid')) {
+          const waiting = pay.filter((p) => p.status === 'draft' || p.status === 'submitted').length
+          newAlerts.push({ id: `payroll_${ym}`, level: 'info',
+            message: waiting > 0
+              ? `${selMonth}월 급여가 세무사 확정 대기 중입니다.`
+              : `${selMonth}월 급여가 확정됐지만 아직 지급 처리되지 않았습니다.`,
+            href: '/payroll' })
+        }
       }
       if (!s)
         newAlerts.push({ id: `settlement_${ym}`, level: 'info',
