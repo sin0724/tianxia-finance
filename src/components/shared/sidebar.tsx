@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { countUnmatchedPayments } from '@/lib/payments/unmatched'
+import { countPendingLeaves } from '@/lib/leave/pending'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard,
@@ -18,6 +19,7 @@ import {
   FileSpreadsheet,
   FolderKanban,
   ShoppingBag,
+  CalendarCheck,
   Settings,
   LogOut,
   X,
@@ -27,7 +29,7 @@ type NavItem = {
   href: string
   label: string
   icon: typeof LayoutDashboard
-  badge?: 'unmatched'
+  badge?: 'unmatched' | 'pendingLeave'
 }
 
 const navGroups: { title: string | null; items: NavItem[] }[] = [
@@ -52,7 +54,13 @@ const navGroups: { title: string | null; items: NavItem[] }[] = [
       { href: '/payments',  label: '결제 내역', icon: CreditCard, badge: 'unmatched' },
       { href: '/expenses',  label: '월별 지출', icon: Receipt },
       { href: '/payroll',   label: '급여 관리', icon: FileSpreadsheet },
+    ],
+  },
+  {
+    title: '인사',
+    items: [
       { href: '/employees', label: '직원 관리', icon: Users },
+      { href: '/leave',     label: '연차 관리', icon: CalendarCheck, badge: 'pendingLeave' },
     ],
   },
   {
@@ -79,15 +87,21 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const pathname = usePathname()
   const router = useRouter()
   const [unmatchedCount, setUnmatchedCount] = useState(0)
+  const [pendingLeaveCount, setPendingLeaveCount] = useState(0)
 
-  // 프로젝트 미연결 "확정 입금" 건수 배지 — 페이지 이동·창 포커스 시 갱신
-  // 기준은 countUnmatchedPayments() 한 곳에서만 정의한다 (대시보드 알림·결제 내역 필터와 동일)
+  // 배지 갱신 — 페이지 이동·창 포커스 시. 각 판정 기준은 lib 한 곳에서만 정의한다
+  // (countUnmatchedPayments / countPendingLeaves — 대시보드·목록 필터와 같은 기준)
   useEffect(() => {
     let alive = true
     const supabase = createClient()
     const refresh = async () => {
-      const count = await countUnmatchedPayments(supabase)
-      if (alive) setUnmatchedCount(count)
+      const [unmatched, pendingLeave] = await Promise.all([
+        countUnmatchedPayments(supabase),
+        countPendingLeaves(supabase),
+      ])
+      if (!alive) return
+      setUnmatchedCount(unmatched)
+      setPendingLeaveCount(pendingLeave)
     }
     refresh()
     const onVisible = () => { if (document.visibilityState === 'visible') refresh() }
@@ -161,6 +175,14 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                       title={`프로젝트 미연결 입금 ${unmatchedCount}건 (전체 기간) — 결제 내역의 '미연결만' 필터에서 연결해주세요`}
                     >
                       {unmatchedCount}
+                    </span>
+                  )}
+                  {badge === 'pendingLeave' && pendingLeaveCount > 0 && (
+                    <span
+                      className="text-[11px] font-semibold bg-amber-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"
+                      title={`승인 대기중인 연차 신청 ${pendingLeaveCount}건`}
+                    >
+                      {pendingLeaveCount}
                     </span>
                   )}
                 </Link>

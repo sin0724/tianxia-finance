@@ -16,9 +16,9 @@ export interface Database {
         Relationships: []
       }
       employees: {
-        Row: { id: string; name: string; position: string | null; employee_type: 'full_time' | 'part_time'; base_salary: number; hourly_wage: number; work_days: string | null; work_start_time: string | null; work_end_time: string | null; incentive_type: 'percent' | 'fixed' | null; incentive_value: number; insured: boolean; sort_order: number | null; terminated_at: string | null; active: boolean; hired_at: string | null; created_at: string; updated_at: string }
-        Insert: { id?: string; name: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; base_salary?: number; hourly_wage?: number; work_days?: string | null; work_start_time?: string | null; work_end_time?: string | null; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; insured?: boolean; sort_order?: number | null; terminated_at?: string | null; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
-        Update: { id?: string; name?: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; base_salary?: number; hourly_wage?: number; work_days?: string | null; work_start_time?: string | null; work_end_time?: string | null; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; insured?: boolean; sort_order?: number | null; terminated_at?: string | null; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
+        Row: { id: string; name: string; position: string | null; employee_type: 'full_time' | 'part_time'; slack_user_id: string | null; base_salary: number; hourly_wage: number; work_days: string | null; work_start_time: string | null; work_end_time: string | null; incentive_type: 'percent' | 'fixed' | null; incentive_value: number; insured: boolean; sort_order: number | null; terminated_at: string | null; active: boolean; hired_at: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; name: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; slack_user_id?: string | null; base_salary?: number; hourly_wage?: number; work_days?: string | null; work_start_time?: string | null; work_end_time?: string | null; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; insured?: boolean; sort_order?: number | null; terminated_at?: string | null; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; name?: string; position?: string | null; employee_type?: 'full_time' | 'part_time'; slack_user_id?: string | null; base_salary?: number; hourly_wage?: number; work_days?: string | null; work_start_time?: string | null; work_end_time?: string | null; incentive_type?: 'percent' | 'fixed' | null; incentive_value?: number; insured?: boolean; sort_order?: number | null; terminated_at?: string | null; active?: boolean; hired_at?: string | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
       clients: {
@@ -105,6 +105,24 @@ export interface Database {
         Update: { id?: string; campaign_id?: string | null; campaign_name?: string; client_name?: string | null; year?: number; month?: number; gross_sales?: number; margin?: number; memo?: string | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
+      leave_grants: {
+        Row: { id: string; employee_id: string; period_start: string; period_end: string; granted_days: number; carried_over: number; adjustment: number; memo: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; employee_id: string; period_start: string; period_end: string; granted_days?: number; carried_over?: number; adjustment?: number; memo?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; employee_id?: string; period_start?: string; period_end?: string; granted_days?: number; carried_over?: number; adjustment?: number; memo?: string | null; created_at?: string; updated_at?: string }
+        Relationships: []
+      }
+      leave_requests: {
+        Row: { id: string; employee_id: string; leave_type: 'annual' | 'half_am' | 'half_pm' | 'sick' | 'unpaid' | 'special'; start_date: string; end_date: string; days: number; reason: string | null; status: 'pending' | 'approved' | 'rejected' | 'cancelled'; requested_via: 'slack' | 'web'; slack_channel_id: string | null; slack_message_ts: string | null; reviewed_at: string | null; reviewed_by: string | null; review_memo: string | null; calendar_event_id: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; employee_id: string; leave_type?: 'annual' | 'half_am' | 'half_pm' | 'sick' | 'unpaid' | 'special'; start_date: string; end_date: string; days: number; reason?: string | null; status?: 'pending' | 'approved' | 'rejected' | 'cancelled'; requested_via?: 'slack' | 'web'; slack_channel_id?: string | null; slack_message_ts?: string | null; reviewed_at?: string | null; reviewed_by?: string | null; review_memo?: string | null; calendar_event_id?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; employee_id?: string; leave_type?: 'annual' | 'half_am' | 'half_pm' | 'sick' | 'unpaid' | 'special'; start_date?: string; end_date?: string; days?: number; reason?: string | null; status?: 'pending' | 'approved' | 'rejected' | 'cancelled'; requested_via?: 'slack' | 'web'; slack_channel_id?: string | null; slack_message_ts?: string | null; reviewed_at?: string | null; reviewed_by?: string | null; review_memo?: string | null; calendar_event_id?: string | null; created_at?: string; updated_at?: string }
+        Relationships: []
+      }
+      company_holidays: {
+        Row: { holiday_date: string; name: string; created_at: string }
+        Insert: { holiday_date: string; name: string; created_at?: string }
+        Update: { holiday_date?: string; name?: string; created_at?: string }
+        Relationships: []
+      }
     }
     Views: { [_ in never]: never }
     Functions: {
@@ -139,4 +157,8 @@ export type MonthlyPayroll = Database['public']['Tables']['monthly_payroll']['Ro
 export type MonthlySettlement = Database['public']['Tables']['monthly_settlements']['Row']
 export type GongguSale = Database['public']['Tables']['gonggu_sales']['Row']
 export type SyncLog = Database['public']['Tables']['sync_logs']['Row']
+export type LeaveGrant = Database['public']['Tables']['leave_grants']['Row']
+export type LeaveRequest = Database['public']['Tables']['leave_requests']['Row']
+export type CompanyHoliday = Database['public']['Tables']['company_holidays']['Row']
 export type PaymentStatus = Payment['status']
+export type LeaveStatus = LeaveRequest['status']

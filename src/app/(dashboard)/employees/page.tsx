@@ -39,6 +39,7 @@ const emptyForm = {
   insured: false,
   sort_order: '',
   hired_at: '',
+  slack_user_id: '',
 }
 
 /**
@@ -92,6 +93,7 @@ export default function EmployeesPage() {
       insured: e.insured ?? false,
       sort_order: e.sort_order != null ? String(e.sort_order) : '',
       hired_at: e.hired_at ?? '',
+      slack_user_id: e.slack_user_id ?? '',
     })
     setDialogOpen(true)
   }
@@ -115,6 +117,7 @@ export default function EmployeesPage() {
       insured: form.insured,
       sort_order: form.sort_order ? parseInt(form.sort_order) : null,
       hired_at: form.hired_at || null,
+      slack_user_id: form.slack_user_id.trim() || null,
     }
 
     const { error } = editing
@@ -451,6 +454,19 @@ export default function EmployeesPage() {
                 <Label>입사일</Label>
                 <Input type="date" value={form.hired_at} onChange={(e) => setForm({ ...form, hired_at: e.target.value })} />
               </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label>Slack 사용자 ID</Label>
+              <Input
+                placeholder="U01ABCDEF (비워두면 이름이 같을 때 자동 연결)"
+                value={form.slack_user_id}
+                onChange={(e) => setForm({ ...form, slack_user_id: e.target.value })}
+              />
+              <p className="text-xs text-gray-400">
+                Slack에서 <code>/연차</code>로 신청·조회할 때 이 직원으로 인식됩니다.
+                입사일이 없으면 연차가 계산되지 않으니 함께 입력해주세요.
+              </p>
             </div>
           </div>
           <DialogFooter>
