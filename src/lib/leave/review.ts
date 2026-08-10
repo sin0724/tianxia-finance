@@ -4,10 +4,11 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { Database } from '@/types/database'
+import type { Database, LeaveStatus } from '@/types/database'
 import { createLeaveEvent, deleteLeaveEvent } from '@/lib/google-calendar'
 import { dmSlackUser, updateSlackMessage } from '@/lib/slack'
 import { formatRange } from './calc'
+import { getLeaveBalance } from './balance'
 import { LEAVE_TYPE_LABEL } from './policy'
 
 type Admin = SupabaseClient<Database>
@@ -33,18 +34,26 @@ export async function reviewLeaveRequest(
 
   const { data: req, error } = await admin
     .from('leave_requests')
-    .select('*, employees(name, slack_user_id)')
+    .select('*, employees(id, name, hired_at, slack_user_id)')
     .eq('id', id)
     .maybeSingle()
 
   if (error || !req) return { ok: false, message: '신청 건을 찾을 수 없습니다.' }
 
-  if (req.status !== 'pending') {
-    const label = { approved: '승인', rejected: '반려', cancelled: '취소' }[req.status] ?? req.status
-    return { ok: false, message: `이미 ${label} 처리된 신청입니다.` }
+  // 취소는 승인된 건에도 할 수 있다 (캘린더 일정까지 함께 지워진다).
+  // 승인/반려는 대기중인 건에만 — 이미 처리된 걸 다시 뒤집지 않는다.
+  const allowedStatuses: LeaveStatus[] = action === 'cancel' ? ['pending', 'approved'] : ['pending']
+
+  if (!allowedStatuses.includes(req.status)) {
+    const label: Record<LeaveStatus, string> = {
+      pending: '대기', approved: '승인', rejected: '반려', cancelled: '취소',
+    }
+    return { ok: false, message: `이미 ${label[req.status]} 처리된 신청입니다.` }
   }
 
-  const employee = req.employees as unknown as { name: string; slack_user_id: string | null } | null
+  const employee = req.employees as unknown as {
+    id: string; name: string; hired_at: string | null; slack_user_id: string | null
+  } | null
   const employeeName = employee?.name ?? '(알 수 없음)'
   const typeLabel = LEAVE_TYPE_LABEL[req.leave_type] ?? '연차'
   const range = formatRange(req.start_date, req.end_date)
@@ -77,7 +86,7 @@ export async function reviewLeaveRequest(
       calendar_event_id: calendarEventId,
     })
     .eq('id', id)
-    .eq('status', 'pending') // 동시 처리 방지 — 그 사이 누가 처리했으면 0건 업데이트
+    .in('status', allowedStatuses) // 동시 처리 방지 — 그 사이 누가 처리했으면 0건 업데이트
     .select('id')
 
   if (updateErr) {
@@ -110,15 +119,29 @@ export async function reviewLeaveRequest(
     ])
   }
 
-  // 신청자에게 DM
+  // 신청자에게 DM — 승인 결과를 본인이 바로 알 수 있게
   if (employee?.slack_user_id) {
+    // 처리 후 잔여를 함께 알려준다 (승인이면 차감된 값, 반려·취소면 되돌아온 값)
+    let remainingLine = ''
+    try {
+      const balance = await getLeaveBalance(admin, employee)
+      if (balance.period) remainingLine = `> 남은 연차: *${balance.remaining}일*`
+    } catch { /* 잔여 계산 실패해도 알림 자체는 보낸다 */ }
+
     await dmSlackUser(
       employee.slack_user_id,
       [
-        `${emoji} 신청하신 ${typeLabel}가 *${actionLabel}*되었습니다.`,
+        `${emoji} 신청하신 *${typeLabel}*가 *${actionLabel}*되었습니다.`,
         `> 기간: ${range} (${req.days}일)`,
         memo ? `> 메모: ${memo}` : '',
+        remainingLine,
+        action === 'approve' ? '\n_잘 쉬고 오세요! 일정이 변경되면 `/연차 취소` 로 취소할 수 있습니다._' : '',
       ].filter(Boolean).join('\n'),
+    )
+  } else {
+    console.warn(
+      `[leave] ${employeeName} 님에게 결과를 알리지 못했습니다 — Slack 계정이 연결되어 있지 않습니다. ` +
+      '직원 관리에서 Slack 사용자 ID를 연결해주세요.',
     )
   }
 

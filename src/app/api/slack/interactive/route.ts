@@ -15,6 +15,11 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifySlackRequest, postSlackMessage, dmSlackUser } from '@/lib/slack'
 import { reviewLeaveRequest } from '@/lib/leave/review'
+import { applyForLeave } from '@/lib/leave/apply'
+import {
+  LEAVE_MODAL_CALLBACK, LEAVE_CANCEL_CALLBACK, LEAVE_FIELD,
+  readLeaveSubmission, readCancelSubmission,
+} from '@/lib/leave/modal'
 import { PAYMENT_MODAL_CALLBACK, FIELD, readSubmission } from '@/lib/payments/modal'
 import { registerPayment, formatKRW } from '@/lib/payments/register'
 
@@ -70,8 +75,112 @@ export async function POST(request: Request) {
     return new Response('', { status: 200 })
   }
 
-  if (payload.type === 'view_submission') return handlePaymentSubmission(payload)
+  if (payload.type === 'view_submission') {
+    switch (payload.view?.callback_id) {
+      case PAYMENT_MODAL_CALLBACK: return handlePaymentSubmission(payload)
+      case LEAVE_MODAL_CALLBACK:   return handleLeaveSubmission(payload)
+      case LEAVE_CANCEL_CALLBACK:  return handleLeaveCancel(payload)
+      default: return new Response('', { status: 200 })
+    }
+  }
   if (payload.type === 'block_actions') return handleLeaveButton(payload)
+
+  return new Response('', { status: 200 })
+}
+
+/** 모달 제출자를 직원으로 찾는다 — 창을 열 때 이미 연결된 사람만 열 수 있으므로 조회만 한다 */
+async function findEmployeeBySlackId(slackUserId: string) {
+  const { data } = await admin
+    .from('employees')
+    .select('id, name, hired_at, work_days')
+    .eq('slack_user_id', slackUserId)
+    .maybeSingle()
+  return data
+}
+
+// ─────────────────────────────────────────────────────────────
+// `/연차` 신청 모달 제출
+// ─────────────────────────────────────────────────────────────
+async function handleLeaveSubmission(payload: InteractivePayload) {
+  const values = (payload.view?.state?.values ?? {}) as Parameters<typeof readLeaveSubmission>[0]
+  const input = readLeaveSubmission(values)
+
+  if (!input.start) {
+    return Response.json({ response_action: 'errors', errors: { [LEAVE_FIELD.start]: '시작일을 선택해주세요.' } })
+  }
+  if (input.end < input.start) {
+    return Response.json({ response_action: 'errors', errors: { [LEAVE_FIELD.end]: '종료일이 시작일보다 빠릅니다.' } })
+  }
+  const isHalf = input.leaveType === 'half_am' || input.leaveType === 'half_pm'
+  if (isHalf && input.end !== input.start) {
+    return Response.json({ response_action: 'errors', errors: { [LEAVE_FIELD.end]: '반차는 하루만 신청할 수 있습니다. 종료일을 비워주세요.' } })
+  }
+
+  const slackUserId = payload.user?.id ?? ''
+  const employee = await findEmployeeBySlackId(slackUserId)
+  if (!employee) {
+    return Response.json({
+      response_action: 'errors',
+      errors: { [LEAVE_FIELD.start]: 'Slack 계정과 연결된 직원 정보가 없습니다. 관리자에게 문의해주세요.' },
+    })
+  }
+
+  // 검증은 여기서 끝내고 모달에 오류를 되돌려준다 — 창이 닫힌 뒤엔 알릴 방법이 마땅치 않다
+  const result = await applyForLeave(admin, {
+    employee,
+    leaveType: input.leaveType,
+    start: input.start,
+    end: input.end,
+    reason: input.reason,
+    via: 'slack',
+  })
+
+  if (!result.ok) {
+    const field = result.field === 'balance' ? LEAVE_FIELD.type : LEAVE_FIELD.start
+    return Response.json({ response_action: 'errors', errors: { [field]: result.text } })
+  }
+
+  // 접수 결과는 본인에게 DM 으로 — 모달은 채널에 아무 흔적을 남기지 않는다
+  await dmSlackUser(slackUserId, result.text)
+  return new Response('', { status: 200 })
+}
+
+// ─────────────────────────────────────────────────────────────
+// `/연차 취소` 모달 제출
+// ─────────────────────────────────────────────────────────────
+async function handleLeaveCancel(payload: InteractivePayload) {
+  const values = (payload.view?.state?.values ?? {}) as Parameters<typeof readLeaveSubmission>[0]
+  const requestId = readCancelSubmission(values)
+  if (!requestId) return new Response('', { status: 200 })
+
+  const slackUserId = payload.user?.id ?? ''
+  const employee = await findEmployeeBySlackId(slackUserId)
+  if (!employee) return new Response('', { status: 200 })
+
+  // 남의 신청을 취소하지 못하게 본인 것인지 확인한다
+  const { data: target } = await admin
+    .from('leave_requests')
+    .select('id, employee_id')
+    .eq('id', requestId)
+    .maybeSingle()
+
+  if (!target || target.employee_id !== employee.id) {
+    return Response.json({
+      response_action: 'errors',
+      errors: { [LEAVE_FIELD.target]: '본인이 신청한 휴가만 취소할 수 있습니다.' },
+    })
+  }
+
+  const result = await reviewLeaveRequest(admin, {
+    id: requestId,
+    action: 'cancel',
+    reviewer: employee.name,
+    memo: '신청자 취소',
+  })
+
+  if (!result.ok) {
+    return Response.json({ response_action: 'errors', errors: { [LEAVE_FIELD.target]: result.message } })
+  }
 
   return new Response('', { status: 200 })
 }

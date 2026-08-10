@@ -15,7 +15,11 @@ import { getAllLeaveBalances, type LeaveBalance } from '@/lib/leave/balance'
 import { LEAVE_TYPE_LABEL, periodLabel, todayISO } from '@/lib/leave/policy'
 import { formatRange } from '@/lib/leave/calc'
 import type { LeaveRequest, CompanyHoliday } from '@/types/database'
-import { Check, X, Trash2, Plus, CalendarDays, Link2, Pencil } from 'lucide-react'
+import { Check, X, Trash2, Plus, CalendarDays, Link2, Pencil, Undo2 } from 'lucide-react'
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 type RequestRow = LeaveRequest & { employees: { name: string } | null }
 
@@ -38,6 +42,7 @@ export default function LeavePage() {
 
   const [rejectTarget, setRejectTarget] = useState<RequestRow | null>(null)
   const [rejectMemo, setRejectMemo] = useState('')
+  const [cancelTarget, setCancelTarget] = useState<RequestRow | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const [grantTarget, setGrantTarget] = useState<LeaveBalance | null>(null)
@@ -68,7 +73,7 @@ export default function LeavePage() {
     r.status !== 'pending' && (historyFilter === 'all' || r.status === historyFilter),
   )
 
-  async function review(req: RequestRow, action: 'approve' | 'reject', memo?: string | null) {
+  async function review(req: RequestRow, action: 'approve' | 'reject' | 'cancel', memo?: string | null) {
     setBusyId(req.id)
     try {
       const res = await fetch('/api/leave/review', {
@@ -78,7 +83,11 @@ export default function LeavePage() {
       })
       const data = await res.json()
       if (!res.ok) { toast.error(data.error ?? '처리에 실패했습니다.'); return }
-      toast.success(action === 'approve' ? '연차를 승인했습니다.' : '연차를 반려했습니다.')
+      toast.success(
+        action === 'approve' ? '연차를 승인했습니다.'
+        : action === 'reject' ? '연차를 반려했습니다.'
+        : '연차를 취소했습니다. 캘린더 일정도 함께 삭제됩니다.',
+      )
       await load()
     } catch {
       toast.error('서버와 통신하지 못했습니다.')
@@ -306,11 +315,12 @@ export default function LeavePage() {
                   <TableHead>사유</TableHead>
                   <TableHead>상태</TableHead>
                   <TableHead>처리</TableHead>
+                  <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {history.length === 0 ? (
-                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-gray-400">내역이 없습니다.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-gray-400">내역이 없습니다.</TableCell></TableRow>
                 ) : history.map((r) => {
                   const meta = STATUS_META[r.status]
                   return (
@@ -324,6 +334,20 @@ export default function LeavePage() {
                       <TableCell className="text-xs text-gray-500">
                         {r.reviewed_by ?? '-'}
                         {r.review_memo && <div className="text-gray-400">{r.review_memo}</div>}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {/* 승인된 건은 되돌릴 수 있어야 한다 — 취소하면 잔여가 복구되고 캘린더 일정도 지워진다 */}
+                        {r.status === 'approved' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-gray-400 hover:text-red-600"
+                            disabled={busyId === r.id}
+                            onClick={() => setCancelTarget(r)}
+                          >
+                            <Undo2 size={14} className="mr-1" />취소
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   )
@@ -415,6 +439,34 @@ export default function LeavePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 승인된 연차 취소 */}
+      <AlertDialog open={!!cancelTarget} onOpenChange={(v) => { if (!v) setCancelTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>승인된 연차 취소</AlertDialogTitle>
+            <AlertDialogDescription>
+              {cancelTarget?.employees?.name}님의{' '}
+              {cancelTarget && formatRange(cancelTarget.start_date, cancelTarget.end_date)}{' '}
+              ({cancelTarget?.days}일) 연차를 취소합니다.<br />
+              차감됐던 연차가 잔여로 돌아오고, 구글 캘린더 일정도 함께 삭제됩니다.<br />
+              신청자에게 Slack DM으로 알림이 갑니다.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>닫기</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => {
+                if (cancelTarget) review(cancelTarget, 'cancel', '관리자 취소')
+                setCancelTarget(null)
+              }}
+            >
+              취소 처리
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 부여 일수 수동 조정 */}
       <Dialog open={!!grantTarget} onOpenChange={(v) => { if (!v) setGrantTarget(null) }}>

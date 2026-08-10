@@ -108,8 +108,16 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
     window.addEventListener('focus', refresh)
     window.addEventListener('refresh-badges', refresh)
     document.addEventListener('visibilitychange', onVisible)
+
+    // Slack 으로 들어온 연차 신청은 이 화면과 무관하게 생기므로 주기적으로도 확인한다.
+    // 화면을 열어둔 채 있어도 승인 대기 배지가 뜨게 하려는 것 — 탭이 숨겨져 있으면 건너뛴다.
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') refresh()
+    }, 60_000)
+
     return () => {
       alive = false
+      clearInterval(timer)
       window.removeEventListener('focus', refresh)
       window.removeEventListener('refresh-badges', refresh)
       document.removeEventListener('visibilitychange', onVisible)
