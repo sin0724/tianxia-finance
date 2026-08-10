@@ -124,6 +124,64 @@ export function makeSyncId(): string {
   return `tx_${crypto.randomUUID()}`
 }
 
+/**
+ * 시트 맨 아래에 결제 행을 추가하고 M열에 동기화 ID까지 기록한다 (`/결제` 슬래시 커맨드용).
+ *
+ * ID를 함께 남기는 것이 핵심이다. 앱이 payments 에 external_id = syncId 로 저장해두면
+ * 이후 sync-sheets 가 이 행을 읽어도 "이미 있는 건"으로 인식해 중복 생성하지 않는다.
+ *
+ * A(체크박스)·J(계산서)·K(메모)는 팀이 쓰는 열이라 건드리지 않고 B~I 만 쓴다.
+ * D(대표자)·E(전화번호)는 폼에서 받지 않으므로 빈 값으로 둔다.
+ */
+export async function appendSheetRow(row: {
+  date: string          // YYYY-MM-DD
+  clientName: string
+  manager: string
+  amount: number
+  memo: string
+  status: PaymentStatus
+}): Promise<{ rowIndex: number; syncId: string }> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(false)
+  const syncId = makeSyncId()
+
+  // values.append 를 쓰지 않는 이유:
+  //   시트 아래쪽에는 팀이 미리 서식·드롭다운(입금상태·계산서)을 깔아둔 빈 행이 이어져 있다.
+  //   append 는 그 빈 행들 "다음"에 새 행을 만들어버려서, 데이터가 빈 줄 뭉치 아래로 떨어지고
+  //   드롭다운 서식도 못 받는다. 그래서 마지막 데이터 행 바로 다음 칸을 직접 찾아 채운다.
+  const scan = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!B2:G`,
+  })
+  const scanned = scan.data.values ?? []
+
+  // 날짜(B)·상호명(C)·금액(G) 중 하나라도 있으면 실제 데이터가 있는 행으로 본다.
+  // 중간의 빈 줄은 건너뛰지 않고 항상 "마지막 데이터 행 다음"에 쓴다 —
+  // 팀이 일부러 비워둔 구분 행을 덮어쓰지 않기 위해서다.
+  let lastDataOffset = -1
+  for (let i = 0; i < scanned.length; i++) {
+    const r = scanned[i] ?? []
+    const hasData = [r[0], r[1], r[5]].some((c) => String(c ?? '').trim() !== '')
+    if (hasData) lastDataOffset = i
+  }
+  const rowIndex = lastDataOffset + 2 + 1 // 배열 0 = 시트 2행
+
+  // USER_ENTERED — 금액이 숫자로 들어가야 팀이 시트에서 쓰는 합계·정렬이 그대로 동작한다.
+  // 날짜는 시트 로케일(ko_KR)에 따라 "2026. 8. 10." 로 표시되는데 parseDate 가 이 형식을 읽는다.
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!B${rowIndex}:I${rowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: {
+      // D(대표자)·E(전화번호)는 폼에서 받지 않으므로 빈 값 — 대상 행은 비어 있어 지워질 내용이 없다
+      values: [[row.date, row.clientName, '', '', row.manager, row.amount, row.memo, row.status]],
+    },
+  })
+
+  await writeBackSyncIds([{ rowIndex, syncId }])
+
+  return { rowIndex, syncId }
+}
+
 /** I열 드롭다운 값을 입금 상태로 정규화 */
 function normalizeStatus(raw: string): PaymentStatus {
   if (/미입금/.test(raw)) return '미입금'
@@ -151,6 +209,13 @@ function parseDate(raw: string): string | null {
   const krMatch = raw.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/)
   if (krMatch) {
     const [, y, m, d] = krMatch
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+  }
+  // 한국 로케일 표시 형식: "2026. 8. 10" / "2026. 8. 10."
+  // 시트에 진짜 날짜값으로 들어간 셀은 values.get 이 이 형태로 돌려준다
+  const krLocale = raw.match(/^(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})\.?$/)
+  if (krLocale) {
+    const [, y, m, d] = krLocale
     return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
   }
   return null

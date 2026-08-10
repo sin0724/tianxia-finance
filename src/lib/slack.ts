@@ -97,6 +97,35 @@ export async function updateSlackMessage(
   }
 }
 
+/**
+ * 모달 열기 — 슬래시 커맨드가 받은 trigger_id 로 호출한다.
+ * trigger_id 는 발급 후 3초 안에 써야 하므로, 호출 전에 무거운 작업을 두지 않는다.
+ */
+export async function openSlackModal(triggerId: string, view: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+  const token = process.env.SLACK_BOT_TOKEN
+  if (!token) return { ok: false, error: 'SLACK_BOT_TOKEN 미설정' }
+
+  try {
+    const res = await fetch('https://slack.com/api/views.open', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ trigger_id: triggerId, view }),
+    })
+    const data = await res.json()
+    if (!data.ok) {
+      console.error('[slack] views.open 실패:', data.error, JSON.stringify(data.response_metadata ?? {}))
+      return { ok: false, error: data.error }
+    }
+    return { ok: true }
+  } catch (e) {
+    console.error('[slack] views.open 예외:', e)
+    return { ok: false, error: '네트워크 오류' }
+  }
+}
+
 /** 신청자에게 DM — 승인/반려 결과 통보 */
 export async function dmSlackUser(userId: string, text: string): Promise<void> {
   if (!process.env.SLACK_BOT_TOKEN || !userId) return

@@ -1,264 +1,72 @@
 /**
- * Slack /결제 슬래시 커맨드 직접 수신 웹훅
+ * Slack `/결제` 슬래시 커맨드 — 결제 등록 모달을 연다.
  *
- * Slack App 설정에서 이 URL을 Slash Command Request URL로 등록:
+ * Slack App 설정 → Slash Commands → Request URL:
  *   https://your-domain/api/slack/payment
  *
- * 커맨드 형식:
- *   /결제 상호명 금액 담당자 [메모]
- *   예) /결제 ABC마케팅 1500000 김팀장 계약금 입금완료
- *       /결제 XYZ회사 500000 박팀장 잔금처리요망
+ * 예전에는 `/결제 상호명 금액 담당자 메모` 형식의 텍스트 파싱이었으나,
+ * 팀이 쓰던 워크플로우 폼과 항목을 맞추기 위해 모달 입력으로 바꿨다.
+ * 실제 등록은 제출 시점에 /api/slack/interactive 의 view_submission 이 처리한다.
  *
- * 상태 키워드 (메모에 포함 시 자동 인식):
- *   - "잔금처리요망" 또는 "잔금" → ⚠ 잔금 처리 요망
- *   - "미입금" → 🔴 미입금
- *   - 그 외 → 입금완료로 처리
- *
- * 환경변수:
- *   SLACK_SIGNING_SECRET: Slack App의 Signing Secret (보안 서명 검증용)
+ * 텍스트를 함께 친 경우(`/결제 ABC마케팅`)에는 상호명 자리에 미리 채워주지 않는다 —
+ * 모달의 initial_value 로 넘기면 옛 형식과 새 형식이 섞여 헷갈리기 때문이다.
  */
 
-import { createClient } from '@supabase/supabase-js'
-import { createHmac } from 'crypto'
-import type { Database } from '@/types/database'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { verifySlackRequest, openSlackModal } from '@/lib/slack'
+import { buildPaymentModal } from '@/lib/payments/modal'
 
-const supabase = createClient<Database>(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-)
-
-type PaymentStatus = '입금완료' | '잔금처리요망' | '미입금'
-
-/** Slack 서명 검증 (HMAC-SHA256) */
-function verifySlackSignature(
-  signingSecret: string,
-  timestamp: string,
-  rawBody: string,
-  signature: string,
-): boolean {
-  const baseString = `v0:${timestamp}:${rawBody}`
-  const hmac = createHmac('sha256', signingSecret)
-  const computed = `v0=${hmac.update(baseString).digest('hex')}`
-  // timing-safe comparison (constant time)
-  if (computed.length !== signature.length) return false
-  let diff = 0
-  for (let i = 0; i < computed.length; i++) {
-    diff |= computed.charCodeAt(i) ^ signature.charCodeAt(i)
-  }
-  return diff === 0
-}
-
-/** 커맨드 텍스트 파싱: 상호명 금액 담당자 [메모...] */
-function parseCommandText(text: string): {
-  clientName: string
-  amount: number
-  manager: string
-  memo: string
-  status: PaymentStatus
-} | null {
-  const parts = text.trim().split(/\s+/)
-  if (parts.length < 3) return null
-
-  const clientName = parts[0]
-  const rawAmount = parts[1].replace(/[,원]/g, '')
-  const amount = parseFloat(rawAmount)
-  if (isNaN(amount) || amount <= 0) return null
-
-  const manager = parts[2]
-  const memoRaw = parts.slice(3).join(' ')
-
-  let status: PaymentStatus = '입금완료'
-  let memo = memoRaw
-
-  if (/잔금처리요망|잔금처리/.test(memoRaw)) {
-    status = '잔금처리요망'
-    memo = memoRaw.replace(/잔금처리요망|잔금처리/g, '').trim()
-  } else if (/미입금/.test(memoRaw)) {
-    status = '미입금'
-    memo = memoRaw.replace(/미입금/g, '').trim()
-  }
-
-  return { clientName, amount, manager, memo, status }
-}
-
-/** 클라이언트 조회 또는 생성 */
-async function findOrCreateClient(name: string, manager: string): Promise<string | null> {
-  const { data: existing } = await supabase
-    .from('clients')
-    .select('id')
-    .ilike('name', name)
-    .limit(1)
-    .single()
-
-  if (existing) return existing.id
-
-  const { data: created, error } = await supabase
-    .from('clients')
-    .insert({ name, manager: manager || null })
-    .select('id')
-    .single()
-
-  if (error) return null
-  return created?.id ?? null
-}
-
-/**
- * 프로젝트 조회 또는 신규 생성
- * 잔여 결제가 남은 프로젝트(진행중 우선 → 완료의 잔금)에만 합친다.
- * 완납된 프로젝트엔 붙이지 않고, 같은 클라이언트라도 별개 계약(재계약)으로 보고 새 프로젝트를 생성한다.
- */
-async function findOrCreateProject(clientId: string, clientName: string, amount: number, date: string): Promise<{ id: string; isNew: boolean } | null> {
-  const { data: projs } = await supabase
-    .from('projects')
-    .select('id, status, total_amount')
-    .eq('client_id', clientId)
-    .neq('status', 'cancelled')
-    .order('created_at', { ascending: false })
-
-  const candidates = projs ?? []
-
-  if (candidates.length > 0) {
-    const { data: pays } = await supabase
-      .from('payments')
-      .select('project_id, amount')
-      .in('project_id', candidates.map((p) => p.id))
-
-    const paidByProject: Record<string, number> = {}
-    for (const pay of pays ?? []) {
-      if (pay.project_id) paidByProject[pay.project_id] = (paidByProject[pay.project_id] ?? 0) + pay.amount
-    }
-
-    const target =
-      candidates.find((p) => p.status === 'ongoing' && (paidByProject[p.id] ?? 0) < p.total_amount) ??
-      candidates.find((p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount)
-    if (target) return { id: target.id, isNew: false }
-  }
-
-  // 잔여 있는 프로젝트 없음 → 신규/재계약으로 새 프로젝트 생성
-  const isRenewal = candidates.length > 0
-  const { data: created, error } = await supabase
-    .from('projects')
-    .insert({
-      client_id: clientId,
-      name: isRenewal ? `${clientName} (재계약 ${candidates.length}차)` : clientName,
-      total_amount: amount,
-      contract_date: date,
-      status: 'ongoing',
-      memo: isRenewal ? '재계약 (자동 생성)' : null,
-    })
-    .select('id')
-    .single()
-
-  if (error) return null
-  return created ? { id: created.id, isNew: true } : null
-}
-
-function formatKRW(n: number): string {
-  return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(n)
-}
+const admin = createAdminClient()
 
 export async function POST(request: Request) {
   const rawBody = await request.text()
 
-  // Slack 서명 검증
-  const signingSecret = process.env.SLACK_SIGNING_SECRET
-  if (signingSecret) {
-    const timestamp = request.headers.get('x-slack-request-timestamp') ?? ''
-    const signature = request.headers.get('x-slack-signature') ?? ''
-
-    // 5분 이상 된 요청 거부 (replay attack 방지)
-    const now = Math.floor(Date.now() / 1000)
-    if (Math.abs(now - parseInt(timestamp, 10)) > 300) {
-      return Response.json({ error: 'Request too old' }, { status: 400 })
-    }
-
-    if (!verifySlackSignature(signingSecret, timestamp, rawBody, signature)) {
-      return Response.json({ error: 'Invalid signature' }, { status: 401 })
-    }
-  }
+  const verified = verifySlackRequest(rawBody, request.headers)
+  if (!verified.ok) return Response.json({ error: verified.reason }, { status: 401 })
 
   const params = new URLSearchParams(rawBody)
-  const text = params.get('text') ?? ''
-  const userName = params.get('user_name') ?? ''
+  const triggerId = params.get('trigger_id') ?? ''
+  const channelId = params.get('channel_id') ?? ''
+  const userId = params.get('user_id') ?? ''
 
-  if (!text.trim()) {
+  if (!triggerId) {
     return Response.json({
       response_type: 'ephemeral',
-      text: [
-        '❌ 형식이 올바르지 않습니다.',
-        '사용법: `/결제 상호명 금액 담당자 [메모]`',
-        '예시: `/결제 ABC마케팅 1500000 김팀장 계약금`',
-        '상태 키워드: `잔금처리요망`, `미입금` (기본: 입금완료)',
-      ].join('\n'),
+      text: '❌ 모달을 열 수 없습니다 (trigger_id 없음). 다시 시도해주세요.',
     })
   }
 
-  const parsed = parseCommandText(text)
-  if (!parsed) {
-    return Response.json({
-      response_type: 'ephemeral',
-      text: [
-        '❌ 파싱 실패. 상호명, 금액, 담당자를 모두 입력해주세요.',
-        '예시: `/결제 ABC마케팅 1500000 김팀장`',
-      ].join('\n'),
-    })
-  }
+  // 담당자 드롭다운 — 재직 중인 직원. 대장 순번을 따르고 없으면 이름 순.
+  const { data: employees } = await admin
+    .from('employees')
+    .select('name, sort_order')
+    .eq('active', true)
+    .order('sort_order', { ascending: true, nullsFirst: false })
+    .order('name')
 
-  const { clientName, amount, manager, memo, status } = parsed
+  const managers = (employees ?? []).map((e) => e.name).filter(Boolean)
   const today = new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD
 
-  // 클라이언트 조회/생성
-  const clientId = await findOrCreateClient(clientName, manager)
-  if (!clientId) {
+  const result = await openSlackModal(
+    triggerId,
+    buildPaymentModal({ today, managers, channelId, userId }),
+  )
+
+  if (!result.ok) {
     return Response.json({
       response_type: 'ephemeral',
-      text: `❌ 클라이언트 처리 실패. 관리자에게 문의하세요.`,
+      text: [
+        `❌ 결제 등록 창을 열지 못했습니다 (${result.error}).`,
+        result.error === 'SLACK_BOT_TOKEN 미설정'
+          ? '관리자: Railway 에 SLACK_BOT_TOKEN 을 설정해주세요.'
+          : '잠시 후 다시 시도해주세요.',
+      ].join('\n'),
     })
   }
 
-  // 프로젝트 조회/생성
-  const project = await findOrCreateProject(clientId, clientName, amount, today)
-
-  const paymentType = status === '잔금처리요망' ? '잔금' : status === '미입금' ? '기타' : null
-  const dbStatus = status === '잔금처리요망' ? 'balance_due' : status === '미입금' ? 'unpaid' : 'confirmed'
-  const statusTag =
-    status === '잔금처리요망' ? '⚠ 잔금 처리 요망' :
-    status === '미입금' ? '🔴 미입금' : ''
-
-  const { error: insertErr } = await supabase.from('payments').insert({
-    project_id: project?.id ?? null,
-    amount,
-    payment_date: today,
-    payment_type: paymentType,
-    manager: manager || null,
-    memo: memo || null,
-    source: 'slack',
-    external_id: `slack_direct_${today}_${clientName.replace(/\s+/g, '-')}_${amount}_${Date.now()}`,
-    client_name_raw: clientName,
-    matched: !!project,
-    status: dbStatus,
-  })
-
-  if (insertErr) {
-    return Response.json({
-      response_type: 'ephemeral',
-      text: `❌ 저장 실패: ${insertErr.message}`,
-    })
-  }
-
-  const statusEmoji = status === '잔금처리요망' ? '⚠️' : status === '미입금' ? '🔴' : '✅'
-  const projectNote = project?.isNew ? ' (신규 프로젝트 자동 생성)' : ''
-
-  return Response.json({
-    response_type: 'in_channel',
-    text: [
-      `${statusEmoji} *결제 등록 완료* — ${userName ? `@${userName}` : ''}`,
-      `> 상호명: *${clientName}*`,
-      `> 금액: *${formatKRW(amount)}*`,
-      `> 담당자: ${manager}`,
-      `> 날짜: ${today}`,
-      `> 상태: ${statusTag || '입금완료'}${projectNote}`,
-      memo ? `> 메모: ${memo}` : '',
-    ].filter(Boolean).join('\n'),
-  })
+  // 모달이 떴으므로 빈 200 으로 조용히 끝낸다 (채널에 남는 메시지 없음)
+  return new Response('', { status: 200 })
 }
+
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
