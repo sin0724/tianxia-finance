@@ -14,16 +14,20 @@ import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
 import { LedgerPasteDialog } from '@/components/payroll/ledger-paste-dialog'
 import { buildBusinessIncomeLedger, downloadBlob, type LedgerEntry } from '@/lib/payroll/ledger'
-import { withhold, calcPartTimePay, aggregateStatus, STATUS_LABEL, STATUS_ORDER, type PayrollStatus } from '@/lib/payroll/tax'
+import {
+  withhold, calcPartTimePay, resolveSchedule, aggregateStatus,
+  STATUS_LABEL, STATUS_ORDER, type PayrollStatus, type ResolvedSchedule,
+} from '@/lib/payroll/tax'
 import type { ParsedRow } from '@/lib/payroll/parse'
 import type { Employee } from '@/types/database'
 import {
-  AlertTriangle, Check, ClipboardPaste, Copy, Download, Pencil, Save, Sparkles, X,
+  AlertTriangle, Calculator, Check, ClipboardPaste, Copy, Download, Pencil, Save, Sparkles, X,
 } from 'lucide-react'
 
 // ── 폼 상태 ────────────────────────────────────────────────────
 type FormEntry = {
   work_hours: string
+  absent_days: string
   include_weekly_holiday: boolean
   base_salary: string
   base_income_tax: string
@@ -37,11 +41,19 @@ type FormEntry = {
 
 type StageKey = 'estimate' | 'confirm' | 'pay'
 
+/** 금액용 — 원 단위로 반올림한다 */
 const num = (v: string) => Math.round(Number(String(v).replace(/[^0-9.-]/g, '')) || 0)
+
+/** 시간·일수용 — 8.5시간, 0.5일 같은 소수를 살린다 */
+const numF = (v: string) => Number(String(v).replace(/[^0-9.-]/g, '')) || 0
+
+/** 소수점 뒤 불필요한 0을 떼고 보여준다 */
+const fmtHours = (h: number) => String(Math.round(h * 100) / 100)
 
 function emptyForm(emp: Employee): FormEntry {
   return {
     work_hours: '0',
+    absent_days: '0',
     include_weekly_holiday: true,
     base_salary: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary ?? 0),
     base_income_tax: '0',
@@ -57,8 +69,18 @@ function emptyForm(emp: Employee): FormEntry {
 const WEEK_DAYS_LABEL = (e: Employee) => {
   const days = e.work_days ? e.work_days.split(',').join('·') : ''
   const time = e.work_start_time && e.work_end_time ? `${e.work_start_time}~${e.work_end_time}` : ''
-  return [days, time].filter(Boolean).join(' ')
+  const rest = e.break_minutes ? `휴게 ${e.break_minutes}분` : ''
+  return [days, time, rest].filter(Boolean).join(' · ')
 }
+
+/** 근무 일정이 등록된 알바의 이 달 소정근로 — 없으면 null */
+const scheduleFor = (e: Employee, year: number, month: number): ResolvedSchedule | null =>
+  e.employee_type === 'part_time'
+    ? resolveSchedule(
+        { days: e.work_days, start: e.work_start_time, end: e.work_end_time, breakMinutes: e.break_minutes ?? 0 },
+        year, month
+      )
+    : null
 
 /** 모바일에서만 라벨이 보이는 셀 — 데스크톱은 위쪽 헤더 행이 라벨 역할을 한다 */
 function Cell({ label, children, className = '' }: { label: string; children: React.ReactNode; className?: string }) {
@@ -160,6 +182,7 @@ export default function PayrollPage() {
       if (!p) { next[emp.id] = emptyForm(emp); continue }
       next[emp.id] = {
         work_hours: String(p.work_hours ?? 0),
+        absent_days: String(p.absent_days ?? 0),
         include_weekly_holiday: p.include_weekly_holiday !== false,
         base_salary: String(p.base_salary ?? 0),
         base_income_tax: String(p.base_income_tax ?? 0),
@@ -182,7 +205,15 @@ export default function PayrollPage() {
   const rows = useMemo(() => employees.map((emp) => {
     const f = forms[emp.id] ?? emptyForm(emp)
     const isPartTime = emp.employee_type === 'part_time'
-    const partTime = calcPartTimePay(num(f.work_hours), emp.hourly_wage ?? 0, f.include_weekly_holiday)
+    const schedule = scheduleFor(emp, year, month)
+    const partTime = calcPartTimePay({
+      hours: numF(f.work_hours),
+      hourlyWage: emp.hourly_wage ?? 0,
+      absentDays: numF(f.absent_days),
+      wageIncludesHoliday: emp.wage_includes_holiday ?? false,
+      includeHoliday: f.include_weekly_holiday,
+      schedule,
+    })
     const base = isPartTime ? partTime.total : num(f.base_salary)
     // 인센티브는 세전액이 그대로 지급액에 들어간다. 3.3%는 ② 확정 단계의 세액 칸에서 뺀다.
     const incentive = incentiveGross[emp.id] ?? 0
@@ -193,7 +224,7 @@ export default function PayrollPage() {
     const suggestedTax = suggested.base.totalTax + suggested.incentive.totalTax
 
     return {
-      emp, form: f, isPartTime, partTime,
+      emp, form: f, isPartTime, partTime, schedule,
       base, incentive, gross,
       isManualIncentive: manualIds.has(emp.id),
       tax, net: gross - tax,
@@ -202,7 +233,7 @@ export default function PayrollPage() {
       taxEntered: tax > 0,
       taxMatchesSuggestion: tax === suggestedTax,
     }
-  }), [employees, forms, incentiveGross, manualIds])
+  }), [employees, forms, incentiveGross, manualIds, year, month])
 
   const totals = useMemo(() => rows.reduce((t, r) => ({
     base: t.base + r.base,
@@ -235,7 +266,8 @@ export default function PayrollPage() {
       return {
         year, month, employee_id: r.emp.id,
         base_salary: r.base,
-        work_hours: num(f.work_hours),
+        work_hours: numF(f.work_hours),
+        absent_days: numF(f.absent_days),
         include_weekly_holiday: f.include_weekly_holiday,
         incentive_deductions: 0, // [DEPRECATED 017] 인센티브 3.3%는 incentive_*_tax로 이관
         base_income_tax: num(f.base_income_tax),
@@ -307,6 +339,41 @@ export default function PayrollPage() {
     })
     setDirty(true)
     toast.success(`${lm}월 기준으로 ${applied}명을 채웠습니다. 확인 후 저장하세요.`)
+  }
+
+  // ── 근무시간 자동 산출 ──────────────────────────────────────
+  // 하루 소정근로시간(휴게 제외) × (이 달 소정근로일수 − 결근일수).
+  // 연장근무나 대타가 있으면 채운 뒤 직접 고치면 된다.
+  function scheduledHours(schedule: ResolvedSchedule | null, absentDays: string): number | null {
+    if (!schedule) return null
+    const days = Math.max(0, schedule.monthlyDays - numF(absentDays))
+    return Math.round(days * schedule.dailyHours * 100) / 100
+  }
+
+  function autoFillHours(empId: string) {
+    const r = rows.find((x) => x.emp.id === empId)
+    if (!r) return
+    const hours = scheduledHours(r.schedule, r.form.absent_days)
+    if (hours === null) return
+    update(empId, { work_hours: String(hours) })
+  }
+
+  function autoFillAllHours() {
+    const targets = rows.filter((r) => r.schedule !== null)
+    if (targets.length === 0) {
+      toast.info('근무 일정이 등록된 아르바이트가 없습니다. 직원 관리에서 요일·시간·휴게시간을 설정해주세요.')
+      return
+    }
+    setForms((prev) => {
+      const next = { ...prev }
+      for (const r of targets) {
+        const hours = scheduledHours(r.schedule, r.form.absent_days)
+        if (hours !== null) next[r.emp.id] = { ...next[r.emp.id], work_hours: String(hours) }
+      }
+      return next
+    })
+    setDirty(true)
+    toast.success(`${targets.length}명의 근무시간을 소정근로 기준으로 채웠습니다. 연장·대타가 있으면 직접 고쳐주세요.`)
   }
 
   // ── 3.3% 예상값 채우기 ──────────────────────────────────────
@@ -506,6 +573,11 @@ export default function PayrollPage() {
                 <p className="text-xs text-gray-400 mt-0.5">우리가 정하는 값만 입력합니다. 세금은 다음 단계에서.</p>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
+                {rows.some((r) => r.schedule !== null) && (
+                  <Button size="sm" variant="outline" onClick={autoFillAllHours}>
+                    <Calculator size={13} className="mr-1" />근무시간 자동 채우기
+                  </Button>
+                )}
                 <Button size="sm" variant="outline" onClick={copyLastMonth}>
                   <Copy size={13} className="mr-1" />지난달 불러오기
                 </Button>
@@ -542,6 +614,9 @@ export default function PayrollPage() {
                       {r.isPartTime && (
                         <Badge variant="secondary" className="text-xs py-0">{formatKRW(r.emp.hourly_wage ?? 0)}/h</Badge>
                       )}
+                      {r.isPartTime && r.emp.wage_includes_holiday && (
+                        <Badge variant="outline" className="text-xs py-0 text-blue-600 border-blue-300">주휴 포함</Badge>
+                      )}
                       {r.emp.insured && (
                         <Badge variant="outline" className="text-xs py-0 text-purple-600 border-purple-300">4대보험</Badge>
                       )}
@@ -549,25 +624,79 @@ export default function PayrollPage() {
                     {r.isPartTime && WEEK_DAYS_LABEL(r.emp) && (
                       <div className="text-xs text-gray-400 mt-0.5">{WEEK_DAYS_LABEL(r.emp)}</div>
                     )}
+                    {r.schedule && (
+                      <div className="text-xs text-gray-400">
+                        1일 {fmtHours(r.schedule.dailyHours)}h · 이 달 소정 {r.schedule.monthlyDays}일 {fmtHours(r.schedule.monthlyHours)}h
+                      </div>
+                    )}
+                    {r.schedule && r.schedule.breakShortfall > 0 && (
+                      <div className="text-xs text-amber-600 mt-0.5">
+                        휴게시간 {r.schedule.breakShortfall}분 부족 (근로기준법 제54조)
+                      </div>
+                    )}
                   </div>
 
                   {/* 근무시간 / 기본급 */}
                   <Cell label={r.isPartTime ? '근무시간' : '기본급'}>
                     {r.isPartTime ? (
                       <div className="space-y-1">
+                        {/* 실근무시간 — 휴게시간과 결근을 뺀 시간 */}
                         <div className="flex items-center gap-1 justify-end md:justify-start">
                           <Input
                             type="number"
+                            step="0.5"
+                            min="0"
                             className="h-8 w-20 text-sm text-right"
                             value={r.form.work_hours}
                             onChange={(e) => update(r.emp.id, { work_hours: e.target.value })}
                           />
                           <span className="text-xs text-gray-400">h</span>
+                          {r.schedule && (
+                            <button
+                              type="button"
+                              onClick={() => autoFillHours(r.emp.id)}
+                              title={`소정근로 기준으로 채우기 — 1일 ${fmtHours(r.schedule.dailyHours)}h × ${r.schedule.monthlyDays}일${
+                                numF(r.form.absent_days) > 0 ? ` − 결근 ${fmtHours(numF(r.form.absent_days))}일` : ''
+                              }`}
+                              className="text-gray-300 hover:text-purple-600 transition-colors"
+                            >
+                              <Calculator size={14} />
+                            </button>
+                          )}
                         </div>
-                        {num(r.form.work_hours) > 0 && (
+
+                        {/* 결근 — 시급분이 아니라 주휴 판정에만 쓴다 */}
+                        <div className="flex items-center gap-1 justify-end md:justify-start">
+                          <span className="text-xs text-gray-400">결근</span>
+                          <Input
+                            type="number"
+                            step="0.5"
+                            min="0"
+                            className={`h-7 w-14 text-xs text-right ${
+                              numF(r.form.absent_days) > 0 ? 'border-red-300 text-red-600' : ''
+                            }`}
+                            value={r.form.absent_days}
+                            onChange={(e) => update(r.emp.id, { absent_days: e.target.value })}
+                          />
+                          <span className="text-xs text-gray-400">일</span>
+                        </div>
+
+                        {numF(r.form.work_hours) > 0 && (
                           <div className="text-xs text-right md:text-left space-y-0.5">
                             <div className="text-gray-500">시급분 {formatKRW(r.partTime.hourlyPay)}</div>
-                            {r.partTime.eligible ? (
+
+                            {r.emp.wage_includes_holiday ? (
+                              <div className="text-blue-600">
+                                주휴 포함 시급
+                                {r.partTime.embeddedHolidayPay > 0 && (
+                                  <span className="text-gray-400">
+                                    {' '}· 주휴 상당 {formatKRW(r.partTime.embeddedHolidayPay)}
+                                  </span>
+                                )}
+                              </div>
+                            ) : !r.partTime.eligible ? (
+                              <div className="text-gray-300">주휴 미해당 (주 15h 미만)</div>
+                            ) : (
                               <label className="inline-flex items-center gap-1 cursor-pointer select-none">
                                 <input
                                   type="checkbox"
@@ -579,10 +708,26 @@ export default function PayrollPage() {
                                   주휴 {formatKRW(r.partTime.weeklyHolidayPay)}
                                 </span>
                               </label>
-                            ) : (
-                              <div className="text-gray-300">주휴 미해당 (주 15h 미만)</div>
                             )}
+
+                            {r.partTime.forfeitedWeeks > 0 && (
+                              r.emp.wage_includes_holiday ? (
+                                <div className="text-gray-400">
+                                  결근 {fmtHours(r.partTime.forfeitedWeeks)}주치 주휴 {formatKRW(r.partTime.forfeitedPay)}
+                                  {' '}— 시급에 녹아 있어 자동 차감되지 않습니다
+                                </div>
+                              ) : (
+                                <div className="text-red-500">
+                                  결근 {fmtHours(r.partTime.forfeitedWeeks)}주치 주휴 소멸 − {formatKRW(r.partTime.forfeitedPay)}
+                                </div>
+                              )
+                            )}
+
                             <div className="font-medium text-gray-700">= {formatKRW(r.partTime.total)}</div>
+
+                            {r.partTime.basis === 'average' && r.partTime.eligible && (
+                              <div className="text-gray-300">주휴는 월 평균으로 근사 — 근무 일정을 등록하면 정확해집니다</div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -663,6 +808,9 @@ export default function PayrollPage() {
           </div>
 
           <p className="text-xs text-gray-400 mt-2 leading-relaxed">
+            * 아르바이트 <strong>근무시간</strong>은 휴게시간과 결근을 뺀 실근무시간입니다. 근무 일정이 등록된 직원은 계산기 아이콘으로 소정근로 기준 시간을 채울 수 있습니다.<br />
+            * <strong>결근</strong>은 시급분에서 다시 빼지 않습니다 (근무시간에 이미 반영). 그 주의 주휴수당이 발생하지 않는지만 가립니다 — 결근 1일당 1주치가 소멸합니다.
+            연차·유급휴일은 결근이 아니므로 넣지 마세요.<br />
             * 인센티브는 이번 달 확정 입금 실적으로 자동 산출됩니다. 금액을 클릭하면 수동으로 덮어쓸 수 있고, 0으로 저장하면 자동 계산으로 돌아갑니다.<br />
             * 여기 넣는 금액은 모두 <strong>세전</strong>입니다. 인센티브 3.3% 원천징수는 ② 확정 단계에서 소득세·지방소득세로 나눠 기록합니다.<br />
             * 대장을 내보내면 자동으로 <strong>세무사 확정 대기</strong> 상태로 넘어갑니다.
