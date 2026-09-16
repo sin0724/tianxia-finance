@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { toast } from '@/lib/toast'
-import { Plus, Pencil, Trash2, Link2, CheckCircle, FolderOpen, EyeOff, Search, ArrowUp, ArrowDown } from 'lucide-react'
+import { Plus, Pencil, Trash2, Link2, CheckCircle, FolderOpen, EyeOff, Search, ArrowUp, ArrowDown, Undo2 } from 'lucide-react'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -98,6 +98,12 @@ export default function PaymentsPage() {
   const [confirmAmount, setConfirmAmount] = useState('')
   const [confirmDate, setConfirmDate] = useState('')
   const [confirmProjectId, setConfirmProjectId] = useState('')
+
+  // 입금 되돌리기 다이얼로그 (입금 내역 → 수금 관리) — 입금완료로 잘못 올린 건 되돌리기
+  const [revertOpen, setRevertOpen] = useState(false)
+  const [revertTarget, setRevertTarget] = useState<PaymentWithRelations | null>(null)
+  const [revertStatus, setRevertStatus] = useState<'unpaid' | 'balance_due'>('unpaid')
+  const [revertBusy, setRevertBusy] = useState(false)
 
   // 수금 예정 추가/수정 다이얼로그 (공용 폼)
   const [pendingOpen, setPendingOpen] = useState(false)
@@ -289,6 +295,36 @@ export default function PaymentsPage() {
     setConfirmOpen(false)
     setConfirmTarget(null)
     load()
+  }
+
+  // ─── 입금 되돌리기 (입금 내역 → 수금 관리) ────────────
+  // 시트 I열까지 함께 바꿔야 해서 브라우저에서 status 만 고치지 않고 서버 라우트를 거친다.
+  // (시트에 '입금완료'가 남으면 다음 동기화가 다시 확정으로 덮어쓴다)
+  function openRevert(p: PaymentWithRelations) {
+    setRevertTarget(p)
+    setRevertStatus('unpaid')
+    setRevertOpen(true)
+  }
+
+  async function handleRevert() {
+    if (!revertTarget) return
+    setRevertBusy(true)
+    try {
+      const res = await fetch('/api/payments/revert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: revertTarget.id, status: revertStatus }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error ?? '되돌리기에 실패했습니다.'); return }
+      toast.success(data.message ?? '수금 예정으로 되돌렸습니다.')
+      if (data.warning) toast.warning(data.warning, { duration: 10000 })
+      setRevertOpen(false)
+      setRevertTarget(null)
+      load()
+    } finally {
+      setRevertBusy(false)
+    }
   }
 
   // ─── 수금 예정 추가/수정 ──────────────────────────────
@@ -550,6 +586,16 @@ export default function PaymentsPage() {
                         <Link2 size={14} />
                       </Button>
                     )}
+                    {!isRefundPayment(p) && (
+                      <Button
+                        size="sm" variant="ghost"
+                        className="text-gray-300 hover:text-yellow-600"
+                        title="입금 되돌리기 — 수금 예정(미입금·잔금)으로"
+                        onClick={() => openRevert(p)}
+                      >
+                        <Undo2 size={14} />
+                      </Button>
+                    )}
                     <Button
                       size="sm" variant="ghost"
                       className={p.excluded ? 'text-orange-400' : 'text-gray-300 hover:text-orange-400'}
@@ -625,6 +671,16 @@ export default function PaymentsPage() {
                         {isUnmatchedPayment(p) && (
                           <Button size="sm" variant="ghost" className="text-blue-400" onClick={() => openMatch(p)}>
                             <Link2 size={14} />
+                          </Button>
+                        )}
+                        {!isRefundPayment(p) && (
+                          <Button
+                            size="sm" variant="ghost"
+                            className="text-gray-300 hover:text-yellow-600"
+                            title="입금 되돌리기 — 수금 예정(미입금·잔금)으로"
+                            onClick={() => openRevert(p)}
+                          >
+                            <Undo2 size={14} />
                           </Button>
                         )}
                         <Button
@@ -887,6 +943,50 @@ export default function PaymentsPage() {
             <Button variant="outline" onClick={() => { setConfirmOpen(false); setConfirmTarget(null) }}>취소</Button>
             <Button className="bg-green-600 hover:bg-green-700" onClick={handleConfirm}>
               <CheckCircle size={14} className="mr-1" />입금 확정
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ══════════ 입금 되돌리기 다이얼로그 (입금 확정의 반대) ══════════ */}
+      <Dialog open={revertOpen} onOpenChange={(v) => { setRevertOpen(v); if (!v) setRevertTarget(null) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>입금 되돌리기</DialogTitle></DialogHeader>
+          {revertTarget && (
+            <div className="space-y-3 py-2">
+              <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3 text-sm">
+                <p className="font-medium text-yellow-800">
+                  {revertTarget.projects?.clients?.name ?? revertTarget.client_name_raw ?? '(상호명 없음)'}
+                  <span className="ml-2 font-bold">{formatKRW(revertTarget.amount)}</span>
+                </p>
+                <p className="text-yellow-700 text-xs mt-0.5">
+                  {revertTarget.payment_date}
+                  {revertTarget.projects?.name ? ` · ${revertTarget.projects.name}` : ''}
+                  {revertTarget.manager ? ` · 담당 ${revertTarget.manager}` : ''}
+                </p>
+                <p className="text-yellow-600 text-xs mt-1.5">
+                  입금완료로 잘못 등록된 건을 수금 예정으로 되돌립니다.
+                  수금 관리 탭으로 옮겨지고 프로젝트 입금액·대시보드 집계에서 빠집니다.
+                  {revertTarget.external_id?.startsWith('tx_') && ' 구글 시트의 입금상태도 함께 바뀝니다.'}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <Label>바꿀 상태 *</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm"
+                  value={revertStatus}
+                  onChange={(e) => setRevertStatus(e.target.value as 'unpaid' | 'balance_due')}
+                >
+                  <option value="unpaid">🔴 미입금</option>
+                  <option value="balance_due">⚠ 잔금 처리 요망</option>
+                </select>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setRevertOpen(false); setRevertTarget(null) }}>취소</Button>
+            <Button className="bg-yellow-600 hover:bg-yellow-700 text-white" onClick={handleRevert} disabled={revertBusy}>
+              <Undo2 size={14} className="mr-1" />{revertBusy ? '처리 중...' : '되돌리기'}
             </Button>
           </DialogFooter>
         </DialogContent>

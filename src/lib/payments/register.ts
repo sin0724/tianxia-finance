@@ -50,6 +50,8 @@ export type RegisterResult = {
   warning?: string
   projectCreated?: boolean
   sheetRow?: number
+  /** 저장된 payments.id — Slack 안내 메시지의 "되돌리기" 버튼이 이 ID 를 들고 있다 */
+  paymentId?: string
 }
 
 const toDbStatus = (s: PaymentStatus): 'confirmed' | 'balance_due' | 'unpaid' =>
@@ -194,7 +196,7 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
   // ── 3) 결제 저장 ────────────────────────────────────────────────
   const paymentType = status === '잔금처리요망' ? '잔금' : status === '미입금' ? '기타' : null
 
-  const { error: insertErr } = await admin.from('payments').insert({
+  const { data: inserted, error: insertErr } = await admin.from('payments').insert({
     project_id: project?.id ?? null,
     amount,
     payment_date: date,
@@ -207,7 +209,7 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
     client_name_raw: clientName,
     matched: !!project,
     status: toDbStatus(status),
-  })
+  }).select('id').single()
 
   if (insertErr) {
     return { ok: false, message: `결제 저장 실패: ${insertErr.message}`, warning }
@@ -219,5 +221,6 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
     warning,
     projectCreated: project?.isNew ?? false,
     sheetRow,
+    paymentId: inserted?.id,
   }
 }

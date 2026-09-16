@@ -186,6 +186,38 @@ export async function appendSheetRow(row: {
   return { rowIndex, syncId }
 }
 
+/**
+ * 동기화 ID(M열)로 행을 찾아 I열(입금상태)만 바꾼다 — 입금 확정을 되돌릴 때 쓴다.
+ *
+ * 시트가 팀의 원장이라 DB만 고쳐서는 안 된다. 시트에 '입금완료'가 남아 있으면
+ * 다음 sync-sheets 가 미확정 건은 시트를 원본으로 보고 다시 confirmed 로 덮어쓴다.
+ * 행을 찾지 못하면 null — 호출한 쪽에서 손으로 고치라고 안내한다.
+ */
+export async function updateSheetStatusBySyncId(
+  syncId: string,
+  status: PaymentStatus,
+): Promise<{ rowIndex: number } | null> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(false)
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!${SYNC_ID_COLUMN}2:${SYNC_ID_COLUMN}`,
+  })
+  const ids = res.data.values ?? []
+  const offset = ids.findIndex((r) => String(r?.[0] ?? '').trim() === syncId)
+  if (offset < 0) return null
+
+  const rowIndex = offset + 2
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!I${rowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[status]] },
+  })
+
+  return { rowIndex }
+}
+
 /** I열 드롭다운 값을 입금 상태로 정규화 */
 function normalizeStatus(raw: string): PaymentStatus {
   if (/미입금/.test(raw)) return '미입금'

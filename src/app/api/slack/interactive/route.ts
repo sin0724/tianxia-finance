@@ -1,7 +1,7 @@
 /**
  * Slack 인터랙티브 컴포넌트 수신
- *   - block_actions   : 연차 승인/반려 버튼
- *   - view_submission : `/결제` 모달 제출
+ *   - block_actions   : 연차 승인/반려 버튼, 결제 "되돌리기" 버튼
+ *   - view_submission : `/결제` 모달 제출, 입금 되돌리기 모달 제출
  *
  * Slack App 설정 → Interactivity & Shortcuts → Request URL:
  *   https://your-domain/api/slack/interactive
@@ -13,15 +13,24 @@
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
-import { verifySlackRequest, postSlackMessage, dmSlackUser } from '@/lib/slack'
+import {
+  verifySlackRequest, postSlackMessage, dmSlackUser, openSlackModal, updateSlackMessage,
+  type SlackBlock,
+} from '@/lib/slack'
 import { reviewLeaveRequest } from '@/lib/leave/review'
 import { applyForLeave } from '@/lib/leave/apply'
 import {
   LEAVE_MODAL_CALLBACK, LEAVE_CANCEL_CALLBACK, LEAVE_FIELD,
   readLeaveSubmission, readCancelSubmission,
 } from '@/lib/leave/modal'
-import { PAYMENT_MODAL_CALLBACK, FIELD, readSubmission } from '@/lib/payments/modal'
+import {
+  PAYMENT_MODAL_CALLBACK, PAYMENT_REVERT_CALLBACK, PAYMENT_REVERT_BUTTON, FIELD, REVERT_FIELD,
+  readSubmission, readRevertSubmission, buildRevertModal, revertButtonBlock,
+} from '@/lib/payments/modal'
 import { registerPayment, formatKRW } from '@/lib/payments/register'
+import {
+  revertPaymentConfirmation, fetchConfirmedPayment, isRevertStatus, REVERT_STATUS_LABEL,
+} from '@/lib/payments/revert'
 
 const admin = createAdminClient()
 
@@ -30,8 +39,12 @@ type SlackUser = { id?: string; name?: string; username?: string }
 type InteractivePayload = {
   type: string
   user?: SlackUser
+  trigger_id?: string
   actions?: { action_id?: string; value?: string }[]
   response_url?: string
+  /** block_actions — 버튼이 붙어 있던 메시지. 되돌린 뒤 이 메시지를 갱신한다 */
+  channel?: { id?: string }
+  message?: { ts?: string; text?: string; blocks?: { type?: string; text?: { text?: string } }[] }
   view?: {
     callback_id?: string
     private_metadata?: string
@@ -54,9 +67,9 @@ async function replyEphemeral(responseUrl: string | undefined, text: string) {
 }
 
 /** 결과를 커맨드를 친 채널에 올리고, 실패하면 신청자 DM 으로 대신 보낸다 */
-async function announce(channelId: string, userId: string, text: string) {
-  const posted = channelId ? await postSlackMessage(channelId, text) : null
-  if (!posted && userId) await dmSlackUser(userId, text)
+async function announce(channelId: string, userId: string, text: string, blocks?: SlackBlock[]) {
+  const posted = channelId ? await postSlackMessage(channelId, text, blocks) : null
+  if (!posted && userId) await postSlackMessage(userId, text, blocks) // 사용자 ID 를 채널 자리에 넣으면 DM
 }
 
 export async function POST(request: Request) {
@@ -77,13 +90,17 @@ export async function POST(request: Request) {
 
   if (payload.type === 'view_submission') {
     switch (payload.view?.callback_id) {
-      case PAYMENT_MODAL_CALLBACK: return handlePaymentSubmission(payload)
-      case LEAVE_MODAL_CALLBACK:   return handleLeaveSubmission(payload)
-      case LEAVE_CANCEL_CALLBACK:  return handleLeaveCancel(payload)
+      case PAYMENT_MODAL_CALLBACK:  return handlePaymentSubmission(payload)
+      case PAYMENT_REVERT_CALLBACK: return handleRevertSubmission(payload)
+      case LEAVE_MODAL_CALLBACK:    return handleLeaveSubmission(payload)
+      case LEAVE_CANCEL_CALLBACK:   return handleLeaveCancel(payload)
       default: return new Response('', { status: 200 })
     }
   }
-  if (payload.type === 'block_actions') return handleLeaveButton(payload)
+  if (payload.type === 'block_actions') {
+    if (payload.actions?.[0]?.action_id === PAYMENT_REVERT_BUTTON) return handleRevertButton(payload)
+    return handleLeaveButton(payload)
+  }
 
   return new Response('', { status: 200 })
 }
@@ -248,7 +265,7 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
         input.status === '미입금' ? '🔴' :
         input.status === '추가계약' ? '🔁' : '✅'
 
-      await announce(channelId, userId, [
+      const text = [
         `${emoji} *결제 등록 완료*${userName ? ` — @${userName}` : ''}`,
         `> 날짜: ${input.date}`,
         `> 상호명: *${input.clientName}*`,
@@ -260,7 +277,20 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
         input.memo ? `> 특이사항: ${input.memo}` : '',
         result.sheetRow ? `> 시트 ${result.sheetRow}행에 기재됨` : '',
         result.warning ? `\n⚠️ ${result.warning}` : '',
-      ].filter(Boolean).join('\n'))
+      ].filter(Boolean).join('\n')
+
+      // 입금 확정(입금완료·추가계약)으로 올린 건에만 "되돌리기" 버튼 — 실수로 체크했을 때 바로 수금 예정으로 돌릴 수 있게.
+      // 미입금·잔금은 웹의 수금 관리 탭에서 "입금 확정"으로 처리하는 반대 방향이라 버튼이 없다.
+      const isConfirmed = input.status === '입금완료' || input.status === '추가계약'
+      const blocks: SlackBlock[] | undefined =
+        isConfirmed && result.paymentId
+          ? [
+              { type: 'section', text: { type: 'mrkdwn', text } },
+              revertButtonBlock(result.paymentId),
+            ]
+          : undefined
+
+      await announce(channelId, userId, text, blocks)
     } catch (e) {
       console.error('[slack] 결제 등록 처리 실패:', e)
       await announce(
@@ -271,6 +301,112 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
   })()
 
   // 빈 200 → 모달이 닫힌다
+  return new Response('', { status: 200 })
+}
+
+// ─────────────────────────────────────────────────────────────
+// 결제 등록 메시지의 "입금 상태 되돌리기" 버튼 → 확인 모달
+// ─────────────────────────────────────────────────────────────
+async function handleRevertButton(payload: InteractivePayload) {
+  const paymentId = payload.actions?.[0]?.value ?? ''
+  const triggerId = payload.trigger_id ?? ''
+  const channelId = payload.channel?.id ?? ''
+  const messageTs = payload.message?.ts
+  // 등록 메시지 본문 — 되돌린 뒤 버튼만 떼고 내용은 그대로 남기기 위해 모달 메타로 넘긴다
+  const messageText = payload.message?.blocks?.find((b) => b.type === 'section')?.text?.text
+    ?? payload.message?.text
+
+  if (!paymentId || !triggerId) {
+    await replyEphemeral(payload.response_url, '❌ 결제 정보를 읽을 수 없습니다. `/결제 취소` 로 목록에서 골라주세요.')
+    return new Response('', { status: 200 })
+  }
+
+  // 버튼이 눌린 건 하나만 모달에 보여준다 — 다른 건과 헷갈려 잘못 되돌리는 일이 없게
+  const target = await fetchConfirmedPayment(admin, paymentId)
+  if (!target) {
+    await replyEphemeral(payload.response_url, 'ℹ️ 이 건은 이미 수금 예정으로 바뀌었거나 삭제되었습니다. 결제 내역 화면에서 확인해주세요.')
+    return new Response('', { status: 200 })
+  }
+
+  const opened = await openSlackModal(
+    triggerId,
+    buildRevertModal({ target, channelId, userId: payload.user?.id ?? '', messageTs, messageText }),
+  )
+  if (!opened.ok) {
+    await replyEphemeral(payload.response_url, `❌ 되돌리기 창을 열지 못했습니다 (${opened.error}). \`/결제 취소\` 로 다시 시도해주세요.`)
+  }
+  return new Response('', { status: 200 })
+}
+
+// ─────────────────────────────────────────────────────────────
+// 입금 되돌리기 모달 제출 — 버튼·`/결제 취소` 공통
+// ─────────────────────────────────────────────────────────────
+async function handleRevertSubmission(payload: InteractivePayload) {
+  const values = (payload.view?.state?.values ?? {}) as Parameters<typeof readRevertSubmission>[0]
+  const input = readRevertSubmission(values)
+
+  let meta: { channelId?: string; userId?: string; messageTs?: string; messageText?: string; paymentId?: string } = {}
+  try {
+    meta = JSON.parse(payload.view?.private_metadata ?? '{}')
+  } catch { /* 메타 없으면 DM 으로 떨어진다 */ }
+
+  // 버튼에서 열렸으면 메타에, 목록에서 골랐으면 select 값에 ID 가 있다
+  const paymentId = meta.paymentId || input.paymentId
+  if (!paymentId) {
+    return Response.json({ response_action: 'errors', errors: { [REVERT_FIELD.target]: '되돌릴 결제를 선택해주세요.' } })
+  }
+  const status = input.status
+  if (!isRevertStatus(status)) {
+    return Response.json({ response_action: 'errors', errors: { [REVERT_FIELD.status]: '상태를 선택해주세요.' } })
+  }
+
+  const channelId = meta.channelId ?? ''
+  const userId = meta.userId ?? payload.user?.id ?? ''
+  const userName = payload.user?.name ?? payload.user?.username ?? ''
+
+  // 시트 검색·수정이 3초를 넘길 수 있어 모달은 먼저 닫고 이어서 처리한다 (등록과 같은 이유)
+  void (async () => {
+    try {
+      const result = await revertPaymentConfirmation(admin, { paymentId, status })
+
+      if (!result.ok) {
+        await announce(channelId, userId, `❌ 입금 되돌리기 실패 — ${result.message}`)
+        return
+      }
+
+      const p = result.payment
+      const label = REVERT_STATUS_LABEL[status]
+      const text = [
+        `↩️ *입금 상태 되돌림*${userName ? ` — @${userName}` : ''}`,
+        `> 상호명: *${p.clientName}*`,
+        `> 금액: *${formatKRW(p.amount)}*`,
+        `> 날짜: ${p.paymentDate}${p.manager ? ` · 담당자: ${p.manager}` : ''}`,
+        p.projectName ? `> 프로젝트: ${p.projectName}` : '',
+        `> 입금완료 → *${label}* — 결제 내역의 수금 관리 탭으로 옮겨졌고 프로젝트 입금액에서 빠졌습니다.`,
+        result.sheetRow ? `> 시트 ${result.sheetRow}행 입금상태도 바꿨습니다` : '',
+        result.warning ? `\n⚠️ ${result.warning}` : '',
+      ].filter(Boolean).join('\n')
+
+      await announce(channelId, userId, text)
+
+      // 원래 "결제 등록 완료" 메시지에서 버튼을 떼고 되돌린 흔적을 남긴다 — 두 번 눌리지 않게
+      if (channelId && meta.messageTs) {
+        const body = meta.messageText || `결제 등록 — ${p.clientName} ${formatKRW(p.amount)}`
+        const note = `↩️ *${label}* 으로 되돌려짐${userName ? ` — @${userName}` : ''}`
+        await updateSlackMessage(channelId, meta.messageTs, `${body}\n${note}`, [
+          { type: 'section', text: { type: 'mrkdwn', text: body } },
+          { type: 'context', elements: [{ type: 'mrkdwn', text: note }] },
+        ])
+      }
+    } catch (e) {
+      console.error('[slack] 입금 되돌리기 처리 실패:', e)
+      await announce(
+        channelId, userId,
+        `❌ 입금 되돌리기 중 오류가 발생했습니다: ${e instanceof Error ? e.message : '알 수 없는 오류'}`,
+      )
+    }
+  })()
+
   return new Response('', { status: 200 })
 }
 
