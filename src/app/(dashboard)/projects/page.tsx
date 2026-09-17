@@ -26,7 +26,8 @@ import type { Project, Client, Product, ProjectItem } from '@/types/database'
 
 type ProjectWithRelations = Project & {
   clients: { name: string } | null
-  paid_amount: number
+  paid_amount: number       // 확정 입금 순액 (환불 포함)
+  refund_amount: number     // 그중 환불 합계 (음수) — 계약금액이 왜 줄었는지 보여주기 위함
   pending_amount: number
   item_count: number
   total_list_price: number  // 구성 상품 정가 합계
@@ -92,6 +93,7 @@ export default function ProjectsPage() {
       .not('project_id', 'is', null)
 
     const paidMap: Record<string, number> = {}
+    const refundMap: Record<string, number> = {}
     const pendingMap: Record<string, number> = {}
     for (const p of paymentData ?? []) {
       if (!p.project_id) continue
@@ -100,6 +102,8 @@ export default function ProjectsPage() {
         pendingMap[p.project_id] = (pendingMap[p.project_id] ?? 0) + p.amount
       } else {
         paidMap[p.project_id] = (paidMap[p.project_id] ?? 0) + p.amount
+        // 환불(음수)은 계약금액에서도 차감돼 있다 (020 트리거) — 행에 따로 표시
+        if (p.amount < 0) refundMap[p.project_id] = (refundMap[p.project_id] ?? 0) + p.amount
       }
     }
 
@@ -120,6 +124,7 @@ export default function ProjectsPage() {
     const merged = (projectData as unknown as (Project & { clients: { name: string } | null })[])?.map((p) => ({
       ...p,
       paid_amount: paidMap[p.id] ?? 0,
+      refund_amount: refundMap[p.id] ?? 0,
       pending_amount: pendingMap[p.id] ?? 0,
       item_count: itemCountMap[p.id] ?? 0,
       total_list_price: listPriceMap[p.id] ?? 0,
@@ -492,6 +497,11 @@ export default function ProjectsPage() {
                     <span className={p.paid_amount > 0 ? 'text-green-600' : 'text-gray-300'}>
                       {p.paid_amount > 0 ? formatKRW(p.paid_amount) : '-'}
                     </span>
+                    {p.refund_amount < 0 && (
+                      <div className="text-xs text-red-500 font-normal mt-0.5">
+                        환불 {formatKRW(p.refund_amount)}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="text-right">
                     {p.pending_amount > 0

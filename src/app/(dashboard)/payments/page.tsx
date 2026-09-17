@@ -77,12 +77,14 @@ export default function PaymentsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Payment | null>(null)
   const {
-    register, handleSubmit, control, reset,
+    register, handleSubmit, control, reset, watch,
     formState: { errors, isSubmitting },
   } = useForm<PaymentFormValues>({
     resolver: zodResolver(paymentFormSchema),
     defaultValues: emptyPaymentForm,
   })
+  // 음수 금액 = 환불 — 폼 안내 문구를 바꾸기 위해 지켜본다
+  const isRefundInput = Number(watch('amount')) < 0
 
   // 프로젝트 연결 다이얼로그
   const [matchOpen, setMatchOpen] = useState(false)
@@ -215,8 +217,25 @@ export default function PaymentsPage() {
         p_status: 'confirmed',
       })
       if (error) { toast.error(error.message); return }
-      const result = data as { project_id: string | null; created_project: boolean } | null
-      if (result?.created_project) toast.success('결제가 추가되었습니다. (프로젝트 자동 생성)')
+      const result = data as {
+        project_id: string | null
+        created_project: boolean
+        refund: boolean
+        project_name: string | null
+        project_total: number | null
+        project_status: Project['status'] | null
+      } | null
+      if (result?.refund) {
+        // 환불 — DB 트리거가 연결 프로젝트의 계약금액을 차감한다 (020 마이그레이션)
+        if (!result.project_id) {
+          toast.warning('환불이 등록되었습니다. 연결할 프로젝트를 찾지 못했으니 목록에서 직접 연결해주세요.', { duration: 8000 })
+        } else if (result.project_status === 'cancelled') {
+          toast.success(`환불 등록 — 전액 환불로 "${result.project_name}" 프로젝트를 취소 처리했습니다.`, { duration: 6000 })
+        } else {
+          toast.success(`환불 등록 — "${result.project_name}" 계약금액을 ${formatKRW(result.project_total ?? 0)}으로 조정했습니다.`, { duration: 6000 })
+        }
+      }
+      else if (result?.created_project) toast.success('결제가 추가되었습니다. (프로젝트 자동 생성)')
       else if (result?.project_id) toast.success('결제가 추가되었습니다.')
       else toast.success('결제가 추가되었습니다. (프로젝트 연결 필요)')
     }
@@ -257,7 +276,9 @@ export default function PaymentsPage() {
       })
       .eq('id', matchTarget.id)
     if (error) { toast.error('연결 실패: ' + error.message); return }
-    toast.success('프로젝트가 연결되었습니다.')
+    // 환불을 연결하면 DB 트리거가 그 프로젝트의 계약금액을 차감한다
+    if (isRefundPayment(matchTarget) && matchProjectId) toast.success('프로젝트가 연결되었습니다. 환불액만큼 계약금액이 차감됩니다.')
+    else toast.success('프로젝트가 연결되었습니다.')
     setMatchOpen(false)
     setMatchTarget(null)
     load()
@@ -822,15 +843,25 @@ export default function PaymentsPage() {
                 )}
               />
               {errors.amount && <p className="text-xs text-red-500">{errors.amount.message}</p>}
+              {isRefundInput && !editing && (
+                <div className="rounded-md bg-red-50 border border-red-200 p-2.5 text-xs text-red-700 space-y-0.5">
+                  <p className="font-medium">환불 건으로 등록됩니다.</p>
+                  <p>연결된 프로젝트의 계약금액에서 환불액이 차감되고, 받은 돈이 전부 돌아가면 프로젝트가 취소 처리됩니다.</p>
+                  <p>프로젝트를 고르지 않으면 상호명의 프로젝트 중 입금이 있는 가장 최근 건에 연결됩니다. 새 프로젝트는 만들지 않습니다.</p>
+                </div>
+              )}
             </div>
             <div className="space-y-1">
               <Label>상호명</Label>
-              <Input placeholder="입력 시 클라이언트·프로젝트 자동 생성" {...register('client_name')} />
+              <Input
+                placeholder={isRefundInput ? '기존 클라이언트 상호명 (환불은 새로 만들지 않음)' : '입력 시 클라이언트·프로젝트 자동 생성'}
+                {...register('client_name')}
+              />
             </div>
             <div className="space-y-1">
               <Label>프로젝트 연결</Label>
               <select className="w-full border rounded-md px-3 py-2 text-sm" {...register('project_id')}>
-                <option value="">연결 안함 (상호명 입력 시 자동 연결)</option>
+                <option value="">{isRefundInput ? '연결 안함 (상호명의 최근 입금 프로젝트에 자동 연결)' : '연결 안함 (상호명 입력 시 자동 연결)'}</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
