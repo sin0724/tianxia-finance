@@ -183,7 +183,67 @@ export async function appendSheetRow(row: {
 
   await writeBackSyncIds([{ rowIndex, syncId }])
 
+  // 미리 깔아둔 드롭다운 행이 바닥나면 새 행에 입금상태·계산서 드롭다운이 없다 — 위 행에서 복사해 온다.
+  // 드롭다운은 부가 기능이라 실패해도 결제 등록 자체는 성공으로 둔다.
+  try {
+    await ensureDropdowns(rowIndex, rowIndex)
+  } catch (err) {
+    console.error('[appendSheetRow] 드롭다운 복사 실패:', err)
+  }
+
   return { rowIndex, syncId }
+}
+
+/** 드롭다운을 유지해야 하는 열 — I(입금상태)·J(계산서) */
+const DROPDOWN_COLUMNS = ['I', 'J'] as const
+
+/**
+ * fromRow~toRow 의 I·J열에 드롭다운이 없으면, 그 위에서 드롭다운이 있는 가장 가까운 행의 것을 복사한다.
+ * 목록을 코드에 박지 않고 시트에서 복사하므로 팀이 시트에서 선택지·색을 바꿔도 그대로 따라간다.
+ * 셀 값은 건드리지 않는다 (PASTE_DATA_VALIDATION).
+ */
+export async function ensureDropdowns(fromRow: number, toRow: number): Promise<void> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(false)
+  const scanFrom = Math.max(2, fromRow - 200)
+
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId: sheetId,
+    ranges: [`${sheetName}!I${scanFrom}:J${toRow}`],
+    includeGridData: true,
+    fields: 'sheets(properties(sheetId),data(startRow,rowData.values.dataValidation))',
+  })
+  const sheet = res.data.sheets?.[0]
+  const gid = sheet?.properties?.sheetId
+  const grid = sheet?.data?.[0]
+  if (gid == null || !grid) return
+
+  const startRow = (grid.startRow ?? scanFrom - 1) + 1 // 1-based
+  const rowData = grid.rowData ?? []
+  const hasDv = (row: number, col: number) => !!rowData[row - startRow]?.values?.[col]?.dataValidation
+
+  const requests: sheets_v4.Schema$Request[] = []
+  DROPDOWN_COLUMNS.forEach((letter, col) => {
+    const colIndex = letter.charCodeAt(0) - 'A'.charCodeAt(0)
+    let source = -1
+    for (let r = fromRow - 1; r >= startRow; r--) {
+      if (hasDv(r, col)) { source = r; break }
+    }
+    if (source < 0) return
+
+    for (let r = fromRow; r <= toRow; r++) {
+      if (hasDv(r, col)) continue
+      requests.push({
+        copyPaste: {
+          source: { sheetId: gid, startRowIndex: source - 1, endRowIndex: source, startColumnIndex: colIndex, endColumnIndex: colIndex + 1 },
+          destination: { sheetId: gid, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: colIndex, endColumnIndex: colIndex + 1 },
+          pasteType: 'PASTE_DATA_VALIDATION',
+        },
+      })
+    }
+  })
+
+  if (requests.length === 0) return
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetId, requestBody: { requests } })
 }
 
 /**
