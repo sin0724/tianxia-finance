@@ -215,10 +215,14 @@ async function computeBothSettlements(year: number, month: number) {
   }
   const vatRate = settings.vat_rate ?? 0.1
 
+  // 재직 기간에 걸친 달만 인센티브 대상 — 입사 전 달은 빼고(입사일 미입력은 대상), 퇴사자는 퇴사한 달까지 넣는다
+  const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
+  const monthEnd = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
   const { data: employees } = await supabase
     .from('employees')
     .select('id, name, incentive_type, incentive_value')
-    .eq('active', true)
+    .or(`hired_at.is.null,hired_at.lte.${monthEnd}`)
+    .or(`active.eq.true,terminated_at.gte.${monthStart}`)
 
   const { data: manualIncentives } = await supabase
     .from('monthly_incentives')

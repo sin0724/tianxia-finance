@@ -23,6 +23,14 @@ const BREAK_PRESETS = [0, 30, 60, 90] as const
 
 const fmtHours = (h: number) => `${Math.round(h * 100) / 100}h`
 
+type TypeFilter = 'all' | 'full_time' | 'part_time'
+const TYPE_FILTERS: { key: TypeFilter; label: string }[] = [
+  { key: 'all', label: '전체' },
+  { key: 'full_time', label: '정직원' },
+  { key: 'part_time', label: '아르바이트' },
+]
+const typeOf = (e: Employee) => e.employee_type ?? 'full_time'
+
 function scheduleOf(e: Employee) {
   return {
     days: e.work_days,
@@ -71,6 +79,7 @@ export default function EmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [retired, setRetired] = useState<Employee[]>([])
   const [showRetired, setShowRetired] = useState(false)
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Employee | null>(null)
@@ -93,7 +102,12 @@ export default function EmployeesPage() {
 
   function openAdd() {
     setEditing(null)
-    setForm({ ...emptyForm, sort_order: String(employees.length + 1) })
+    setForm({
+      ...emptyForm,
+      // 아르바이트 탭에서 추가하면 구분도 아르바이트로 시작한다
+      employee_type: typeFilter === 'part_time' ? 'part_time' : 'full_time',
+      sort_order: String(employees.length + 1),
+    })
     setDialogOpen(true)
   }
 
@@ -232,6 +246,11 @@ export default function EmployeesPage() {
     )
   }
 
+  const matchesType = (e: Employee) => typeFilter === 'all' || typeOf(e) === typeFilter
+  const visibleEmployees = employees.filter(matchesType)
+  const visibleRetired = retired.filter(matchesType)
+  const countOf = (key: TypeFilter) => key === 'all' ? employees.length : employees.filter((e) => typeOf(e) === key).length
+
   // ── 다이얼로그 미리보기 ──────────────────────────────────────
   // 저장 전에 휴게시간이 하루 소정근로시간을 얼마로 만드는지, 포괄시급이 최저임금을
   // 지키는지 그 자리에서 보여준다.
@@ -269,13 +288,31 @@ export default function EmployeesPage() {
         </div>
       </div>
 
+      {/* 정직원 / 아르바이트 구분 */}
+      <div className="flex items-center gap-1 overflow-x-auto">
+        {TYPE_FILTERS.map(({ key, label }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTypeFilter(key)}
+            className={`shrink-0 h-8 px-3 rounded-full border text-sm font-medium transition-colors ${
+              typeFilter === key
+                ? 'bg-gray-900 border-gray-900 text-white'
+                : 'bg-white border-gray-200 text-gray-500 hover:border-gray-300'
+            }`}
+          >
+            {label} <span className={typeFilter === key ? 'text-gray-300' : 'text-gray-400'}>{countOf(key)}</span>
+          </button>
+        ))}
+      </div>
+
       {/* 모바일 카드 */}
       <div className="md:hidden space-y-2">
         {loading ? (
           <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">불러오는 중...</div>
-        ) : employees.length === 0 ? (
+        ) : visibleEmployees.length === 0 ? (
           <div className="bg-white rounded-lg border text-center py-8 text-gray-400 text-sm">등록된 직원이 없습니다.</div>
-        ) : employees.map((e) => (
+        ) : visibleEmployees.map((e) => (
           <div key={e.id} className="bg-white rounded-lg border p-4">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
@@ -348,30 +385,30 @@ export default function EmployeesPage() {
           <TableBody>
             {loading ? (
               <TableRow><TableCell colSpan={10} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
-            ) : employees.length === 0 ? (
+            ) : visibleEmployees.length === 0 ? (
               <TableRow><TableCell colSpan={10} className="text-center py-8 text-gray-400">등록된 직원이 없습니다.</TableCell></TableRow>
-            ) : employees.map((e) => renderRow(e))}
+            ) : visibleEmployees.map((e) => renderRow(e))}
 
-            {showRetired && retired.length > 0 && (
+            {showRetired && visibleRetired.length > 0 && (
               <>
                 <TableRow>
                   <TableCell colSpan={10} className="bg-gray-50 py-1.5 px-3 text-xs text-gray-400 font-medium border-t">
                     퇴사 직원
                   </TableCell>
                 </TableRow>
-                {retired.map((e) => renderRow(e, true))}
+                {visibleRetired.map((e) => renderRow(e, true))}
               </>
             )}
           </TableBody>
         </Table>
       </div>
 
-      {retired.length > 0 && (
+      {visibleRetired.length > 0 && (
         <button
           onClick={() => setShowRetired((v) => !v)}
           className="text-xs text-gray-400 hover:text-gray-700 transition-colors"
         >
-          {showRetired ? '퇴사 직원 숨기기' : `퇴사 직원 ${retired.length}명 보기`}
+          {showRetired ? '퇴사 직원 숨기기' : `퇴사 직원 ${visibleRetired.length}명 보기`}
         </button>
       )}
 

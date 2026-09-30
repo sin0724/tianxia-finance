@@ -73,6 +73,23 @@ const WEEK_DAYS_LABEL = (e: Employee) => {
   return [days, time, rest].filter(Boolean).join(' · ')
 }
 
+/** 입사일이 이 달 말일보다 뒤면 아직 입사 전이라 급여 대상이 아니다 (입사일 미입력은 대상으로 본다) */
+const hiredBy = (e: Pick<Employee, 'hired_at'>, monthEnd: string) => !e.hired_at || e.hired_at <= monthEnd
+
+/** 퇴사자는 퇴사일이 이 달 1일 이후면 그 달까지 급여 대상이다 — 마지막 달 급여를 빠뜨리지 않도록 */
+const workedThrough = (e: Pick<Employee, 'active' | 'terminated_at'>, monthStart: string) =>
+  e.active || (!!e.terminated_at && e.terminated_at >= monthStart)
+
+/** 퇴사 배지 — 퇴사한 달의 급여는 일할 계산이 필요할 수 있어 눈에 띄게 표시한다 */
+function RetiredBadge({ emp }: { emp: Employee }) {
+  if (emp.active) return null
+  return (
+    <Badge variant="outline" className="text-xs py-0 text-red-500 border-red-200">
+      퇴사{emp.terminated_at ? ` ${emp.terminated_at.slice(5)}` : ''}
+    </Badge>
+  )
+}
+
 /** 근무 일정이 등록된 알바의 이 달 소정근로 — 없으면 null */
 const scheduleFor = (e: Employee, year: number, month: number): ResolvedSchedule | null =>
   e.employee_type === 'part_time'
@@ -101,6 +118,7 @@ export default function PayrollPage() {
   const [incentiveGross, setIncentiveGross] = useState<Record<string, number>>({})
   const [manualIds, setManualIds] = useState<Set<string>>(new Set())
   const [existingIds, setExistingIds] = useState<Set<string>>(new Set())
+  const [preHireRecords, setPreHireRecords] = useState<{ id: string; name: string; hired_at: string }[]>([])
   const [insuranceExpense, setInsuranceExpense] = useState<{ id: string; item_name: string | null; amount: number }[]>([])
 
   const [loading, setLoading] = useState(true)
@@ -128,7 +146,7 @@ export default function PayrollPage() {
       { data: cancelledProjects },
       { data: expenses },
     ] = await Promise.all([
-      supabase.from('employees').select('*').eq('active', true).order('sort_order', { nullsFirst: false }).order('name'),
+      supabase.from('employees').select('*').order('sort_order', { nullsFirst: false }).order('name'),
       supabase.from('monthly_payroll').select('*').eq('year', year).eq('month', month),
       supabase.from('monthly_incentives').select('*').eq('year', year).eq('month', month),
       supabase.from('payments').select('amount, manager, status, excluded, project_id').gte('payment_date', start).lte('payment_date', end),
@@ -137,8 +155,22 @@ export default function PayrollPage() {
       supabase.from('monthly_expenses').select('id, item_name, amount').eq('year', year).eq('month', month),
     ])
 
-    const empList = emps ?? []
+    // 재직 기간에 걸친 달만 급여 대상이다 — 입사 전 달은 빼고, 퇴사자는 퇴사한 달까지 넣는다.
+    // 이미 저장된 기록이 있는 퇴사자는 퇴사일이 비어 있어도 보여준다 (숨기면 집계에만 남는다).
+    const savedIds = new Set((payroll ?? []).map((p) => p.employee_id))
+    const empList = (emps ?? []).filter(
+      (e) => hiredBy(e, end) && (workedThrough(e, start) || savedIds.has(e.id))
+    )
     setEmployees(empList)
+
+    // 입사일을 나중에 입력했거나 고친 경우, 입사 전 달에 이미 저장된 급여 기록이 남아 있을 수 있다
+    const preHire = (emps ?? []).filter((e) => !hiredBy(e, end))
+    setPreHireRecords(
+      (payroll ?? []).flatMap((p) => {
+        const e = preHire.find((x) => x.id === p.employee_id)
+        return e ? [{ id: p.id, name: e.name, hired_at: e.hired_at as string }] : []
+      })
+    )
 
     // 4대보험 이중계상 감지 — 급여 화면에서 집계하므로 지출 항목에 또 있으면 안 된다
     setInsuranceExpense(
@@ -446,6 +478,15 @@ export default function PayrollPage() {
     }
   }
 
+  // ── 입사 전 달 급여 기록 정리 ───────────────────────────────
+  async function clearPreHireRecords() {
+    const ids = preHireRecords.map((r) => r.id)
+    const { error } = await supabase.from('monthly_payroll').delete().in('id', ids)
+    if (error) { toast.error('정리 실패: ' + error.message); return }
+    toast.success(`${month}월에 잘못 잡힌 입사 전 급여 기록 ${ids.length}건을 삭제했습니다.`)
+    await load()
+  }
+
   // ── 4대보험 지출 항목 정리 ──────────────────────────────────
   async function clearInsuranceExpense() {
     const ids = insuranceExpense.map((e) => e.id)
@@ -536,6 +577,25 @@ export default function PayrollPage() {
         </Card>
       </div>
 
+      {/* 입사 전 달 급여 기록 경고 */}
+      {preHireRecords.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+            <div className="text-sm text-amber-900 space-y-1.5 min-w-0">
+              <p className="font-medium">입사 전인 직원의 급여 기록이 {month}월에 저장되어 있습니다.</p>
+              <p className="text-xs leading-relaxed">
+                {preHireRecords.map((r) => `${r.name}(입사 ${r.hired_at})`).join(', ')} — 이 기록은 화면에는 보이지 않지만
+                {' '}{month}월 인건비·영업이익 집계에 포함됩니다.
+              </p>
+              <Button size="sm" variant="outline" className="h-7 text-xs border-amber-400" onClick={clearPreHireRecords}>
+                입사 전 급여 기록 삭제
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 4대보험 이중계상 경고 */}
       {showDoubleCountWarning && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
@@ -611,6 +671,7 @@ export default function PayrollPage() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-medium text-gray-900">{r.emp.name}</span>
+                      <RetiredBadge emp={r.emp} />
                       {r.isPartTime && (
                         <Badge variant="secondary" className="text-xs py-0">{formatKRW(r.emp.hourly_wage ?? 0)}/h</Badge>
                       )}
@@ -853,6 +914,7 @@ export default function PayrollPage() {
                 <div key={r.emp.id} className={`px-4 py-3 space-y-2 md:space-y-0 ${GRID_CONFIRM} md:items-center`}>
                   <div className="min-w-0">
                     <span className="font-medium text-gray-900">{r.emp.name}</span>
+                    <RetiredBadge emp={r.emp} />
                     {r.incentive > 0 && (
                       <div className="text-xs text-gray-400 mt-0.5">기본급 + 인센티브 (2줄)</div>
                     )}
@@ -986,6 +1048,7 @@ export default function PayrollPage() {
                 <div key={r.emp.id} className={`px-4 py-3 space-y-2 md:space-y-0 ${GRID_PAY} md:items-center`}>
                   <div className="flex items-center gap-1.5">
                     <span className="font-medium text-gray-900">{r.emp.name}</span>
+                    <RetiredBadge emp={r.emp} />
                     {r.form.status === 'paid' && <Check size={13} className="text-green-500" />}
                   </div>
                   <Cell label="차인지급액" className="md:text-right">
