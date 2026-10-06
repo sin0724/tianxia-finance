@@ -7,7 +7,8 @@
  * 사용법:
  *   /연차              신청 창 열기 (맨 위에 내 잔여 연차가 보인다)
  *   /연차 취소         취소할 휴가를 골라서 취소
- *   /연차 조회         잔여 연차를 글로 확인
+ *   /연차 조회         잔여 연차를 글로 확인 (= /연차현황)
+ *   /연차현황          내 연차 현황 정리 — 같은 Request URL 로 별도 커맨드 등록
  *   /연차 12/25        창을 안 거치고 바로 신청 (익숙한 사람용)
  *   /연차 도움말       사용법
  *
@@ -18,10 +19,10 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifySlackRequest, fetchSlackUserName, openSlackModal } from '@/lib/slack'
 import { parseLeaveCommand, formatRange } from '@/lib/leave/calc'
-import { getLeaveBalance } from '@/lib/leave/balance'
+import { getLeaveBalance, isLeaveEligible, type LeaveBalanceEmployee } from '@/lib/leave/balance'
 import { applyForLeave, fetchCancellableRequests } from '@/lib/leave/apply'
 import { buildLeaveModal, buildLeaveCancelModal } from '@/lib/leave/modal'
-import { LEAVE_TYPE_LABEL, todayISO } from '@/lib/leave/policy'
+import { DEDUCTING_TYPES, LEAVE_TYPE_LABEL, periodLabel, promotionDate, todayISO } from '@/lib/leave/policy'
 
 const admin = createAdminClient()
 
@@ -33,7 +34,7 @@ const HELP_TEXT = [
   '*연차 사용법*',
   '`/연차` — 신청 창 열기 (내 잔여 연차도 함께 보입니다)',
   '`/연차 취소` — 취소할 휴가 고르기',
-  '`/연차 조회` — 잔여 연차를 글로 확인',
+  '`/연차현황` — 내 연차 현황 정리 (발생·사용·잔여·사용 내역)',
   '',
   '*바로 신청하기 (창 없이)*',
   '`/연차 12/25` — 하루',
@@ -46,11 +47,97 @@ const HELP_TEXT = [
   '주말·공휴일은 자동으로 일수에서 빠집니다.',
 ].join('\n')
 
+const STATUS_MARK: Record<string, string> = {
+  pending: '⏳ 대기', approved: '✅ 승인', rejected: '❌ 반려', cancelled: '↩️ 취소',
+}
+
+/** `/연차현황` · `/연차 조회` 응답 — 본인에게만 보이는 연차 요약 */
+async function buildLeaveStatusText(employee: LeaveBalanceEmployee): Promise<string> {
+  const today = todayISO()
+  const title = `*${employee.name}님의 연차 현황* (${today} 기준)`
+
+  if (!isLeaveEligible(employee)) {
+    return [
+      title,
+      '> 아르바이트는 연차가 발생하지 않습니다.',
+      '> 쉬실 때는 `/연차` 에서 무급휴가·병가·특별휴가로 신청해주세요.',
+    ].join('\n')
+  }
+  if (!employee.hired_at) {
+    return '⚠️ 입사일이 등록되어 있지 않아 연차를 계산할 수 없습니다. 관리자에게 문의해주세요.'
+  }
+
+  const balance = await getLeaveBalance(admin, employee, today)
+  if (!balance.period) {
+    return `${title}\n> 입사일(${employee.hired_at}) 이전이라 아직 연차가 없습니다.`
+  }
+
+  // 이번 연차연도에 시작하는 신청 — 잔여 집계와 같은 기준(시작일이 속한 기간)으로 보여준다
+  const { data: requests } = await admin
+    .from('leave_requests')
+    .select('leave_type, start_date, end_date, days, status')
+    .eq('employee_id', employee.id)
+    .gte('start_date', balance.period.start)
+    .lte('start_date', balance.period.end)
+    .in('status', ['approved', 'pending'])
+    .order('start_date', { ascending: true })
+
+  const extras = [
+    balance.carriedOver ? `이월 ${balance.carriedOver}일` : '',
+    balance.adjustment ? `조정 ${balance.adjustment > 0 ? '+' : ''}${balance.adjustment}일` : '',
+  ].filter(Boolean)
+
+  const lines = [
+    title,
+    `> 남은 연차: *${balance.remaining}일*`,
+    `> 총 ${balance.total}일 = 발생 ${balance.granted}일${extras.length ? ` + ${extras.join(' + ')}` : ''}`,
+    `> 사용 ${balance.used}일${balance.pending > 0 ? ` · 승인대기 ${balance.pending}일` : ''}`,
+    `> 발생 근거: ${balance.basis}`,
+    `> 기준 기간: ${periodLabel(balance.period)}`,
+  ]
+  if (balance.nextAccrualAt) lines.push(`> 다음 연차 발생: ${balance.nextAccrualAt} (그달 개근 시 +1일)`)
+  if (balance.expiresAt && balance.remaining > 0) {
+    lines.push(`> ⚠️ 남은 연차는 *${balance.period.end}* 까지 사용하지 않으면 ${balance.expiresAt}에 소멸됩니다.`)
+  }
+
+  // 사용 촉진 일정 — 언제 안내가 오는지 미리 알 수 있게
+  const { data: promotions } = await admin
+    .from('leave_promotions')
+    .select('stage, notified_at, plan_submitted_at')
+    .eq('employee_id', employee.id)
+    .eq('period_start', balance.period.start)
+  const sentStage = (n: 1 | 2) => promotions?.find((p) => p.stage === n)
+  const promoLine = ([1, 2] as const).map((n) => {
+    const sent = sentStage(n)
+    return sent
+      ? `${n}차 ${sent.notified_at.slice(0, 10)} 안내됨`
+      : `${n}차 ${promotionDate(balance.period!, n)} 예정`
+  })
+  if (sentStage(1)) promoLine.push(sentStage(1)!.plan_submitted_at ? '사용 계획 제출함' : '사용 계획 미제출')
+  lines.push(`> 사용 촉진: ${promoLine.join(' · ')}`)
+
+  const rows = requests ?? []
+  const upcoming = rows.filter((r) => r.end_date >= today)
+  const past = rows.filter((r) => r.end_date < today)
+
+  const fmt = (r: (typeof rows)[number]) => {
+    const label = LEAVE_TYPE_LABEL[r.leave_type] ?? r.leave_type
+    const deducts = (DEDUCTING_TYPES as readonly string[]).includes(r.leave_type)
+    return `• ${formatRange(r.start_date, r.end_date)} ${label} ${r.days}일${deducts ? '' : ' (미차감)'} — ${STATUS_MARK[r.status] ?? r.status}`
+  }
+
+  if (upcoming.length > 0) lines.push('', '*예정된 휴가*', ...upcoming.map(fmt))
+  if (past.length > 0) lines.push('', '*이번 기간 사용 내역*', ...past.map(fmt))
+  if (rows.length === 0) lines.push('', '_이번 기간에 사용하거나 신청한 휴가가 없습니다._')
+
+  return lines.join('\n')
+}
+
 /** Slack 사용자를 직원과 연결. 미연결이면 이름이 같은 재직 직원에 자동 매핑한다. */
 async function resolveEmployee(slackUserId: string, slackUserName: string) {
   const { data: linked } = await admin
     .from('employees')
-    .select('id, name, hired_at, work_days, slack_user_id')
+    .select('id, name, hired_at, work_days, employee_type, slack_user_id')
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
 
@@ -63,7 +150,7 @@ async function resolveEmployee(slackUserId: string, slackUserName: string) {
   for (const name of candidates) {
     const { data: match } = await admin
       .from('employees')
-      .select('id, name, hired_at, work_days, slack_user_id')
+      .select('id, name, hired_at, work_days, employee_type, slack_user_id')
       .eq('active', true)
       .is('slack_user_id', null)
       .eq('name', name.trim())
@@ -91,7 +178,10 @@ export async function POST(request: Request) {
   const triggerId = params.get('trigger_id') ?? ''
   const channelId = params.get('channel_id') ?? ''
 
-  const parsed = parseLeaveCommand(text)
+  // `/연차현황` 은 같은 URL 로 등록한 별도 커맨드 — 인자 없이 본인 현황만 보여준다
+  const isStatusCommand = (params.get('command') ?? '').replace(/^\//, '') === '연차현황'
+
+  const parsed = isStatusCommand ? { kind: 'balance' as const } : parseLeaveCommand(text)
   if (parsed.kind === 'help') return ephemeral(HELP_TEXT)
   if (parsed.kind === 'error') return ephemeral(`❌ ${parsed.message}\n\n${HELP_TEXT}`)
 
@@ -118,7 +208,7 @@ export async function POST(request: Request) {
   }
 
   // ── 인자 없이 `/연차` — 신청 창 ─────────────────────────────────
-  if (text === '') {
+  if (text === '' && !isStatusCommand) {
     const balance = await getLeaveBalance(admin, employee)
     const opened = await openSlackModal(
       triggerId,
@@ -128,44 +218,8 @@ export async function POST(request: Request) {
     return new Response('', { status: 200 })
   }
 
-  // ── `/연차 조회` — 글로 확인 ────────────────────────────────────
-  if (parsed.kind === 'balance') {
-    if (!employee.hired_at) {
-      return ephemeral('⚠️ 입사일이 등록되어 있지 않아 연차를 계산할 수 없습니다. 관리자에게 문의해주세요.')
-    }
-
-    const [balance, { data: recent }] = await Promise.all([
-      getLeaveBalance(admin, employee),
-      admin
-        .from('leave_requests')
-        .select('leave_type, start_date, end_date, days, status')
-        .eq('employee_id', employee.id)
-        .order('start_date', { ascending: false })
-        .limit(5),
-    ])
-
-    const statusMark: Record<string, string> = {
-      pending: '⏳ 대기', approved: '✅ 승인', rejected: '❌ 반려', cancelled: '↩️ 취소',
-    }
-
-    const lines = [
-      `*${employee.name}님의 연차 현황*`,
-      `> 남은 연차: *${balance.remaining}일*`,
-      `> 발생 ${balance.total}일 · 사용 ${balance.used}일${balance.pending > 0 ? ` · 승인대기 ${balance.pending}일` : ''}`,
-    ]
-    if (balance.nextAccrualAt) lines.push(`> 다음 연차 발생: ${balance.nextAccrualAt} (+1일)`)
-    if (balance.period) lines.push(`> 기준 기간: ${balance.period.start} ~ ${balance.period.end}`)
-
-    if (recent && recent.length > 0) {
-      lines.push('', '*최근 신청 내역*')
-      for (const r of recent) {
-        const label = LEAVE_TYPE_LABEL[r.leave_type] ?? r.leave_type
-        lines.push(`• ${formatRange(r.start_date, r.end_date)} ${label} ${r.days}일 — ${statusMark[r.status] ?? r.status}`)
-      }
-    }
-
-    return ephemeral(lines.join('\n'))
-  }
+  // ── `/연차 조회` — 글로 확인 (`/연차현황` 과 같은 내용) ─────────────
+  if (parsed.kind === 'balance') return ephemeral(await buildLeaveStatusText(employee))
 
   // ── `/연차 12/25 …` — 창 없이 바로 신청 ─────────────────────────
   const result = await applyForLeave(admin, {

@@ -7,7 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { postSlackMessage } from '@/lib/slack'
 import { calcDays, formatRange, type LeaveType } from './calc'
-import { fetchHolidays, getLeaveBalance } from './balance'
+import { fetchHolidays, getLeaveBalance, isLeaveEligible } from './balance'
 import { DEDUCTING_TYPES, LEAVE_TYPE_LABEL } from './policy'
 
 type Admin = SupabaseClient<Database>
@@ -17,6 +17,7 @@ export type LeaveEmployee = {
   name: string
   hired_at: string | null
   work_days: string | null
+  employee_type: 'full_time' | 'part_time'
 }
 
 export type ApplyResult =
@@ -36,7 +37,19 @@ export async function applyForLeave(
 ): Promise<ApplyResult> {
   const { employee, leaveType, start, end, reason, via } = params
 
-  if (!employee.hired_at) {
+  const deducts = (DEDUCTING_TYPES as readonly string[]).includes(leaveType)
+
+  // 아르바이트는 연차가 발생하지 않는다 — 병가·무급·특별휴가만 신청할 수 있다
+  if (deducts && !isLeaveEligible(employee)) {
+    return {
+      ok: false,
+      field: 'balance',
+      text: '아르바이트는 연차·반차가 발생하지 않습니다. 쉬시려면 휴가 종류를 "무급휴가"로 선택해주세요.',
+    }
+  }
+
+  // 아르바이트는 잔여 계산이 필요 없으므로 입사일이 없어도 신청할 수 있다
+  if (!employee.hired_at && isLeaveEligible(employee)) {
     return { ok: false, text: '⚠️ 입사일이 등록되어 있지 않아 연차를 계산할 수 없습니다. 관리자에게 문의해주세요.' }
   }
 
@@ -77,7 +90,6 @@ export async function applyForLeave(
     }
   }
 
-  const deducts = (DEDUCTING_TYPES as readonly string[]).includes(leaveType)
   if (deducts && days > balance.remaining) {
     return {
       ok: false,
@@ -119,6 +131,7 @@ export async function applyForLeave(
     start, end, days, reason,
     remainingAfter,
     total: balance.total,
+    eligible: balance.eligible,
   })
 
   return {
@@ -144,7 +157,7 @@ async function postApprovalCard(
   p: {
     requestId: string; employeeName: string; typeLabel: string
     start: string; end: string; days: number; reason: string
-    remainingAfter: number; total: number
+    remainingAfter: number; total: number; eligible: boolean
   },
 ) {
   const channel = process.env.SLACK_LEAVE_CHANNEL
@@ -162,7 +175,9 @@ async function postApprovalCard(
           `> 신청자: *${p.employeeName}*`,
           `> 기간: ${formatRange(p.start, p.end)} — *${p.days}일*`,
           p.reason ? `> 사유: ${p.reason}` : null,
-          `> 신청 후 잔여: ${p.remainingAfter}일 / 총 ${p.total}일`,
+          p.eligible
+            ? `> 신청 후 잔여: ${p.remainingAfter}일 / 총 ${p.total}일`
+            : '> 아르바이트 — 연차 미발생 (연차에서 차감되지 않음)',
         ].filter(Boolean).join('\n'),
       },
     },

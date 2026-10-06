@@ -26,11 +26,22 @@ const plain = (text: string) => ({ type: 'plain_text', text, emoji: true })
 
 /** 신청 가능한 휴가 종류 — 반차는 오전/오후를 따로 고른다 */
 const TYPE_OPTIONS: LeaveType[] = ['annual', 'half_am', 'half_pm', 'sick', 'unpaid', 'special']
+/** 아르바이트는 연차가 없으므로 차감되지 않는 휴가만 고를 수 있다 */
+const PART_TIME_TYPE_OPTIONS: LeaveType[] = ['unpaid', 'sick', 'special']
 
 const typeOption = (t: LeaveType) => ({ text: plain(LEAVE_TYPE_LABEL[t]), value: t })
 
 /** 잔여 연차를 모달 맨 위에 보여준다 — 신청 전에 확인하려 커맨드를 두 번 치지 않게 */
 function balanceHeader(balance: LeaveBalance): SlackBlock[] {
+  if (!balance.eligible) {
+    return [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: '아르바이트는 연차가 발생하지 않습니다. 무급휴가·병가·특별휴가만 신청할 수 있습니다.' },
+      },
+      { type: 'divider' },
+    ]
+  }
   if (!balance.period) {
     return [{
       type: 'section',
@@ -42,7 +53,8 @@ function balanceHeader(balance: LeaveBalance): SlackBlock[] {
     `*남은 연차 ${balance.remaining}일* — 발생 ${balance.total}일 · 사용 ${balance.used}일` +
       (balance.pending > 0 ? ` · 승인대기 ${balance.pending}일` : ''),
   ]
-  if (balance.nextAccrualAt) lines.push(`다음 연차 발생: ${balance.nextAccrualAt} (+1일)`)
+  if (balance.nextAccrualAt) lines.push(`다음 연차 발생: ${balance.nextAccrualAt} (그달 개근 시 +1일)`)
+  if (balance.expiresAt && balance.remaining > 0) lines.push(`미사용 연차는 ${balance.expiresAt}에 소멸됩니다.`)
 
   return [
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
@@ -57,6 +69,7 @@ export function buildLeaveModal(params: {
   userId: string
 }): Record<string, unknown> {
   const { balance, today, channelId, userId } = params
+  const typeOptions = balance.eligible ? TYPE_OPTIONS : PART_TIME_TYPE_OPTIONS
 
   return {
     type: 'modal',
@@ -74,8 +87,8 @@ export function buildLeaveModal(params: {
         element: {
           type: 'static_select',
           action_id: ACTION,
-          initial_option: typeOption('annual'),
-          options: TYPE_OPTIONS.map(typeOption),
+          initial_option: typeOption(typeOptions[0]),
+          options: typeOptions.map(typeOption),
         },
       },
       {

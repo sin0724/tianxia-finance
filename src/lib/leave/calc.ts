@@ -150,7 +150,7 @@ export function parseLeaveCommand(text: string, today: string = todayISO()): Par
   if (!trimmed) return { kind: 'balance' }
   if (/^(도움말|help|\?)$/i.test(trimmed)) return { kind: 'help' }
   if (/^(취소|cancel)$/i.test(trimmed)) return { kind: 'cancel' }
-  if (/^(조회|잔여|남은|balance)$/i.test(trimmed)) return { kind: 'balance' }
+  if (/^(조회|잔여|남은|현황|balance)$/i.test(trimmed)) return { kind: 'balance' }
 
   const tokens = trimmed.split(/\s+/)
   let leaveType: LeaveType = 'annual'

@@ -34,7 +34,7 @@ export async function reviewLeaveRequest(
 
   const { data: req, error } = await admin
     .from('leave_requests')
-    .select('*, employees(id, name, hired_at, slack_user_id)')
+    .select('*, employees(id, name, hired_at, employee_type, work_days, slack_user_id)')
     .eq('id', id)
     .maybeSingle()
 
@@ -52,7 +52,8 @@ export async function reviewLeaveRequest(
   }
 
   const employee = req.employees as unknown as {
-    id: string; name: string; hired_at: string | null; slack_user_id: string | null
+    id: string; name: string; hired_at: string | null
+    employee_type: 'full_time' | 'part_time'; work_days: string | null; slack_user_id: string | null
   } | null
   const employeeName = employee?.name ?? '(알 수 없음)'
   const typeLabel = LEAVE_TYPE_LABEL[req.leave_type] ?? '연차'

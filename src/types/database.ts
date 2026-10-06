@@ -117,6 +117,18 @@ export interface Database {
         Update: { id?: string; employee_id?: string; leave_type?: 'annual' | 'half_am' | 'half_pm' | 'sick' | 'unpaid' | 'special'; start_date?: string; end_date?: string; days?: number; reason?: string | null; status?: 'pending' | 'approved' | 'rejected' | 'cancelled'; requested_via?: 'slack' | 'web'; slack_channel_id?: string | null; slack_message_ts?: string | null; reviewed_at?: string | null; reviewed_by?: string | null; review_memo?: string | null; calendar_event_id?: string | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
+      leave_absences: {
+        Row: { id: string; employee_id: string; absence_date: string; days: number; memo: string | null; created_at: string }
+        Insert: { id?: string; employee_id: string; absence_date: string; days?: number; memo?: string | null; created_at?: string }
+        Update: { id?: string; employee_id?: string; absence_date?: string; days?: number; memo?: string | null; created_at?: string }
+        Relationships: []
+      }
+      leave_promotions: {
+        Row: { id: string; employee_id: string; period_start: string; period_end: string; stage: 1 | 2; unused_days: number; notified_at: string; dm_sent: boolean; plan_text: string | null; plan_submitted_at: string | null; created_at: string }
+        Insert: { id?: string; employee_id: string; period_start: string; period_end: string; stage: 1 | 2; unused_days: number; notified_at?: string; dm_sent?: boolean; plan_text?: string | null; plan_submitted_at?: string | null; created_at?: string }
+        Update: { id?: string; employee_id?: string; period_start?: string; period_end?: string; stage?: 1 | 2; unused_days?: number; notified_at?: string; dm_sent?: boolean; plan_text?: string | null; plan_submitted_at?: string | null; created_at?: string }
+        Relationships: []
+      }
       company_holidays: {
         Row: { holiday_date: string; name: string; created_at: string }
         Insert: { holiday_date: string; name: string; created_at?: string }
@@ -160,5 +172,7 @@ export type SyncLog = Database['public']['Tables']['sync_logs']['Row']
 export type LeaveGrant = Database['public']['Tables']['leave_grants']['Row']
 export type LeaveRequest = Database['public']['Tables']['leave_requests']['Row']
 export type CompanyHoliday = Database['public']['Tables']['company_holidays']['Row']
+export type LeaveAbsence = Database['public']['Tables']['leave_absences']['Row']
+export type LeavePromotion = Database['public']['Tables']['leave_promotions']['Row']
 export type PaymentStatus = Payment['status']
 export type LeaveStatus = LeaveRequest['status']

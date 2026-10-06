@@ -12,16 +12,17 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { toast } from '@/lib/toast'
 import { refreshBadges } from '@/lib/payments/unmatched'
 import { getAllLeaveBalances, type LeaveBalance } from '@/lib/leave/balance'
-import { LEAVE_TYPE_LABEL, periodLabel, todayISO } from '@/lib/leave/policy'
+import { LEAVE_TYPE_LABEL, periodLabel, promotionDate, todayISO } from '@/lib/leave/policy'
 import { formatRange } from '@/lib/leave/calc'
-import type { LeaveRequest, CompanyHoliday } from '@/types/database'
-import { Check, X, Trash2, Plus, CalendarDays, Link2, Pencil, Undo2 } from 'lucide-react'
+import type { LeaveRequest, CompanyHoliday, LeaveAbsence, LeavePromotion } from '@/types/database'
+import { Check, X, Trash2, Plus, CalendarDays, Link2, Pencil, Undo2, BellRing } from 'lucide-react'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 
 type RequestRow = LeaveRequest & { employees: { name: string } | null }
+type AbsenceRow = LeaveAbsence & { employees: { name: string } | null }
 
 const STATUS_META: Record<string, { label: string; className: string }> = {
   pending:   { label: '승인 대기', className: 'bg-amber-100 text-amber-800' },
@@ -50,18 +51,39 @@ export default function LeavePage() {
 
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' })
 
+  const [absences, setAbsences] = useState<AbsenceRow[]>([])
+  const [promotions, setPromotions] = useState<LeavePromotion[]>([])
+  const [fullTimers, setFullTimers] = useState<{ id: string; name: string }[]>([])
+  const [absenceForm, setAbsenceForm] = useState({ employeeId: '', date: '', days: '1', memo: '' })
+  const [promoting, setPromoting] = useState(false)
+
   const load = useCallback(async () => {
-    const [{ data: reqs }, bals, { data: hols }] = await Promise.all([
+    const [{ data: reqs }, bals, { data: hols }, { data: abs }, { data: promos }, { data: emps }] = await Promise.all([
       supabase
         .from('leave_requests')
         .select('*, employees(name)')
         .order('start_date', { ascending: false }),
       getAllLeaveBalances(supabase),
       supabase.from('company_holidays').select('*').order('holiday_date'),
+      supabase
+        .from('leave_absences')
+        .select('*, employees(name)')
+        .order('absence_date', { ascending: false }),
+      supabase.from('leave_promotions').select('*'),
+      supabase
+        .from('employees')
+        .select('id, name')
+        .eq('active', true)
+        .eq('employee_type', 'full_time')
+        .order('sort_order', { ascending: true, nullsFirst: false })
+        .order('name'),
     ])
     setRequests((reqs as unknown as RequestRow[]) ?? [])
     setBalances(bals)
     setHolidays(hols ?? [])
+    setAbsences((abs as unknown as AbsenceRow[]) ?? [])
+    setPromotions(promos ?? [])
+    setFullTimers(emps ?? [])
     setLoading(false)
     refreshBadges()
   }, [supabase])
@@ -135,6 +157,67 @@ export default function LeavePage() {
     load()
   }
 
+  async function addAbsence() {
+    if (!absenceForm.employeeId || !absenceForm.date) { toast.error('직원과 날짜를 선택해주세요.'); return }
+    const { error } = await supabase.from('leave_absences').insert({
+      employee_id: absenceForm.employeeId,
+      absence_date: absenceForm.date,
+      days: Number(absenceForm.days),
+      memo: absenceForm.memo || null,
+    })
+    if (error) {
+      toast.error(error.code === '23505' ? '이미 그날 결근이 기록되어 있습니다.' : error.message)
+      return
+    }
+    setAbsenceForm({ ...absenceForm, date: '', memo: '' })
+    toast.success('결근을 기록했습니다. 연차 발생 일수에 반영됩니다.')
+    load()
+  }
+
+  async function deleteAbsence(id: string) {
+    const { error } = await supabase.from('leave_absences').delete().eq('id', id)
+    if (error) { toast.error(error.message); return }
+    load()
+  }
+
+  /** 오늘 촉진 대상자에게 DM 발송 — 매일 cron 이 하는 일을 지금 바로 돌린다 */
+  async function runPromotion() {
+    setPromoting(true)
+    try {
+      const res = await fetch('/api/leave/promotion', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error ?? '발송에 실패했습니다.'); return }
+      const sent = (data.sent ?? []) as { employeeName: string; stage: number }[]
+      toast.success(sent.length === 0
+        ? '오늘 새로 보낼 촉진 안내가 없습니다.'
+        : `촉진 안내 ${sent.length}건 발송: ${sent.map((r) => `${r.employeeName}(${r.stage}차)`).join(', ')}`)
+      load()
+    } catch {
+      toast.error('서버와 통신하지 못했습니다.')
+    } finally {
+      setPromoting(false)
+    }
+  }
+
+  /** 현황 표의 촉진 칸 — 보낸 차수는 날짜와 계획 제출 여부, 아직이면 예정일 */
+  function promotionSummary(b: LeaveBalance) {
+    const period = b.period
+    if (!period) return '-'
+    const mine = promotions.filter((p) => p.employee_id === b.employeeId && p.period_start === period.start)
+    return ([1, 2] as const).map((n) => {
+      const sent = mine.find((p) => p.stage === n)
+      if (!sent) return <div key={n} className="text-gray-400">{n}차 {promotionDate(period, n)} 예정</div>
+      return (
+        <div key={n} className={sent.dm_sent ? 'text-gray-700' : 'text-red-600'}>
+          {n}차 {sent.notified_at.slice(0, 10)} {sent.dm_sent ? '발송' : 'DM 실패'}
+          {n === 1 && (sent.plan_submitted_at
+            ? <span className="text-emerald-600"> · 계획 제출</span>
+            : <span className="text-amber-600"> · 계획 미제출</span>)}
+        </div>
+      )
+    })
+  }
+
   async function deleteHoliday(date: string) {
     const { error } = await supabase.from('company_holidays').delete().eq('holiday_date', date)
     if (error) { toast.error(error.message); return }
@@ -159,6 +242,7 @@ export default function LeavePage() {
           </TabsTrigger>
           <TabsTrigger value="balance">연차 현황</TabsTrigger>
           <TabsTrigger value="history">전체 내역</TabsTrigger>
+          <TabsTrigger value="absences">결근 기록</TabsTrigger>
           <TabsTrigger value="holidays">공휴일</TabsTrigger>
         </TabsList>
 
@@ -235,14 +319,16 @@ export default function LeavePage() {
                   <TableHead className="text-right">사용</TableHead>
                   <TableHead className="text-right">대기</TableHead>
                   <TableHead className="text-right">잔여</TableHead>
+                  <TableHead>소멸일</TableHead>
+                  <TableHead>사용 촉진</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading ? (
-                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={10} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
                 ) : balances.length === 0 ? (
-                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-gray-400">재직 중인 직원이 없습니다.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={10} className="text-center py-8 text-gray-400">재직 중인 정직원이 없습니다. (아르바이트는 연차가 발생하지 않습니다)</TableCell></TableRow>
                 ) : balances.map((b) => (
                   <TableRow key={b.employeeId}>
                     <TableCell className="font-medium">
@@ -254,12 +340,13 @@ export default function LeavePage() {
                     <TableCell className="text-sm text-gray-500">
                       {b.period ? periodLabel(b.period) : '-'}
                       {b.nextAccrualAt && (
-                        <div className="text-xs text-blue-600">다음 발생 {b.nextAccrualAt} (+1일)</div>
+                        <div className="text-xs text-blue-600">다음 발생 {b.nextAccrualAt} (개근 시 +1일)</div>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
                       {b.granted}
                       {b.isManualGrant && <span className="ml-1 text-[10px] text-gray-400">수동</span>}
+                      <div className="text-[11px] text-gray-400 max-w-[14rem] ml-auto">{b.basis}</div>
                     </TableCell>
                     <TableCell className="text-right text-gray-500">{b.carriedOver || '-'}</TableCell>
                     <TableCell className="text-right">{b.used}</TableCell>
@@ -267,6 +354,8 @@ export default function LeavePage() {
                     <TableCell className={`text-right font-semibold ${b.remaining < 0 ? 'text-red-600' : ''}`}>
                       {b.remaining}
                     </TableCell>
+                    <TableCell className="text-sm whitespace-nowrap">{b.expiresAt ?? '-'}</TableCell>
+                    <TableCell className="text-xs whitespace-nowrap">{promotionSummary(b)}</TableCell>
                     <TableCell className="text-right">
                       <Button size="sm" variant="ghost" disabled={!b.period} onClick={() => openGrant(b)}>
                         <Pencil size={14} />
@@ -278,13 +367,20 @@ export default function LeavePage() {
             </Table>
           </div>
 
-          <p className="text-xs text-gray-400 mt-2 leading-relaxed">
-            <Link2 size={11} className="inline mr-1" />
-            발생 일수는 입사 첫 해에는 만 1개월마다 1일(최대 11일), 만 1년차부터 매 연차연도 15일로 자동 계산됩니다.
-            연필 버튼으로 직접 지정하면 그 값이 우선합니다.
-            <br />
-            우리 회사는 5인 미만 사업장이라 미사용 연차에 대한 수당은 발생하지 않으며, 급여와 연동되지 않습니다.
-          </p>
+          <div className="flex flex-wrap items-start justify-between gap-2 mt-2">
+            <p className="text-xs text-gray-400 leading-relaxed">
+              <Link2 size={11} className="inline mr-1" />
+              입사 첫 해에는 1개월 개근마다 1일(최대 11일), 1년 이상은 직전 연도 출근율 80% 이상이면 15일에
+              최초 1년 초과 근속 2년마다 1일씩 가산(최대 25일)됩니다. 출근율은 &quot;결근 기록&quot; 탭 기준입니다.
+              연필 버튼으로 직접 지정하면 그 값이 우선합니다.
+              <br />
+              미사용 연차는 소멸일에 사라집니다. 소멸 6개월 전 1차(사용 계획 제출 요청), 2개월 전 2차 사용 촉진 안내가
+              Slack DM 으로 자동 발송됩니다.
+            </p>
+            <Button size="sm" variant="outline" disabled={promoting} onClick={runPromotion}>
+              <BellRing size={14} className="mr-1" />{promoting ? '확인 중...' : '촉진 알림 확인'}
+            </Button>
+          </div>
         </TabsContent>
 
         {/* ── 전체 내역 ───────────────────────────────────────── */}
@@ -354,6 +450,79 @@ export default function LeavePage() {
                 })}
               </TableBody>
             </Table>
+          </div>
+        </TabsContent>
+
+        {/* ── 결근 기록 ───────────────────────────────────────── */}
+        <TabsContent value="absences">
+          <div className="bg-white rounded-lg border p-4 space-y-3">
+            <p className="text-sm text-gray-500">
+              정직원의 결근을 기록하면 연차 발생에 반영됩니다. 입사 첫 해에는 결근이 있는 달의 연차가 생기지 않고,
+              1년 이상은 직전 연도 출근율이 80% 미만이면 15일 대신 개근한 달 수만큼만 발생합니다.
+              승인된 연차·병가·특별휴가와 공휴일은 결근이 아니므로 넣지 않습니다.
+            </p>
+            <div className="flex flex-wrap gap-2 items-end">
+              <div className="space-y-1">
+                <Label className="text-xs">직원</Label>
+                <select
+                  className="h-9 w-40 rounded-md border px-2 text-sm bg-white"
+                  value={absenceForm.employeeId}
+                  onChange={(e) => setAbsenceForm({ ...absenceForm, employeeId: e.target.value })}
+                >
+                  <option value="">선택</option>
+                  {fullTimers.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">날짜</Label>
+                <Input
+                  type="date"
+                  className="w-40"
+                  value={absenceForm.date}
+                  onChange={(e) => setAbsenceForm({ ...absenceForm, date: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">구분</Label>
+                <select
+                  className="h-9 w-28 rounded-md border px-2 text-sm bg-white"
+                  value={absenceForm.days}
+                  onChange={(e) => setAbsenceForm({ ...absenceForm, days: e.target.value })}
+                >
+                  <option value="1">결근 (1일)</option>
+                  <option value="0.5">반일 결근</option>
+                </select>
+              </div>
+              <div className="space-y-1 flex-1 min-w-40">
+                <Label className="text-xs">메모</Label>
+                <Input
+                  placeholder="예) 무단 결근"
+                  value={absenceForm.memo}
+                  onChange={(e) => setAbsenceForm({ ...absenceForm, memo: e.target.value })}
+                />
+              </div>
+              <Button onClick={addAbsence}><Plus size={14} className="mr-1" />기록</Button>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg border mt-2 divide-y">
+            {absences.length === 0 ? (
+              <div className="text-center py-8 text-gray-400 text-sm">기록된 결근이 없습니다. (기록이 없으면 개근으로 봅니다)</div>
+            ) : absences.map((a) => (
+              <div key={a.id} className="flex items-center justify-between px-4 py-2.5">
+                <div className="flex items-center gap-3 text-sm flex-wrap">
+                  <CalendarDays size={14} className="text-gray-400" />
+                  <span className="text-gray-900">{a.absence_date}</span>
+                  <span className="font-medium">{a.employees?.name ?? '-'}</span>
+                  <Badge className="bg-red-50 text-red-700">{Number(a.days) === 0.5 ? '반일 결근' : '결근'}</Badge>
+                  {a.memo && <span className="text-gray-500">{a.memo}</span>}
+                </div>
+                <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-600"
+                  onClick={() => deleteAbsence(a.id)}>
+                  <Trash2 size={14} />
+                </Button>
+              </div>
+            ))}
           </div>
         </TabsContent>
 

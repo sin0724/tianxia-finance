@@ -20,6 +20,9 @@ import {
 import { reviewLeaveRequest } from '@/lib/leave/review'
 import { applyForLeave } from '@/lib/leave/apply'
 import {
+  PLAN_BUTTON, PLAN_MODAL_CALLBACK, PLAN_FIELD, buildPlanModal, readPlanSubmission,
+} from '@/lib/leave/promotion'
+import {
   LEAVE_MODAL_CALLBACK, LEAVE_CANCEL_CALLBACK, LEAVE_FIELD,
   readLeaveSubmission, readCancelSubmission,
 } from '@/lib/leave/modal'
@@ -94,11 +97,13 @@ export async function POST(request: Request) {
       case PAYMENT_REVERT_CALLBACK: return handleRevertSubmission(payload)
       case LEAVE_MODAL_CALLBACK:    return handleLeaveSubmission(payload)
       case LEAVE_CANCEL_CALLBACK:   return handleLeaveCancel(payload)
+      case PLAN_MODAL_CALLBACK:     return handlePlanSubmission(payload)
       default: return new Response('', { status: 200 })
     }
   }
   if (payload.type === 'block_actions') {
     if (payload.actions?.[0]?.action_id === PAYMENT_REVERT_BUTTON) return handleRevertButton(payload)
+    if (payload.actions?.[0]?.action_id === PLAN_BUTTON) return handlePlanButton(payload)
     return handleLeaveButton(payload)
   }
 
@@ -109,7 +114,7 @@ export async function POST(request: Request) {
 async function findEmployeeBySlackId(slackUserId: string) {
   const { data } = await admin
     .from('employees')
-    .select('id, name, hired_at, work_days')
+    .select('id, name, hired_at, work_days, employee_type, slack_user_id')
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
   return data
@@ -197,6 +202,97 @@ async function handleLeaveCancel(payload: InteractivePayload) {
 
   if (!result.ok) {
     return Response.json({ response_action: 'errors', errors: { [LEAVE_FIELD.target]: result.message } })
+  }
+
+  return new Response('', { status: 200 })
+}
+
+// ─────────────────────────────────────────────────────────────
+// 연차 사용 촉진 — DM 의 "사용 계획 제출" 버튼 → 모달 → 제출
+// ─────────────────────────────────────────────────────────────
+
+/** 촉진 이력이 버튼을 누른 본인 것인지 확인하고 돌려준다 */
+async function findOwnPromotion(promotionId: string, slackUserId: string) {
+  if (!promotionId) return null
+  const { data } = await admin
+    .from('leave_promotions')
+    .select('id, employee_id, stage, unused_days, period_start, period_end, plan_text, employees(name, slack_user_id)')
+    .eq('id', promotionId)
+    .maybeSingle()
+  const owner = data?.employees as unknown as { name: string; slack_user_id: string | null } | null
+  if (!data || owner?.slack_user_id !== slackUserId) return null
+  return { ...data, employeeName: owner.name }
+}
+
+async function handlePlanButton(payload: InteractivePayload) {
+  const promotion = await findOwnPromotion(payload.actions?.[0]?.value ?? '', payload.user?.id ?? '')
+  if (!promotion) {
+    await replyEphemeral(payload.response_url, '❌ 본인의 연차 촉진 안내가 아닙니다.')
+    return new Response('', { status: 200 })
+  }
+
+  // 1·2차 어느 쪽에서 눌러도 그 연도 1차 행에 계획을 모은다 (2차 안내가 1차 계획을 보여주므로)
+  const { data: first } = await admin
+    .from('leave_promotions')
+    .select('plan_text')
+    .eq('employee_id', promotion.employee_id)
+    .eq('period_start', promotion.period_start)
+    .eq('stage', 1)
+    .maybeSingle()
+
+  const opened = await openSlackModal(payload.trigger_id ?? '', buildPlanModal({
+    promotionId: promotion.id,
+    unused: Number(promotion.unused_days),
+    periodEnd: promotion.period_end,
+    current: first?.plan_text ?? promotion.plan_text,
+  }))
+  if (!opened.ok) await replyEphemeral(payload.response_url, `❌ 창을 열지 못했습니다 (${opened.error}).`)
+  return new Response('', { status: 200 })
+}
+
+async function handlePlanSubmission(payload: InteractivePayload) {
+  const slackUserId = payload.user?.id ?? ''
+  const promotion = await findOwnPromotion(payload.view?.private_metadata ?? '', slackUserId)
+  const plan = readPlanSubmission((payload.view?.state?.values ?? {}) as Parameters<typeof readPlanSubmission>[0])
+
+  if (!promotion) {
+    return Response.json({ response_action: 'errors', errors: { [PLAN_FIELD]: '본인의 연차 촉진 안내가 아닙니다.' } })
+  }
+  if (!plan) {
+    return Response.json({ response_action: 'errors', errors: { [PLAN_FIELD]: '사용 계획을 입력해주세요.' } })
+  }
+
+  const submittedAt = new Date().toISOString()
+  // 1차 행이 없으면(2차부터 시작된 경우) 누른 행에 저장한다
+  const { data: updated } = await admin
+    .from('leave_promotions')
+    .update({ plan_text: plan, plan_submitted_at: submittedAt })
+    .eq('employee_id', promotion.employee_id)
+    .eq('period_start', promotion.period_start)
+    .eq('stage', 1)
+    .select('id')
+  if (!updated || updated.length === 0) {
+    await admin
+      .from('leave_promotions')
+      .update({ plan_text: plan, plan_submitted_at: submittedAt })
+      .eq('id', promotion.id)
+  }
+
+  const quoted = `> ${plan.replace(/\n/g, '\n> ')}`
+
+  await dmSlackUser(slackUserId, [
+    '✅ 연차 사용 계획이 제출되었습니다.',
+    quoted,
+    '_계획한 날짜가 다가오면 `/연차` 로 신청해주세요._',
+  ].join('\n'))
+
+  const channel = process.env.SLACK_LEAVE_CHANNEL
+  if (channel) {
+    await postSlackMessage(channel, [
+      `📝 *연차 사용 계획 제출* — ${promotion.employeeName}`,
+      `> 미사용 ${promotion.unused_days}일 · 사용 기한 ${promotion.period_end}`,
+      quoted,
+    ].join('\n'))
   }
 
   return new Response('', { status: 200 })
