@@ -28,6 +28,7 @@ import {
 type FormEntry = {
   work_hours: string
   absent_days: string
+  absent_memo: string
   include_weekly_holiday: boolean
   base_salary: string
   base_income_tax: string
@@ -54,6 +55,7 @@ function emptyForm(emp: Employee): FormEntry {
   return {
     work_hours: '0',
     absent_days: '0',
+    absent_memo: '',
     include_weekly_holiday: true,
     base_salary: emp.employee_type === 'part_time' ? '0' : String(emp.base_salary ?? 0),
     base_income_tax: '0',
@@ -215,6 +217,7 @@ export default function PayrollPage() {
       next[emp.id] = {
         work_hours: String(p.work_hours ?? 0),
         absent_days: String(p.absent_days ?? 0),
+        absent_memo: p.absent_memo ?? '',
         include_weekly_holiday: p.include_weekly_holiday !== false,
         base_salary: String(p.base_salary ?? 0),
         base_income_tax: String(p.base_income_tax ?? 0),
@@ -300,6 +303,7 @@ export default function PayrollPage() {
         base_salary: r.base,
         work_hours: numF(f.work_hours),
         absent_days: numF(f.absent_days),
+        absent_memo: f.absent_memo.trim() || null,
         include_weekly_holiday: f.include_weekly_holiday,
         incentive_deductions: 0, // [DEPRECATED 017] 인센티브 3.3%는 incentive_*_tax로 이관
         base_income_tax: num(f.base_income_tax),
@@ -741,6 +745,16 @@ export default function PayrollPage() {
                           />
                           <span className="text-xs text-gray-400">일</span>
                         </div>
+
+                        {/* 결근 메모 — 언제·왜 결근했는지. 계산에는 쓰지 않는다 */}
+                        {(numF(r.form.absent_days) > 0 || r.form.absent_memo) && (
+                          <Input
+                            className="h-7 text-xs w-full max-w-56 ml-auto md:ml-0"
+                            placeholder="날짜·사유 (예: 10/3 무단, 10/17 오전 병원)"
+                            value={r.form.absent_memo}
+                            onChange={(e) => update(r.emp.id, { absent_memo: e.target.value })}
+                          />
+                        )}
 
                         {numF(r.form.work_hours) > 0 && (
                           <div className="text-xs text-right md:text-left space-y-0.5">
