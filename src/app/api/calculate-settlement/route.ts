@@ -1,44 +1,8 @@
 import { createClient } from '@/lib/supabase/server'
 import { calculateMonthlySettlement, type SettlementResult } from '@/lib/calculations/settlement'
 import { NextResponse } from 'next/server'
-
-type EmployeeRow = { id: string; name: string; incentive_type: string | null; incentive_value: number }
-type PaymentRow = { manager?: string | null; amount: number }
-
-function computeAutoIncentives(
-  employees: EmployeeRow[],
-  payments: PaymentRow[],
-  vatRate: number,
-  year: number,
-  month: number,
-  prefix: string
-) {
-  return employees
-    .filter((e) => e.incentive_type && e.incentive_value > 0)
-    .map((e) => {
-      const myPayments = payments.filter(
-        (p) => p.manager?.trim().toLowerCase() === e.name.trim().toLowerCase()
-      )
-      if (myPayments.length === 0) return null
-      const myRevenue = myPayments.reduce((sum, p) => sum + p.amount, 0)
-      const mySupplyValue = myRevenue / (1 + vatRate)
-      const amount =
-        e.incentive_type === 'percent'
-          ? Math.round((mySupplyValue * e.incentive_value) / 100)
-          : e.incentive_value
-      return {
-        id: `${prefix}_${e.id}`,
-        year,
-        month,
-        employee_id: e.id,
-        amount,
-        basis: e.incentive_type === 'percent' ? mySupplyValue : null,
-        memo: `담당계약 공급가액 ${Math.round(mySupplyValue).toLocaleString()}원 기준`,
-        created_at: new Date().toISOString(),
-      }
-    })
-    .filter((i): i is NonNullable<typeof i> => i !== null)
-}
+import { computeAutoIncentives } from '@/lib/calculations/incentives'
+import { computeBankSettlement, hasBankData, saveBankSettlement } from '@/lib/ledger/server'
 
 function toSnakeCase(r: SettlementResult) {
   return {
@@ -299,11 +263,15 @@ export async function GET(request: Request) {
   const month = Number(searchParams.get('month'))
   if (!year || !month) return NextResponse.json({ error: 'year, month 필수' }, { status: 400 })
 
-  const { result, projectedResult, pendingTotal, pendingCount } = await computeBothSettlements(year, month)
+  const { supabase, result, projectedResult, pendingTotal, pendingCount } = await computeBothSettlements(year, month)
+
+  // 통장 내역을 올린 달은 통장 기준 정산이 확정값이다 (예상 정산은 미수금 포함 이전 방식 그대로)
+  const bank = (await hasBankData(supabase, year, month)) ? (await computeBankSettlement(supabase, year, month)).result : null
 
   return NextResponse.json({
     success: true,
-    result: toSnakeCase(result),
+    basis: bank ? 'bank' : 'manual',
+    result: bank ?? toSnakeCase(result),
     projectedResult: toSnakeCase(projectedResult),
     pendingTotal,
     pendingCount,
@@ -315,6 +283,20 @@ export async function POST(request: Request) {
   if (!year || !month) return NextResponse.json({ error: 'year, month 필수' }, { status: 400 })
 
   const { supabase, result, projectedResult, pendingTotal, pendingCount } = await computeBothSettlements(year, month)
+
+  if (await hasBankData(supabase, year, month)) {
+    // 통장 내역이 있는 달은 월 마감(통장 기준)으로 저장 — 수기 지출 기준으로 덮어쓰지 않는다
+    const { result: bank } = await computeBankSettlement(supabase, year, month)
+    try {
+      await saveBankSettlement(supabase, year, month, bank)
+    } catch (e) {
+      return NextResponse.json({ error: (e as Error).message }, { status: 500 })
+    }
+    return NextResponse.json({
+      success: true, basis: 'bank', result: bank,
+      projectedResult: toSnakeCase(projectedResult), pendingTotal, pendingCount,
+    })
+  }
 
   const { error } = await supabase.from('monthly_settlements').upsert(
     {

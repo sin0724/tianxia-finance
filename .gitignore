@@ -47,3 +47,8 @@ tianxia-finance-*.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 통장·카드·급여 원본 자료 — 실제 거래내역 포함, 커밋 금지
+/reconcile/
+/RECONCILE_HANDOFF.md
+/월마감자료/

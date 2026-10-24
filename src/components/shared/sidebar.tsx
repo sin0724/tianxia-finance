@@ -20,6 +20,8 @@ import {
   FolderKanban,
   ShoppingBag,
   CalendarCheck,
+  ClipboardCheck,
+  Wallet,
   Settings,
   LogOut,
   X,
@@ -51,6 +53,8 @@ const navGroups: { title: string | null; items: NavItem[] }[] = [
   {
     title: '자금',
     items: [
+      { href: '/closing',   label: '월 마감',   icon: ClipboardCheck },
+      { href: '/cashflow',  label: '현금 흐름', icon: Wallet },
       { href: '/payments',  label: '결제 내역', icon: CreditCard, badge: 'unmatched' },
       { href: '/expenses',  label: '월별 지출', icon: Receipt },
       { href: '/payroll',   label: '급여 관리', icon: FileSpreadsheet },

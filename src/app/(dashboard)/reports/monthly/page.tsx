@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -268,6 +269,10 @@ export default function MonthlyReportPage() {
           <div className="flex items-center justify-between">
             <div className="text-xs text-gray-400">
               계산 시각: {new Date(settlement.calculated_at).toLocaleString('ko-KR')}
+              {' · '}
+              {settlement.basis === 'bank'
+                ? <Link href="/closing" className="underline text-blue-600">통장 기준 (월 마감)</Link>
+                : '월별 지출 수기 입력 기준'}
             </div>
           </div>
 
