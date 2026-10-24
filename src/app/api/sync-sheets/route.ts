@@ -23,10 +23,25 @@ type ExistingPayment = {
   manager: string | null
   status: 'confirmed' | 'balance_due' | 'unpaid'
   source: string
+  project_id: string | null
 }
 
 const toDbStatus = (s: SheetRow['status']): 'confirmed' | 'balance_due' | 'unpaid' =>
   s === '잔금처리요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
+
+/**
+ * 시트 행 하나가 DB 결제 여러 건으로 나뉜 경우의 잔여분 ID — `{시트 동기화 ID}#{접미사}`.
+ * 수금 관리에서 일부만 입금 확정하면 원래 건(시트 ID 보유)은 확정되고 차액이 새 건으로 남는데,
+ * 이 잔여분이 시트 행과 이어져 있어야 시트를 '입금완료'로 바꿨을 때 함께 확정할 수 있다.
+ */
+const SPLIT_SEP = '#'
+const makeSplitId = (syncId: string) => `${syncId}${SPLIT_SEP}${crypto.randomUUID().slice(0, 8)}`
+
+/** 시트를 읽는 하한 — 이 이전 행은 앱 도입 전 데이터라 읽지 않는다 */
+const SHEET_FLOOR_DATE = '2026-04-01'
+
+/** 시트가 '입금완료'로 바뀐 잔여분의 입금일 — 시트에는 입금일이 따로 없으므로 동기화한 날(KST)로 둔다 */
+const todayKst = () => new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10)
 
 /**
  * 시트 행 → DB 메모 (상태 태그 없이 순수 메모만).
@@ -60,7 +75,7 @@ export async function POST(request: Request) {
   }
 
   const trigger = hasCronAuth ? 'cron' : 'manual'
-  let fromDate = '2026-04-01'
+  let fromDate = SHEET_FLOOR_DATE
 
   try {
     try {
@@ -68,7 +83,10 @@ export async function POST(request: Request) {
       if (body?.fromDate) fromDate = body.fromDate
     } catch { /* body 없으면 기본값 사용 */ }
 
-    const rows = await fetchSheetRows(fromDate)
+    // fromDate 는 "새 행을 가져올 범위"일 뿐이다. 이미 동기화된 행(M열 ID 보유)의 상태 변경은
+    // 날짜와 무관하게 반영해야 한다 — 9월 미입금 건을 10월에 '입금완료'로 바꾸는 게 흔한 흐름인데
+    // 대시보드 기본값(이번 달 1일)으로 동기화하면 그 행을 아예 읽지 않아 반영되지 않았다.
+    const rows = await fetchSheetRows(fromDate < SHEET_FLOOR_DATE ? fromDate : SHEET_FLOOR_DATE)
     if (rows.length === 0) {
       await logSync({ trigger, fromDate })
       return Response.json({ synced: 0, updated: 0, skipped: 0, unmatched: 0, pending: 0, created: 0 })
@@ -76,13 +94,27 @@ export async function POST(request: Request) {
 
     const { data: existingRaw } = await supabase
       .from('payments')
-      .select('id, external_id, payment_date, client_name_raw, amount, memo, manager, status, source')
+      .select('id, external_id, payment_date, client_name_raw, amount, memo, manager, status, source, project_id')
     const existing = (existingRaw ?? []) as ExistingPayment[]
 
-    // A열 동기화 ID 기준 매칭 (신규 방식 — 내용이 바뀌어도 같은 행으로 인식)
+    // M열 동기화 ID 기준 매칭 (신규 방식 — 내용이 바뀌어도 같은 행으로 인식)
     const byExternalId = new Map<string, ExistingPayment>()
+    // 부분 입금으로 갈라진 잔여분 — 시트 ID별로 묶는다
+    const splitsBySyncId = new Map<string, ExistingPayment[]>()
     for (const p of existing) {
-      if (p.external_id) byExternalId.set(p.external_id, p)
+      if (!p.external_id) continue
+      byExternalId.set(p.external_id, p)
+      const sep = p.external_id.indexOf(SPLIT_SEP)
+      if (sep > 0) {
+        const base = p.external_id.slice(0, sep)
+        splitsBySyncId.set(base, [...(splitsBySyncId.get(base) ?? []), p])
+      }
+    }
+    // 시트와 연결이 끊긴 수금 예정 건 (예전 부분 입금의 잔여분·손으로 추가한 잔금) — 프로젝트별
+    const orphansByProject = new Map<string, ExistingPayment[]>()
+    for (const p of existing) {
+      if (p.external_id || p.status === 'confirmed' || !p.project_id) continue
+      orphansByProject.set(p.project_id, [...(orphansByProject.get(p.project_id) ?? []), p])
     }
 
     // ── 레거시 매칭용 (A열 ID가 아직 없는 기존 데이터) ──────────────
@@ -120,32 +152,58 @@ export async function POST(request: Request) {
     for (const row of rows) {
       const dbStatus = toDbStatus(row.status)
       const dbMemo = buildMemo(row)
+      // 범위 밖 행은 상태 변경만 반영하고 "변동 없음" 집계에는 넣지 않는다 (토스트 숫자가 부풀지 않게)
+      const inWindow = row.date >= fromDate
 
-      // ── 1) A열 동기화 ID로 기존 건 매칭 ─────────────────────────
+      // ── 1) M열 동기화 ID로 기존 건 매칭 ─────────────────────────
       if (row.syncId) {
         const found = byExternalId.get(row.syncId)
+        const splits = splitsBySyncId.get(row.syncId) ?? []
+        let changedAny = false
+
+        // 부분 입금으로 확정분이 시트 금액보다 작은데 잔여분이 시트와 끊겨 있으면 다시 잇는다.
+        // (예전 confirm_pending_payment 는 잔여분에 ID를 남기지 않았고, 잔금을 손으로 추가한 경우도 있다)
+        if (found?.project_id) {
+          const orphans = orphansByProject.get(found.project_id) ?? []
+          const covered = found.amount + splits.reduce((s, p) => s + p.amount, 0)
+          const orphanSum = orphans.reduce((s, p) => s + p.amount, 0)
+          if (orphans.length > 0 && covered < row.amount && covered + orphanSum <= row.amount + 1) {
+            for (const o of orphans) {
+              const splitId = makeSplitId(row.syncId)
+              const { error } = await supabase.from('payments')
+                .update({ external_id: splitId }).eq('id', o.id).is('external_id', null)
+              if (error) { errors.push({ row: row.rowIndex, reason: `잔여분 연결 실패: ${error.message}` }); continue }
+              const linked = { ...o, external_id: splitId }
+              byExternalId.set(splitId, linked)
+              splits.push(linked)
+            }
+            orphansByProject.delete(found.project_id)
+          }
+        }
+
         if (found) {
           if (found.status !== 'confirmed') {
-            // 미확정(수금 예정) 건 — 시트가 원본이므로 수정 사항을 그대로 반영
+            // 미확정(수금 예정) 건 — 시트가 원본이므로 수정 사항을 그대로 반영.
+            // 단 잔여분으로 갈라진 건은 시트 금액이 여러 건의 합계라 금액·날짜를 덮어쓰지 않는다.
+            const syncAmount = splits.length === 0
             const changed =
               found.client_name_raw !== (row.clientName || null) ||
-              found.amount !== row.amount ||
-              found.payment_date !== row.date ||
+              (syncAmount && found.amount !== row.amount) ||
+              (syncAmount && found.payment_date !== row.date) ||
               found.manager !== (row.manager || null) ||
               found.memo !== dbMemo ||
               found.status !== dbStatus
             if (changed) {
               const { error } = await supabase.from('payments').update({
                 client_name_raw: row.clientName || null,
-                amount: row.amount,
-                payment_date: row.date,
+                ...(syncAmount ? { amount: row.amount, payment_date: row.date } : {}),
                 manager: row.manager || null,
                 memo: dbMemo,
                 status: dbStatus,
               }).eq('id', found.id)
               if (error) errors.push({ row: row.rowIndex, reason: `업데이트 실패: ${error.message}` })
-              else updated++
-            } else skipped++
+              else changedAny = true
+            }
           } else {
             // 확정 건 — 금액·날짜는 앱에서 확정한 값을 유지하고 표시 필드만 반영
             const changed =
@@ -157,15 +215,30 @@ export async function POST(request: Request) {
                 manager: row.manager || null,
               }).eq('id', found.id)
               if (error) errors.push({ row: row.rowIndex, reason: `업데이트 실패: ${error.message}` })
-              else updated++
-            } else skipped++
+              else changedAny = true
+            }
           }
-        } else {
-          // ID는 있는데 DB에 없음 → 앱에서 삭제된 건. 재생성하지 않는다.
-          skipped++
         }
+        // ID는 있는데 DB에 없음 → 앱에서 삭제된 건. 재생성하지 않는다.
+
+        // 시트가 입금완료면 남은 잔여분도 확정 — 원래 건이 이미 확정돼 있어 위에서는 아무 일도 일어나지 않던 경우
+        if (dbStatus === 'confirmed') {
+          for (const s of splits) {
+            if (s.status === 'confirmed') continue
+            const { error } = await supabase.from('payments')
+              .update({ status: 'confirmed', payment_date: todayKst() }).eq('id', s.id)
+            if (error) errors.push({ row: row.rowIndex, reason: `잔여분 확정 실패: ${error.message}` })
+            else changedAny = true
+          }
+        }
+
+        if (changedAny) updated++
+        else if (inWindow) skipped++
         continue
       }
+
+      // 범위 밖의 ID 없는 행은 새로 가져오지 않는다
+      if (!inWindow) continue
 
       // ── 2) A열 ID가 없는 행 — 레거시 방식으로 기존 건 탐색 ───────
       const legacyId = makeLegacyExternalId(row)
@@ -348,7 +421,7 @@ export async function POST(request: Request) {
           softDupMap.set(`${row.date}|${normName(row.clientName)}|${row.amount}|${normMemo(dbMemo)}`, {
             id: '', external_id: newSyncId, payment_date: row.date,
             client_name_raw: row.clientName, amount: row.amount,
-            memo: dbMemo, manager: row.manager || null, status: dbStatus, source: 'slack',
+            memo: dbMemo, manager: row.manager || null, status: dbStatus, source: 'slack', project_id: projectId,
           })
         }
       }

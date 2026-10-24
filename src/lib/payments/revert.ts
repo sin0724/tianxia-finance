@@ -100,7 +100,9 @@ export async function revertPaymentConfirmation(
 
   if (payment.external_id?.startsWith('tx_')) {
     try {
-      const found = await updateSheetStatusBySyncId(payment.external_id, toSheetStatus(status))
+      // 부분 입금 잔여분은 `{시트 ID}#접미사` 형식 — 시트 M열에는 앞부분만 있다
+      const syncId = payment.external_id.split('#')[0]
+      const found = await updateSheetStatusBySyncId(syncId, toSheetStatus(status))
       if (found) sheetRow = found.rowIndex
       else warning = `시트에서 이 건의 행을 찾지 못했습니다. ${FIX_SHEET_HINT}`
     } catch (e) {

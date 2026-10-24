@@ -375,7 +375,7 @@ export default function DashboardPage() {
             </div>
             {showSyncOptions && (
               <div className="absolute right-0 top-full mt-1 z-10 bg-white border rounded-lg shadow-lg p-3 w-64">
-                <p className="text-xs text-gray-500 mb-2">이 날짜 이후 데이터를 동기화합니다</p>
+                <p className="text-xs text-gray-500 mb-2">이 날짜 이후의 새 행을 가져옵니다. 이미 가져온 행의 입금상태 변경은 날짜와 관계없이 반영됩니다.</p>
                 <input
                   type="date"
                   className="w-full border rounded-md px-2 py-1.5 text-sm"
