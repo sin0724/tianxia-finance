@@ -216,7 +216,7 @@ export default function ClosingPage() {
         <CardHeader className="pb-2"><CardTitle className="text-base">1. 내역 올리기</CardTitle></CardHeader>
         <CardContent className="grid sm:grid-cols-2 gap-3">
           {([
-            ['bank', '통장 거래내역', '하나은행 거래내역 CSV', '.csv'],
+            ['bank', '통장 거래내역', 'KB국민은행 거래내역 CSV', '.csv'],
             ['card', '카드 승인내역', 'KB 법인카드 승인내역조회 XLS', '.xls,.xlsx'],
           ] as const).map(([kind, title, hint, accept]) => (
             <label key={kind} className="border border-dashed rounded-lg p-4 flex items-center gap-3 cursor-pointer hover:bg-gray-50">

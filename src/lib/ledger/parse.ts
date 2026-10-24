@@ -1,7 +1,7 @@
 /**
  * 통장·카드 내역 파일 파서 (서버 전용 — 업로드 API에서 호출)
  *
- * 통장: 하나은행 거래내역 CSV (cp949, 최신순)
+ * 통장: KB국민은행 거래내역 CSV (cp949, 최신순)
  *   거래일시, 보낸분/받는분, 출금액(원), 입금액(원), 잔액(원), 내 통장 표시, 적요, 처리점, 구분
  * 카드: KB국민 법인카드 승인내역조회 XLS (헤더 1행)
  *   승인일(YYYY.MM.DD), 승인시간, 카드번호, 가맹점명, 업종명, 승인금액, 부가세, 승인구분, 승인번호, 상태 …
@@ -84,7 +84,7 @@ export function parseBankCsv(buf: ArrayBuffer): { rows: ParsedBankTx[]; errors: 
   const header = splitCsvLine(lines[0]).map((h) => h.trim())
   const col = (name: string) => {
     const i = header.findIndex((h) => h.startsWith(name))
-    if (i < 0) throw new Error(`통장 CSV에 "${name}" 열이 없습니다 — 하나은행 거래내역 CSV인지 확인해 주세요`)
+    if (i < 0) throw new Error(`통장 CSV에 "${name}" 열이 없습니다 — KB국민은행 거래내역 CSV인지 확인해 주세요`)
     return i
   }
   const C = {
