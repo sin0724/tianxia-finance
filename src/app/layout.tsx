@@ -24,7 +24,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#111827",
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({
@@ -34,9 +34,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ko" className={`${geistSans.variable} h-full antialiased`}>
+      <head>
+        <link
+          rel="stylesheet"
+          href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"
+        />
+      </head>
       <body className="min-h-full flex flex-col">
         {children}
-        <Toaster richColors position="bottom-right" duration={3000} />
+        <Toaster richColors position="bottom-center" duration={3000} />
       </body>
     </html>
   );

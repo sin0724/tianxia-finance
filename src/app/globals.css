@@ -4,6 +4,86 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* 토스(TDS) 팔레트 — 페이지 곳곳의 gray-*, blue-* 등 하드코딩 클래스가 그대로 토스 톤으로 바뀐다 */
+@theme {
+  --color-gray-50: #f9fafb;
+  --color-gray-100: #f2f4f6;
+  --color-gray-200: #e5e8eb;
+  --color-gray-300: #d1d6db;
+  --color-gray-400: #b0b8c1;
+  --color-gray-500: #8b95a1;
+  --color-gray-600: #6b7684;
+  --color-gray-700: #4e5968;
+  --color-gray-800: #333d4b;
+  --color-gray-900: #191f28;
+
+  --color-blue-50: #e8f3ff;
+  --color-blue-100: #c9e2ff;
+  --color-blue-200: #90c2ff;
+  --color-blue-300: #64a8ff;
+  --color-blue-400: #4593fc;
+  --color-blue-500: #3182f6;
+  --color-blue-600: #2272eb;
+  --color-blue-700: #1b64da;
+  --color-blue-800: #1957c2;
+  --color-blue-900: #194aa6;
+
+  --color-red-50: #ffeeee;
+  --color-red-100: #ffd4d6;
+  --color-red-200: #feafb4;
+  --color-red-300: #fb8890;
+  --color-red-400: #f66570;
+  --color-red-500: #f04452;
+  --color-red-600: #e42939;
+  --color-red-700: #d22030;
+  --color-red-800: #bc1b2a;
+  --color-red-900: #a51926;
+
+  --color-orange-50: #fff3e0;
+  --color-orange-100: #ffe0b0;
+  --color-orange-200: #ffcd80;
+  --color-orange-300: #ffbd51;
+  --color-orange-400: #ffa927;
+  --color-orange-500: #fe9800;
+  --color-orange-600: #fb8800;
+  --color-orange-700: #f57800;
+  --color-orange-800: #ed6700;
+  --color-orange-900: #e45600;
+
+  --color-yellow-50: #fff9e7;
+  --color-yellow-100: #ffefbf;
+  --color-yellow-200: #ffe69b;
+  --color-yellow-300: #ffdd78;
+  --color-yellow-400: #ffd158;
+  --color-yellow-500: #ffc342;
+  --color-yellow-600: #ffb331;
+  --color-yellow-700: #e08a00;
+  --color-yellow-800: #c27400;
+  --color-yellow-900: #a35f00;
+
+  --color-green-50: #f0faf6;
+  --color-green-100: #aeefd5;
+  --color-green-200: #76e4b8;
+  --color-green-300: #3fd599;
+  --color-green-400: #15c47e;
+  --color-green-500: #03b26c;
+  --color-green-600: #02a262;
+  --color-green-700: #029359;
+  --color-green-800: #028450;
+  --color-green-900: #027648;
+
+  --color-purple-50: #f9f0fc;
+  --color-purple-100: #edccf8;
+  --color-purple-200: #da9bef;
+  --color-purple-300: #c770e4;
+  --color-purple-400: #b44bd7;
+  --color-purple-500: #a234c7;
+  --color-purple-600: #9128b4;
+  --color-purple-700: #8222a2;
+  --color-purple-800: #73228e;
+  --color-purple-900: #65237b;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -49,38 +129,39 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --font-sans: "Pretendard Variable", Pretendard, var(--font-geist-sans), -apple-system, BlinkMacSystemFont, system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --background: #ffffff;
+  --foreground: #191f28;
+  --card: #ffffff;
+  --card-foreground: #191f28;
+  --popover: #ffffff;
+  --popover-foreground: #191f28;
+  --primary: #3182f6;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f4f6;
+  --secondary-foreground: #4e5968;
+  --muted: #f2f4f6;
+  --muted-foreground: #8b95a1;
+  --accent: #f2f4f6;
+  --accent-foreground: #191f28;
+  --destructive: #f04452;
+  --border: #e5e8eb;
+  --input: #e5e8eb;
+  --ring: #3182f6;
+  --chart-1: #3182f6;
+  --chart-2: #03b26c;
+  --chart-3: #fe9800;
+  --chart-4: #a234c7;
+  --chart-5: #f04452;
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: #ffffff;
+  --sidebar-foreground: #4e5968;
+  --sidebar-primary: #3182f6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f2f4f6;
+  --sidebar-accent-foreground: #191f28;
+  --sidebar-border: #f2f4f6;
+  --sidebar-ring: #3182f6;
 }
 
 .dark {
@@ -127,4 +208,28 @@
   html {
     @apply font-sans;
   }
+}
+/* recharts — 토스식: 세로 그리드 없이 옅은 실선, 축선 숨김, 둥근 툴팁 */
+.recharts-cartesian-grid-horizontal line {
+  stroke: #f2f4f6;
+  stroke-dasharray: 0;
+}
+.recharts-cartesian-grid-vertical line {
+  stroke: transparent;
+}
+.recharts-cartesian-axis-line,
+.recharts-cartesian-axis-tick-line {
+  stroke: transparent;
+}
+.recharts-cartesian-axis-tick-value {
+  fill: #8b95a1;
+}
+.recharts-default-tooltip {
+  border: none !important;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px 14px !important;
+}
+.recharts-legend-item-text {
+  color: #4e5968 !important;
 }

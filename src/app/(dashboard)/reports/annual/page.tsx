@@ -22,7 +22,7 @@ type ProductRevenue = { name: string; revenue: number }
 type ClientRevenue = { name: string; revenue: number }
 type ManagerStat = { name: string; count: number; revenue: number; share: number }
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316']
+const COLORS = ['#3182f6', '#15c47e', '#ffb331', '#f04452', '#a234c7', '#06b6d4', '#84cc16', '#fe9800']
 const MONTHS = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월']
 
 function formatKRWShort(v: number) {
@@ -267,14 +267,14 @@ export default function AnnualReportPage() {
                 <YAxis tickFormatter={formatKRWShort} tick={{ fontSize: 11 }} width={60} />
                 <Tooltip formatter={(v, name) => [formatKRW(Number(v)), name]} />
                 <Legend />
-                <Bar dataKey="매출" fill="#3b82f6" radius={[3, 3, 0, 0]} />
-                <Bar dataKey="영업이익" fill="#10b981" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="매출" fill="#3182f6" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="영업이익" fill="#15c47e" radius={[3, 3, 0, 0]} />
                 <Line
                   type="monotone"
                   dataKey="누적영업이익"
-                  stroke="#f59e0b"
+                  stroke="#ffb331"
                   strokeWidth={2}
-                  dot={{ r: 3, fill: '#f59e0b' }}
+                  dot={{ r: 3, fill: '#ffb331' }}
                   connectNulls={false}
                 />
               </ComposedChart>

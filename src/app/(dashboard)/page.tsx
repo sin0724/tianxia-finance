@@ -22,9 +22,9 @@ import { MonthNavigator } from '@/components/shared/month-navigator'
 const MONTH_LABELS = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월']
 
 const CURVE_COLORS = [
-  '#3b82f6', '#ef4444', '#22c55e', '#f59e0b',
-  '#8b5cf6', '#ec4899', '#14b8a6', '#f97316',
-  '#6366f1', '#10b981', '#e11d48', '#0ea5e9',
+  '#3182f6', '#f04452', '#03b26c', '#ffb331',
+  '#a234c7', '#ec4899', '#14b8a6', '#fe9800',
+  '#6366f1', '#15c47e', '#e11d48', '#0ea5e9',
 ]
 
 const DISMISSED_PREF_KEY = 'dashboard_dismissed_alerts'
@@ -339,7 +339,7 @@ export default function DashboardPage() {
       {/* ── 헤더 ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-bold">대시보드</h1>
+          <h1 className="text-[26px] font-bold text-gray-900">대시보드</h1>
           <MonthNavigator />
           {!isCurrentMonth && (
             <Badge variant="secondary" className="text-xs">과거 데이터</Badge>
@@ -405,14 +405,14 @@ export default function DashboardPage() {
 
       {/* 알림 */}
       {visibleAlerts.length > 0 && (
-        <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+        <div className="rounded-[20px] bg-white overflow-hidden">
           {/* 헤더 (접기/펼치기) */}
           <button
-            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-gray-50 transition-colors"
+            className="w-full flex items-center gap-2 px-5 py-3.5 text-sm text-left hover:bg-gray-50 transition-colors"
             onClick={() => setAlertsOpen((v) => !v)}
           >
             <Bell size={14} className={hasWarnAlert ? 'text-orange-500' : 'text-gray-400'} />
-            <span className="font-medium text-gray-700">알림 {visibleAlerts.length}개</span>
+            <span className="font-bold text-gray-900">알림 {visibleAlerts.length}개</span>
             {!alertsOpen && (
               <span className="text-gray-400 text-xs truncate flex-1">
                 {visibleAlerts.map((a) => a.message).join(' · ')}
@@ -433,9 +433,9 @@ export default function DashboardPage() {
 
           {/* 알림 목록 */}
           {alertsOpen && (
-            <div className="border-t divide-y divide-gray-100">
+            <div className="border-t border-gray-100 divide-y divide-gray-100">
               {visibleAlerts.map((alert) => (
-                <div key={alert.id} className="flex items-center gap-3 px-4 py-2 text-sm">
+                <div key={alert.id} className="flex items-center gap-3 px-5 py-3 text-sm">
                   <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${alert.level === 'warn' ? 'bg-orange-400' : 'bg-blue-400'}`} />
                   <span className="flex-1 text-gray-700">{alert.message}</span>
                   <Link href={alert.href} className="text-blue-500 hover:text-blue-700 text-xs font-medium whitespace-nowrap">
@@ -492,10 +492,10 @@ export default function DashboardPage() {
       ) : (
         <>
       <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${gongguGross > 0 || gongguMargin > 0 ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
-        <Card className="border-green-200">
-          <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">{selMonth}월 입금액 (바이럴)</CardTitle></CardHeader>
+        <Card>
+          <CardHeader className="pb-1"><CardTitle className="text-sm font-medium text-gray-500">{selMonth}월 입금액 (바이럴)</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-700">{formatKRW(paymentTotal)}</div>
+            <div className="text-[26px] font-bold text-gray-900">{formatKRW(paymentTotal)}</div>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <MoMDelta current={paymentTotal} prev={prevPaymentTotal} />
               {refundTotal < 0 && (
@@ -504,26 +504,26 @@ export default function DashboardPage() {
             </div>
           </CardContent>
         </Card>
-        <Card className="border-yellow-200 bg-yellow-50">
-          <CardHeader className="pb-1"><CardTitle className="text-sm text-yellow-700">수금 예정</CardTitle></CardHeader>
+        <Card>
+          <CardHeader className="pb-1"><CardTitle className="text-sm font-medium text-gray-500">수금 예정</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-yellow-700">{formatKRW(pendingTotal)}</div>
-            <p className="text-xs text-yellow-600 mt-1">잔금·미입금 건 합계</p>
+            <div className="text-[26px] font-bold text-orange-500">{formatKRW(pendingTotal)}</div>
+            <p className="text-xs text-gray-400 mt-1">잔금·미입금 건 합계</p>
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">공급가액</CardTitle></CardHeader>
+          <CardHeader className="pb-1"><CardTitle className="text-sm font-medium text-gray-500">공급가액</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatKRW(supplyValue)}</div>
+            <div className="text-[26px] font-bold text-gray-900">{formatKRW(supplyValue)}</div>
             <p className="text-xs text-gray-400 mt-1">VAT 제외</p>
           </CardContent>
         </Card>
         {(gongguGross > 0 || gongguMargin > 0) && (
-          <Card className="border-purple-200">
-            <CardHeader className="pb-1"><CardTitle className="text-sm text-purple-600">{selMonth}월 공구 취급액 (영세율 0%)</CardTitle></CardHeader>
+          <Card>
+            <CardHeader className="pb-1"><CardTitle className="text-sm font-medium text-gray-500">{selMonth}월 공구 취급액 (영세율 0%)</CardTitle></CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-purple-700">{formatKRW(gongguGross)}</div>
-              <p className="text-xs text-purple-500 mt-1">
+              <div className="text-[26px] font-bold text-gray-900">{formatKRW(gongguGross)}</div>
+              <p className="text-xs text-gray-400 mt-1">
                 마진 {formatKRW(gongguMargin)} ·{' '}
                 <Link href="/gonggu" className="hover:underline">상세 보기</Link>
               </p>
@@ -534,9 +534,9 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Card>
-          <CardHeader className="pb-1"><CardTitle className="text-sm text-gray-500">영업이익</CardTitle></CardHeader>
+          <CardHeader className="pb-1"><CardTitle className="text-sm font-medium text-gray-500">영업이익</CardTitle></CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${(settlement?.operating_profit ?? 0) < 0 ? 'text-red-600' : 'text-green-600'}`}>
+            <div className={`text-[26px] font-bold ${(settlement?.operating_profit ?? 0) < 0 ? 'text-red-500' : 'text-gray-900'}`}>
               {settlement ? formatKRW(settlement.operating_profit) : <span className="text-gray-400 text-base">정산 전</span>}
             </div>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -549,11 +549,11 @@ export default function DashboardPage() {
             </div>
           </CardContent>
         </Card>
-        <Card className="border-blue-200 bg-blue-50">
-          <CardHeader className="pb-1"><CardTitle className="text-sm text-blue-600">대표자 정산액</CardTitle></CardHeader>
+        <Card className="bg-blue-500 text-white">
+          <CardHeader className="pb-1"><CardTitle className="text-sm font-medium text-blue-100">대표자 정산액</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-blue-800">
-              {settlement ? formatKRW(settlement.representative_share) : <span className="text-blue-400 text-base">정산 전</span>}
+            <div className="text-[26px] font-bold text-white">
+              {settlement ? formatKRW(settlement.representative_share) : <span className="text-blue-100 text-base font-semibold">정산 전</span>}
             </div>
           </CardContent>
         </Card>
@@ -571,8 +571,8 @@ export default function DashboardPage() {
                 <XAxis dataKey="month" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${(v / 1000000).toFixed(0)}M`} />
                 <Tooltip formatter={(v) => formatKRW(Number(v))} />
-                <Bar dataKey="revenue" name="매출" fill="#3b82f6" radius={[3,3,0,0]} />
-                <Bar dataKey="profit" name="영업이익" fill="#22c55e" radius={[3,3,0,0]} />
+                <Bar dataKey="revenue" name="매출" fill="#3182f6" radius={[3,3,0,0]} />
+                <Bar dataKey="profit" name="영업이익" fill="#03b26c" radius={[3,3,0,0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -600,9 +600,9 @@ export default function DashboardPage() {
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${(v / 1000000).toFixed(0)}M`} />
                 <Tooltip formatter={(v) => formatKRW(Number(v))} />
                 <Legend />
-                <Bar dataKey="초순" name="초순 (1~10일)" fill="#3b82f6" radius={[3,3,0,0]} />
-                <Bar dataKey="중순" name="중순 (11~20일)" fill="#22c55e" radius={[3,3,0,0]} />
-                <Bar dataKey="후순" name="후순 (21일~말일)" fill="#f59e0b" radius={[3,3,0,0]} />
+                <Bar dataKey="초순" name="초순 (1~10일)" fill="#3182f6" radius={[3,3,0,0]} />
+                <Bar dataKey="중순" name="중순 (11~20일)" fill="#03b26c" radius={[3,3,0,0]} />
+                <Bar dataKey="후순" name="후순 (21일~말일)" fill="#ffb331" radius={[3,3,0,0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>

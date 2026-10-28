@@ -138,78 +138,83 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   return (
     <aside
       className={cn(
-        'w-60 bg-gray-900 text-white flex flex-col',
+        'w-64 bg-white border-r border-gray-100 flex flex-col',
         'fixed inset-y-0 left-0 z-30 transition-transform duration-200',
-        'md:relative md:translate-x-0 md:z-auto',
+        'md:sticky md:top-0 md:h-screen md:translate-x-0 md:z-auto',
         open ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
       )}
     >
-      <div className="px-6 py-5 border-b border-gray-700 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold">티엔샤 재무관리</h1>
-          <p className="text-xs text-gray-400 mt-0.5">Tianxia Corporation</p>
-        </div>
+      <div className="px-5 h-16 flex items-center justify-between shrink-0">
+        <Link href="/" onClick={onClose} className="flex items-center gap-2.5">
+          <span className="size-8 rounded-[10px] bg-blue-500 text-white flex items-center justify-center text-sm font-extrabold">
+            T
+          </span>
+          <span className="text-[15px] font-bold text-gray-900 tracking-tight">티엔샤 재무관리</span>
+        </Link>
         <button
           onClick={onClose}
-          className="md:hidden p-1 rounded hover:bg-gray-700 transition-colors text-gray-400"
+          className="md:hidden p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-400"
           aria-label="메뉴 닫기"
         >
           <X size={18} />
         </button>
       </div>
 
-      <nav className="flex-1 px-3 py-4 overflow-y-auto">
+      <nav className="flex-1 px-3 pb-4 overflow-y-auto">
         {navGroups.map((group, gi) => (
-          <div key={gi} className={gi > 0 ? 'mt-4' : ''}>
+          <div key={gi} className={gi > 0 ? 'mt-5' : 'mt-2'}>
             {group.title && (
-              <p className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+              <p className="px-3 mb-1.5 text-xs font-semibold text-gray-400">
                 {group.title}
               </p>
             )}
-            <div className="space-y-1">
-              {group.items.map(({ href, label, icon: Icon, badge }) => (
-                <Link
-                  key={href}
-                  href={href}
-                  onClick={onClose}
-                  className={cn(
-                    'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
-                    pathname === href
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-300 hover:bg-gray-800 hover:text-white'
-                  )}
-                >
-                  <Icon size={16} />
-                  <span className="flex-1">{label}</span>
-                  {badge === 'unmatched' && unmatchedCount > 0 && (
-                    <span
-                      className="text-[11px] font-semibold bg-orange-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"
-                      title={`프로젝트 미연결 입금 ${unmatchedCount}건 (전체 기간) — 결제 내역의 '미연결만' 필터에서 연결해주세요`}
-                    >
-                      {unmatchedCount}
-                    </span>
-                  )}
-                  {badge === 'pendingLeave' && pendingLeaveCount > 0 && (
-                    <span
-                      className="text-[11px] font-semibold bg-amber-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"
-                      title={`승인 대기중인 연차 신청 ${pendingLeaveCount}건`}
-                    >
-                      {pendingLeaveCount}
-                    </span>
-                  )}
-                </Link>
-              ))}
+            <div className="space-y-0.5">
+              {group.items.map(({ href, label, icon: Icon, badge }) => {
+                const active = pathname === href
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    onClick={onClose}
+                    className={cn(
+                      'flex items-center gap-3 px-3 py-2.5 rounded-xl text-[15px] transition-colors',
+                      active
+                        ? 'bg-gray-100 text-gray-900 font-bold'
+                        : 'text-gray-600 font-medium hover:bg-gray-50 hover:text-gray-900'
+                    )}
+                  >
+                    <Icon size={18} className={active ? 'text-blue-500' : 'text-gray-400'} />
+                    <span className="flex-1">{label}</span>
+                    {badge === 'unmatched' && unmatchedCount > 0 && (
+                      <span
+                        className="text-[11px] font-bold bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"
+                        title={`프로젝트 미연결 입금 ${unmatchedCount}건 (전체 기간) — 결제 내역의 '미연결만' 필터에서 연결해주세요`}
+                      >
+                        {unmatchedCount}
+                      </span>
+                    )}
+                    {badge === 'pendingLeave' && pendingLeaveCount > 0 && (
+                      <span
+                        className="text-[11px] font-bold bg-orange-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"
+                        title={`승인 대기중인 연차 신청 ${pendingLeaveCount}건`}
+                      >
+                        {pendingLeaveCount}
+                      </span>
+                    )}
+                  </Link>
+                )
+              })}
             </div>
           </div>
         ))}
       </nav>
 
-      <div className="px-3 py-4 border-t border-gray-700">
+      <div className="px-3 py-3 border-t border-gray-100">
         <button
           onClick={handleLogout}
-          className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors w-full"
+          className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-[15px] font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors w-full"
         >
-          <LogOut size={16} />
+          <LogOut size={18} className="text-gray-400" />
           로그아웃
         </button>
       </div>
