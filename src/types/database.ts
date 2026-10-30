@@ -57,12 +57,6 @@ export interface Database {
         Update: { id?: string; project_id?: string; product_id?: string | null; item_name?: string | null; quantity?: number; unit_price_snapshot?: number; unit_cost_snapshot?: number; created_at?: string }
         Relationships: []
       }
-      project_deliveries: {
-        Row: { id: string; project_item_id: string; quantity: number; delivered_at: string; note: string | null; source: string; external_key: string | null; created_at: string }
-        Insert: { id?: string; project_item_id: string; quantity: number; delivered_at?: string; note?: string | null; source?: string; external_key?: string | null; created_at?: string }
-        Update: { id?: string; project_item_id?: string; quantity?: number; delivered_at?: string; note?: string | null; source?: string; external_key?: string | null; created_at?: string }
-        Relationships: []
-      }
       payments: {
         Row: { id: string; project_id: string | null; amount: number; payment_date: string; payment_type: '계약금' | '중도금' | '잔금' | '기타' | null; manager: string | null; memo: string | null; source: 'slack' | 'manual'; external_id: string | null; client_name_raw: string | null; matched: boolean; status: 'confirmed' | 'balance_due' | 'unpaid'; excluded: boolean; created_at: string; updated_at: string }
         Insert: { id?: string; project_id?: string | null; amount: number; payment_date: string; payment_type?: '계약금' | '중도금' | '잔금' | '기타' | null; manager?: string | null; memo?: string | null; source?: 'slack' | 'manual'; external_id?: string | null; client_name_raw?: string | null; matched?: boolean; status?: 'confirmed' | 'balance_due' | 'unpaid'; excluded?: boolean; created_at?: string; updated_at?: string }
@@ -180,9 +174,7 @@ export interface Database {
           contract_amount: number
           paid_amount: number
           items: Json
-          contracted: number
-          delivered: number
-          remaining: number
+          totals: Json
         }
         Relationships: []
       }
@@ -212,7 +204,6 @@ export type Representative = Database['public']['Tables']['representatives']['Ro
 export type Settings = Database['public']['Tables']['settings']['Row']
 export type Project = Database['public']['Tables']['projects']['Row']
 export type ProjectItem = Database['public']['Tables']['project_items']['Row']
-export type ProjectDelivery = Database['public']['Tables']['project_deliveries']['Row']
 export type Payment = Database['public']['Tables']['payments']['Row']
 export type MonthlyExpense = Database['public']['Tables']['monthly_expenses']['Row']
 export type MonthlyIncentive = Database['public']['Tables']['monthly_incentives']['Row']

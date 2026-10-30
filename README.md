@@ -45,17 +45,13 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 - `GET /api/integrations/staff-progress?status=ongoing&assignee=<직원 UUID 또는 이름>`
   - 본문: `{ projects: [...] }`
-  - 각 프로젝트 키: `project_id`, `client_id`, `client_name`, `project_name`, `status`, `contract_date`, `assignee_employee_id`, `assignee_name`, `contract_amount`, `paid_amount`, `items`, `contracted`, `delivered`, `remaining`
-  - `items` 는 `[{ project_item_id, category, product_name, contracted, delivered, remaining }]`
+  - 각 프로젝트 키: `project_id`, `client_id`, `client_name`, `project_name`, `status`, `contract_date`, `assignee_employee_id`, `assignee_name`, `contract_amount`, `paid_amount`, `items`, `totals`
+  - `items` 는 `[{ category, product_name, contracted }]`
+  - `totals` 는 `{ contracted }` 이고, 구성 항목 계약 수량의 합이다.
   - `category` 는 연결된 상품의 카테고리(`products.category`)이고, `contract_amount` 는 `projects.total_amount`, `paid_amount` 는 그 프로젝트 `payments.amount` 합계다.
   - `assignee_name` 은 직원 이름만 포함한다.
-- `POST /api/integrations/deliveries`
-  - 본문: `project_item_id` 또는 `project_id` + `category`, 그리고 `quantity`(1 이상의 정수). 선택 값은 `delivered_at`(`YYYY-MM-DD`, 없으면 한국 오늘), `note`, `external_key`.
-  - 응답은 `{ delivery, idempotent }` 이고, `delivery` 키는 `id`, `project_item_id`, `quantity`, `delivered_at`, `note`, `source`, `external_key`, `created_at` 뿐이다.
-  - 같은 `external_key` 가 이미 있으면 기존 납품 행을 바꾸지 않고 그대로 반환한다.
-  - `category` 가 한 프로젝트 안에서 여러 구성 항목과 맞으면 `project_item_id` 로 다시 지정한다.
 - `GET /api/integrations/employees`
   - 본문: `{ employees: [{ id, name }] }`
   - 재직 중(`active`) 직원만 반환한다.
 
-프로젝트 관리 화면에서 담당 직원을 지정하고, 구성 항목마다 납품을 기록하거나 삭제할 수 있다. 계약 수량, 납품 수량, 잔여 수량을 함께 보여 준다.
+프로젝트 관리 화면에서 담당 직원을 지정할 수 있다.

@@ -19,11 +19,10 @@ import {
 import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { refreshBadges } from '@/lib/payments/unmatched'
-import { kstToday } from '@/lib/kst'
 import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, Check, X, Ban, Copy } from 'lucide-react'
 import { CurrencyInput } from '@/components/ui/currency-input'
 import { yearOptions } from '@/components/shared/month-context'
-import type { Project, Client, Product, ProjectItem, ProjectDelivery } from '@/types/database'
+import type { Project, Client, Product, ProjectItem } from '@/types/database'
 
 type ProjectWithRelations = Project & {
   clients: { name: string } | null
@@ -31,15 +30,11 @@ type ProjectWithRelations = Project & {
   refund_amount: number     // 그중 환불 합계 (음수) — 계약금액이 왜 줄었는지 보여주기 위함
   pending_amount: number
   item_count: number
-  contracted_qty: number
-  delivered_qty: number | null
   total_list_price: number  // 구성 상품 정가 합계
   total_cost: number        // 구성 상품 실행비 합계
 }
 
 type EmployeeOption = { id: string; name: string; active: boolean }
-type DeliveryRow = Pick<ProjectDelivery, 'id' | 'project_item_id' | 'quantity' | 'delivered_at' | 'note' | 'source' | 'created_at'>
-type DeliveryDraft = { itemId: string; quantity: string; delivered_at: string; note: string }
 
 type ItemForm = {
   item_name: string
@@ -68,9 +63,6 @@ export default function ProjectsPage() {
   const [clients, setClients] = useState<Client[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [employees, setEmployees] = useState<EmployeeOption[]>([])
-  const [deliveries, setDeliveries] = useState<DeliveryRow[]>([])
-  const [deliveryDraft, setDeliveryDraft] = useState<DeliveryDraft | null>(null)
-  const [deliveryError, setDeliveryError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [itemsDialogOpen, setItemsDialogOpen] = useState(false)
@@ -121,29 +113,15 @@ export default function ProjectsPage() {
     // 프로젝트별 구성 상품 수 + 정가/실행비 합계
     const { data: itemData } = await supabase
       .from('project_items')
-      .select('id, project_id, quantity, unit_price_snapshot, unit_cost_snapshot')
+      .select('project_id, quantity, unit_price_snapshot, unit_cost_snapshot')
     const itemCountMap: Record<string, number> = {}
-    const contractedMap: Record<string, number> = {}
     const listPriceMap: Record<string, number> = {}
     const costMap: Record<string, number> = {}
-    const itemProject = new Map<string, string>()
     for (const item of itemData ?? []) {
       if (!item.project_id) continue
-      itemProject.set(item.id, item.project_id)
       itemCountMap[item.project_id] = (itemCountMap[item.project_id] ?? 0) + 1
-      contractedMap[item.project_id] = (contractedMap[item.project_id] ?? 0) + item.quantity
       listPriceMap[item.project_id] = (listPriceMap[item.project_id] ?? 0) + item.unit_price_snapshot * item.quantity
       costMap[item.project_id] = (costMap[item.project_id] ?? 0) + item.unit_cost_snapshot * item.quantity
-    }
-
-    const { data: deliveryData, error: deliveryListError } = await supabase
-      .from('project_deliveries')
-      .select('project_item_id, quantity')
-    const deliveredMap: Record<string, number> = {}
-    for (const row of deliveryData ?? []) {
-      const projectId = itemProject.get(row.project_item_id)
-      if (!projectId) continue
-      deliveredMap[projectId] = (deliveredMap[projectId] ?? 0) + row.quantity
     }
 
     const merged = (projectData as unknown as (Project & { clients: { name: string } | null })[])?.map((p) => ({
@@ -152,8 +130,6 @@ export default function ProjectsPage() {
       refund_amount: refundMap[p.id] ?? 0,
       pending_amount: pendingMap[p.id] ?? 0,
       item_count: itemCountMap[p.id] ?? 0,
-      contracted_qty: contractedMap[p.id] ?? 0,
-      delivered_qty: deliveryListError ? null : (deliveredMap[p.id] ?? 0),
       total_list_price: listPriceMap[p.id] ?? 0,
       total_cost: costMap[p.id] ?? 0,
     })) ?? []
@@ -190,38 +166,14 @@ export default function ProjectsPage() {
     setDialogOpen(true)
   }
 
-  async function loadDeliveries(itemIds: string[]) {
-    if (itemIds.length === 0) {
-      setDeliveries([])
-      setDeliveryError(null)
-      return
-    }
-    const { data, error } = await supabase
-      .from('project_deliveries')
-      .select('id, project_item_id, quantity, delivered_at, note, source, created_at')
-      .in('project_item_id', itemIds)
-      .order('delivered_at', { ascending: false })
-    if (error) {
-      setDeliveries([])
-      setDeliveryError('납품 기록을 불러오지 못했습니다: ' + error.message)
-      return
-    }
-    setDeliveryError(null)
-    setDeliveries(data ?? [])
-  }
-
   async function openItems(p: ProjectWithRelations) {
     setSelectedProject(p)
-    setDeliveryDraft(null)
-    setDeliveries([])
     const { data } = await supabase
       .from('project_items')
       .select('*, products(name, category)')
       .eq('project_id', p.id)
       .order('created_at')
-    const rows = (data as unknown as (ProjectItem & { item_name: string | null; products: { name: string; category: string | null } | null })[]) ?? []
-    setProjectItems(rows)
-    await loadDeliveries(rows.map((row) => row.id))
+    setProjectItems((data as unknown as (ProjectItem & { item_name: string | null; products: { name: string; category: string | null } | null })[]) ?? [])
     setItemsDialogOpen(true)
   }
 
@@ -356,35 +308,6 @@ export default function ProjectsPage() {
     toast.success('수정되었습니다.')
     setEditingItemId(null)
     if (selectedProject) openItems(selectedProject)
-  }
-
-  async function handleAddDelivery(itemId: string) {
-    if (!deliveryDraft || deliveryDraft.itemId !== itemId) return
-    const quantity = Number(deliveryDraft.quantity)
-    if (!Number.isInteger(quantity) || quantity <= 0) {
-      toast.error('납품 수량은 1 이상의 정수여야 합니다.')
-      return
-    }
-    const { error } = await supabase.from('project_deliveries').insert({
-      project_item_id: itemId,
-      quantity,
-      delivered_at: deliveryDraft.delivered_at || kstToday(),
-      note: deliveryDraft.note.trim() || null,
-      source: 'manual',
-    })
-    if (error) { toast.error('납품 기록 실패: ' + error.message); return }
-    toast.success('납품이 기록되었습니다.')
-    setDeliveryDraft(null)
-    await loadDeliveries(projectItems.map((item) => item.id))
-    load()
-  }
-
-  async function handleDeleteDelivery(deliveryId: string) {
-    const { error } = await supabase.from('project_deliveries').delete().eq('id', deliveryId)
-    if (error) { toast.error('납품 삭제 실패: ' + error.message); return }
-    toast.success('납품 기록을 삭제했습니다.')
-    await loadDeliveries(projectItems.map((item) => item.id))
-    load()
   }
 
   async function handleCopyProject(p: ProjectWithRelations) {
@@ -601,19 +524,12 @@ export default function ProjectsPage() {
                   {/* 구성 상품 — 입력 여부를 한눈에 */}
                   <TableCell className="text-center">
                     {p.item_count > 0 ? (
-                      <div className="flex flex-col items-center gap-1">
-                        <button
-                          onClick={() => openItems(p)}
-                          className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors"
-                        >
-                          {p.item_count}개 입력됨
-                        </button>
-                        {p.delivered_qty !== null && (
-                          <button type="button" onClick={() => openItems(p)} className="text-[11px] text-gray-500 hover:text-blue-600">
-                            계약 {p.contracted_qty} · 납품 {p.delivered_qty} · 잔여 {p.contracted_qty - p.delivered_qty}
-                          </button>
-                        )}
-                      </div>
+                      <button
+                        onClick={() => openItems(p)}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors"
+                      >
+                        {p.item_count}개 입력됨
+                      </button>
                     ) : (
                       <button
                         onClick={() => openItems(p)}
@@ -771,11 +687,10 @@ export default function ProjectsPage() {
       </Dialog>
 
       {/* 구성 상품 다이얼로그 */}
-      <Dialog open={itemsDialogOpen} onOpenChange={(open) => { setItemsDialogOpen(open); if (!open) { setEditingItemId(null); setDeliveryDraft(null) } }}>
+      <Dialog open={itemsDialogOpen} onOpenChange={(open) => { setItemsDialogOpen(open); if (!open) setEditingItemId(null) }}>
         <DialogContent className="max-w-5xl sm:max-w-5xl w-full max-h-[85dvh] flex flex-col overflow-hidden p-0">
           <DialogHeader className="px-6 pt-6 pb-3 shrink-0">
             <DialogTitle>{selectedProject?.name} — 구성 상품</DialogTitle>
-            {deliveryError && <p className="text-xs text-orange-600 pt-1">{deliveryError}</p>}
           </DialogHeader>
 
           <div className="flex-1 overflow-y-auto overflow-x-auto px-6 pb-2">
@@ -795,9 +710,6 @@ export default function ProjectsPage() {
               <div className="py-8 text-center text-sm text-gray-400">등록된 항목 없음</div>
             ) : projectItems.map((item) => {
               const isEditing = editingItemId === item.id
-              const itemDeliveries = deliveries.filter((row) => row.project_item_id === item.id)
-              const delivered = itemDeliveries.reduce((sum, row) => sum + row.quantity, 0)
-              const remaining = item.quantity - delivered
               return (
                 <React.Fragment key={item.id}>
                   {/* 읽기 행 */}
@@ -873,72 +785,6 @@ export default function ProjectsPage() {
                       </div>
                     </div>
                   )}
-                  <div className="mb-1 rounded-md bg-slate-50 px-3 py-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                      <span>계약 <span className="font-semibold text-gray-800">{item.quantity}</span></span>
-                      <span>납품 <span className="font-semibold text-gray-800">{delivered}</span></span>
-                      <span className={remaining < 0 ? 'text-red-600' : remaining === 0 ? 'text-green-700' : ''}>
-                        잔여 <span className="font-semibold">{remaining}</span>
-                      </span>
-                      <button
-                        type="button"
-                        className="text-blue-600 hover:underline"
-                        onClick={() => setDeliveryDraft({
-                          itemId: item.id,
-                          quantity: '1',
-                          delivered_at: kstToday(),
-                          note: '',
-                        })}
-                      >
-                        납품 기록
-                      </button>
-                    </div>
-                    {itemDeliveries.length > 0 && (
-                      <ul className="mt-1 space-y-1">
-                        {itemDeliveries.map((row) => (
-                          <li key={row.id} className="flex items-center gap-2 text-gray-600">
-                            <span className="w-24 shrink-0">{row.delivered_at}</span>
-                            <span className="w-10 shrink-0 text-right">{row.quantity}</span>
-                            <span className="min-w-0 flex-1 truncate">{row.note ?? ''}</span>
-                            {row.source === 'api' && <span className="text-blue-500">연동</span>}
-                            <button
-                              type="button"
-                              className="text-red-400 hover:text-red-600"
-                              aria-label="납품 삭제"
-                              onClick={() => handleDeleteDelivery(row.id)}
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {deliveryDraft?.itemId === item.id && (
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <Input
-                          type="number"
-                          min={1}
-                          className="h-8 w-20 text-xs"
-                          value={deliveryDraft.quantity}
-                          onChange={(e) => setDeliveryDraft({ ...deliveryDraft, quantity: e.target.value })}
-                        />
-                        <Input
-                          type="date"
-                          className="h-8 w-36 text-xs"
-                          value={deliveryDraft.delivered_at}
-                          onChange={(e) => setDeliveryDraft({ ...deliveryDraft, delivered_at: e.target.value })}
-                        />
-                        <Input
-                          className="h-8 w-48 text-xs"
-                          placeholder="메모"
-                          value={deliveryDraft.note}
-                          onChange={(e) => setDeliveryDraft({ ...deliveryDraft, note: e.target.value })}
-                        />
-                        <Button size="sm" className="h-8" onClick={() => handleAddDelivery(item.id)}>저장</Button>
-                        <Button size="sm" variant="outline" className="h-8" onClick={() => setDeliveryDraft(null)}>취소</Button>
-                      </div>
-                    )}
-                  </div>
                 </React.Fragment>
               )
             })}
@@ -1001,18 +847,12 @@ export default function ProjectsPage() {
           {selectedProject && projectItems.length > 0 && (() => {
             const totalListPrice = projectItems.reduce((s, it) => s + it.unit_price_snapshot * it.quantity, 0)
             const totalCost = projectItems.reduce((s, it) => s + it.unit_cost_snapshot * it.quantity, 0)
-            const contractedQty = projectItems.reduce((s, it) => s + it.quantity, 0)
-            const deliveredQty = deliveries.reduce((s, row) => s + row.quantity, 0)
             const contractAmount = selectedProject.total_amount
             const discountAmount = totalListPrice - contractAmount
             const discountRate = totalListPrice > 0 ? (discountAmount / totalListPrice) * 100 : 0
             const hasDiscount = Math.abs(discountAmount) > 0.5
             return (
               <div className="px-6 py-3 border-t bg-gray-50 shrink-0 text-sm space-y-1.5">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">계약 / 납품 / 잔여</span>
-                  <span className="font-medium">{contractedQty} / {deliveredQty} / {contractedQty - deliveredQty}</span>
-                </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">구성 상품 합계 (정가)</span>
                   <span className="font-medium">{formatKRW(totalListPrice)}</span>
