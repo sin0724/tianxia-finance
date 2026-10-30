@@ -46,9 +46,9 @@ export interface Database {
         Relationships: []
       }
       projects: {
-        Row: { id: string; client_id: string | null; assignee_employee_id: string | null; name: string; total_amount: number; contract_date: string | null; status: 'ongoing' | 'completed' | 'cancelled'; memo: string | null; created_at: string; updated_at: string }
-        Insert: { id?: string; client_id?: string | null; assignee_employee_id?: string | null; name: string; total_amount: number; contract_date?: string | null; status?: 'ongoing' | 'completed' | 'cancelled'; memo?: string | null; created_at?: string; updated_at?: string }
-        Update: { id?: string; client_id?: string | null; assignee_employee_id?: string | null; name?: string; total_amount?: number; contract_date?: string | null; status?: 'ongoing' | 'completed' | 'cancelled'; memo?: string | null; created_at?: string; updated_at?: string }
+        Row: { id: string; client_id: string | null; name: string; total_amount: number; contract_date: string | null; status: 'ongoing' | 'completed' | 'cancelled'; memo: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; client_id?: string | null; name: string; total_amount: number; contract_date?: string | null; status?: 'ongoing' | 'completed' | 'cancelled'; memo?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; client_id?: string | null; name?: string; total_amount?: number; contract_date?: string | null; status?: 'ongoing' | 'completed' | 'cancelled'; memo?: string | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
       project_items: {
@@ -160,25 +160,7 @@ export interface Database {
         Relationships: []
       }
     }
-    Views: {
-      staff_project_progress: {
-        Row: {
-          project_id: string
-          client_id: string | null
-          client_name: string | null
-          project_name: string
-          status: 'ongoing' | 'completed' | 'cancelled'
-          contract_date: string | null
-          assignee_employee_id: string | null
-          assignee_name: string | null
-          contract_amount: number
-          paid_amount: number
-          items: Json
-          totals: Json
-        }
-        Relationships: []
-      }
-    }
+    Views: { [_ in never]: never }
     Functions: {
       confirm_pending_payment: {
         Args: { p_payment_id: string; p_amount: number; p_payment_date: string; p_project_id?: string | null }

@@ -34,8 +34,6 @@ type ProjectWithRelations = Project & {
   total_cost: number        // 구성 상품 실행비 합계
 }
 
-type EmployeeOption = { id: string; name: string; active: boolean }
-
 type ItemForm = {
   item_name: string
   product_id: string
@@ -62,7 +60,6 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectWithRelations[]>([])
   const [clients, setClients] = useState<Client[]>([])
   const [products, setProducts] = useState<Product[]>([])
-  const [employees, setEmployees] = useState<EmployeeOption[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [itemsDialogOpen, setItemsDialogOpen] = useState(false)
@@ -78,7 +75,7 @@ export default function ProjectsPage() {
   const [searchQuery, setSearchQuery] = useState('')
 
   const [form, setForm] = useState({
-    client_id: '', assignee_employee_id: '', name: '', total_amount: '', contract_date: '',
+    client_id: '', name: '', total_amount: '', contract_date: '',
     status: 'ongoing' as Project['status'], memo: '',
   })
   const [items, setItems] = useState<ItemForm[]>([{ item_name: '', product_id: '', quantity: '1', unit_price_snapshot: '', unit_cost_snapshot: '' }])
@@ -142,16 +139,13 @@ export default function ProjectsPage() {
 
     const { data: productData } = await supabase.from('products').select('*').eq('active', true).order('name')
     setProducts(productData ?? [])
-
-    const { data: employeeData } = await supabase.from('employees').select('id, name, active').order('name')
-    setEmployees(employeeData ?? [])
   }
 
   useEffect(() => { load() }, [])
 
   function openAdd() {
     setEditing(null)
-    setForm({ client_id: '', assignee_employee_id: '', name: '', total_amount: '', contract_date: new Date().toISOString().split('T')[0], status: 'ongoing', memo: '' })
+    setForm({ client_id: '', name: '', total_amount: '', contract_date: new Date().toISOString().split('T')[0], status: 'ongoing', memo: '' })
     setItems([{ item_name: '', product_id: '', quantity: '1', unit_price_snapshot: '', unit_cost_snapshot: '' }])
     setDialogOpen(true)
   }
@@ -159,7 +153,7 @@ export default function ProjectsPage() {
   function openEdit(p: ProjectWithRelations) {
     setEditing(p)
     setForm({
-      client_id: p.client_id ?? '', assignee_employee_id: p.assignee_employee_id ?? '', name: p.name, total_amount: String(p.total_amount),
+      client_id: p.client_id ?? '', name: p.name, total_amount: String(p.total_amount),
       contract_date: p.contract_date ?? '', status: p.status, memo: p.memo ?? '',
     })
     setItems([])
@@ -207,7 +201,6 @@ export default function ProjectsPage() {
 
     const payload = {
       client_id: form.client_id || null,
-      assignee_employee_id: form.assignee_employee_id || null,
       name: form.name,
       total_amount: amount,
       contract_date: form.contract_date || null,
@@ -324,7 +317,6 @@ export default function ProjectsPage() {
     setEditing(null)
     setForm({
       client_id: p.client_id ?? '',
-      assignee_employee_id: p.assignee_employee_id ?? '',
       name: p.name + ' (복사)',
       total_amount: String(p.total_amount),
       contract_date: new Date().toISOString().split('T')[0],
@@ -430,7 +422,6 @@ export default function ProjectsPage() {
               <TableHead className="w-8"></TableHead>
               <TableHead>프로젝트명</TableHead>
               <TableHead>클라이언트</TableHead>
-              <TableHead>담당</TableHead>
               <TableHead>계약일</TableHead>
               <TableHead>상태</TableHead>
               <TableHead className="text-right">계약금액</TableHead>
@@ -442,9 +433,9 @@ export default function ProjectsPage() {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={11} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
+              <TableRow><TableCell colSpan={10} className="text-center py-8 text-gray-400">불러오는 중...</TableCell></TableRow>
             ) : filteredProjects.length === 0 ? (
-              <TableRow><TableCell colSpan={11} className="text-center py-8 text-gray-400">
+              <TableRow><TableCell colSpan={10} className="text-center py-8 text-gray-400">
                 {projects.length === 0 ? '등록된 프로젝트가 없습니다.' : '조건에 맞는 프로젝트가 없습니다.'}
               </TableCell></TableRow>
             ) : filteredProjects.map((p) => {
@@ -480,10 +471,6 @@ export default function ProjectsPage() {
                     )}
                   </TableCell>
                   <TableCell>{p.clients?.name ?? <span className="text-gray-400">-</span>}</TableCell>
-                  <TableCell>
-                    {employees.find((employee) => employee.id === p.assignee_employee_id)?.name
-                      ?? <span className="text-gray-400">-</span>}
-                  </TableCell>
                   <TableCell>{p.contract_date ?? '-'}</TableCell>
                   <TableCell>
                     <Badge variant={STATUS_VARIANT[p.status]}>{STATUS_LABEL[p.status]}</Badge>
@@ -602,23 +589,6 @@ export default function ProjectsPage() {
               <div className="space-y-1">
                 <Label>계약일</Label>
                 <Input type="date" value={form.contract_date} onChange={(e) => setForm({ ...form, contract_date: e.target.value })} />
-              </div>
-              <div className="space-y-1">
-                <Label>담당자</Label>
-                <select
-                  className="w-full border rounded-md px-3 py-2 text-sm"
-                  value={form.assignee_employee_id}
-                  onChange={(e) => setForm({ ...form, assignee_employee_id: e.target.value })}
-                >
-                  <option value="">미지정</option>
-                  {employees
-                    .filter((employee) => employee.active || employee.id === form.assignee_employee_id)
-                    .map((employee) => (
-                      <option key={employee.id} value={employee.id}>
-                        {employee.name}{employee.active ? '' : ' (비활성)'}
-                      </option>
-                    ))}
-                </select>
               </div>
               <div className="space-y-1 col-span-2">
                 <Label>메모</Label>

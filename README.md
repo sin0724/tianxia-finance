@@ -37,21 +37,18 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## 직원용 프로젝트 진행 피드
 
-재무 화면의 원가, 마진, 지출, 급여, 정산은 직원 CRM으로 넘기지 않는다. 진행 현황은 뷰 `staff_project_progress` 와 아래 API만 사용한다.
+재무 화면의 원가, 마진, 지출, 급여, 정산은 직원 CRM으로 넘기지 않는다. 스키마는 바꾸지 않고, 기존 테이블을 읽어 API에서만 진행 현황을 만든다.
 
-`supabase/migrations/025_staff_project_progress.sql` 을 데이터베이스에 적용한 뒤, 서버 환경 변수 `STAFF_PROGRESS_SECRET` 을 설정한다. 이 변경을 배포하는 것만으로 운영 데이터베이스 마이그레이션이 적용되지는 않는다.
+서버 환경 변수 `STAFF_PROGRESS_SECRET` 을 설정한다. 인증 헤더는 `Authorization: Bearer $STAFF_PROGRESS_SECRET` 이다. `/api` 는 로그인 미들웨어 대상이 아니므로, 시크릿 검사만으로 서버 간 호출을 허용한다.
 
-인증 헤더는 `Authorization: Bearer $STAFF_PROGRESS_SECRET` 이다. `/api` 는 로그인 미들웨어 대상이 아니므로, 시크릿 검사만으로 서버 간 호출을 허용한다.
-
-- `GET /api/integrations/staff-progress?status=ongoing&assignee=<직원 UUID 또는 이름>`
+- `GET /api/integrations/staff-progress?status=ongoing`
+  - `status` 는 `ongoing`, `completed`, `cancelled` 중 하나이거나 생략한다.
   - 본문: `{ projects: [...] }`
-  - 각 프로젝트 키: `project_id`, `client_id`, `client_name`, `project_name`, `status`, `contract_date`, `assignee_employee_id`, `assignee_name`, `contract_amount`, `paid_amount`, `items`, `totals`
+  - 각 프로젝트 키: `client`, `project`, `status`, `contract_date`, `contract_amount`, `paid_amount`, `items`, `totals`
+  - `client` 는 `clients.name` 이다. CRM 담당자는 이 고객명으로 맞춘다.
+  - `project` 는 프로젝트명이다.
   - `items` 는 `[{ category, product_name, contracted }]`
   - `totals` 는 `{ contracted }` 이고, 구성 항목 계약 수량의 합이다.
-  - `category` 는 연결된 상품의 카테고리(`products.category`)이고, `contract_amount` 는 `projects.total_amount`, `paid_amount` 는 그 프로젝트 `payments.amount` 합계다.
-  - `assignee_name` 은 직원 이름만 포함한다.
-- `GET /api/integrations/employees`
-  - 본문: `{ employees: [{ id, name }] }`
-  - 재직 중(`active`) 직원만 반환한다.
-
-프로젝트 관리 화면에서 담당 직원을 지정할 수 있다.
+  - `category` 는 연결된 상품의 카테고리(`products.category`)이고, `product_name` 은 `products.name` 이다.
+  - `contract_amount` 는 `projects.total_amount` 이다.
+  - `paid_amount` 는 그 프로젝트 `payments.amount` 합계다. 확정·예정·환불을 가리지 않는다.
