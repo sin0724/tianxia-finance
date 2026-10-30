@@ -22,6 +22,7 @@ export const runtime = 'nodejs'
  *
  * 기존 테이블을 읽어 조합한다. 스키마 변경은 없다.
  * 쿼리: status (ongoing|completed|cancelled)
+ * 입금은 payment_date, amount 만 읽어 paid_at, amount 로 돌려준다.
  */
 export async function GET(request: NextRequest) {
   if (!isStaffProgressAuthorized(request)) {

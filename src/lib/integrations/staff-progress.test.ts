@@ -10,6 +10,7 @@ import {
   PRODUCT_SELECT,
   PROJECT_SELECT,
   STAFF_ITEM_COLUMNS,
+  STAFF_PAYMENT_COLUMNS,
   STAFF_PROGRESS_COLUMNS,
   TOTALS_COLUMNS,
   buildStaffProgress,
@@ -39,6 +40,10 @@ const FORBIDDEN_KEYS = [
   'assignee_employee_id',
   'assignee_name',
   'assignee',
+  'manager',
+  'memo',
+  'source',
+  'external_id',
 ]
 
 function collectKeys(value: unknown, acc = new Set<string>()): Set<string> {
@@ -80,9 +85,20 @@ test('진행 피드는 고객명·프로젝트·계약 수량만 반환하고 �
     ],
     clients: [{ id: 'c1', name: '클라이언트', contact: '010', manager: '숨김' }],
     payments: [
-      { project_id: 'p1', amount: '400000', manager: '담당' },
-      { project_id: 'p1', amount: 100000 },
-      { project_id: null, amount: 999 },
+      {
+        id: 'pay-late',
+        project_id: 'p1',
+        amount: '400000',
+        payment_date: '2026-04-15T00:00:00',
+        manager: '담당',
+        memo: '중도금',
+        source: 'slack',
+        external_id: 'sheet-1',
+      },
+      { id: 'pay-early', project_id: 'p1', amount: 100000, payment_date: '2026-03-01', payment_type: '계약금' },
+      { id: 'pay-refund', project_id: 'p1', amount: -50000, payment_date: '2026-05-02', memo: '환불', source: 'manual' },
+      { id: 'pay-none', project_id: null, amount: 999, payment_date: '2026-01-01', manager: '숨김' },
+      { id: 'pay-bad-date', project_id: 'p1', amount: 1, payment_date: 'not-a-date' },
     ],
     items: [
       {
@@ -121,18 +137,33 @@ test('진행 피드는 고객명·프로젝트·계약 수량만 반환하고 �
   assert.deepEqual(Object.keys(rows[0].totals), [...TOTALS_COLUMNS])
   assert.equal(rows[0].client, '클라이언트')
   assert.equal(rows[0].contract_amount, 1500000.5)
-  assert.equal(rows[0].paid_amount, 500000)
+  assert.equal(rows[0].paid_amount, 450000)
+  assert.deepEqual(rows[0].payments.map((payment) => Object.keys(payment)), [
+    [...STAFF_PAYMENT_COLUMNS],
+    [...STAFF_PAYMENT_COLUMNS],
+    [...STAFF_PAYMENT_COLUMNS],
+  ])
+  assert.deepEqual(rows[0].payments, [
+    { paid_at: '2026-03-01', amount: 100000 },
+    { paid_at: '2026-04-15', amount: 400000 },
+    { paid_at: '2026-05-02', amount: -50000 },
+  ])
   assert.deepEqual(rows[0].items, [
     { category: 'Dcard', product_name: '디카드', contracted: 3 },
     { category: null, product_name: '직접상품', contracted: 1 },
     { category: null, product_name: null, contracted: 2 },
   ])
   assert.deepEqual(rows[0].totals, { contracted: 6 })
+  assert.deepEqual(rows[1].payments, [])
   assert.deepEqual(rows[1].items, [])
   assert.deepEqual(rows[1].totals, { contracted: 0 })
 
+  const keys = collectKeys(rows)
   for (const forbidden of FORBIDDEN_KEYS) {
-    assert.equal(collectKeys(rows).has(forbidden), false, forbidden)
+    assert.equal(keys.has(forbidden), false, forbidden)
+  }
+  for (const hidden of ['id', 'project_id', 'payment_date']) {
+    assert.equal(keys.has(hidden), false, hidden)
   }
 })
 
@@ -140,7 +171,10 @@ test('select 문자열은 허용 열만 읽고 금지 열을 포함하지 않는
   const selects = [PROJECT_SELECT, CLIENT_SELECT, PAYMENT_SELECT, ITEM_SELECT, PRODUCT_SELECT]
   assert.deepEqual(PROJECT_SELECT.split(','), ['id', 'client_id', 'name', 'status', 'contract_date', 'total_amount'])
   assert.deepEqual(CLIENT_SELECT.split(','), ['id', 'name'])
-  assert.deepEqual(PAYMENT_SELECT.split(','), ['project_id', 'amount'])
+  assert.deepEqual(PAYMENT_SELECT.split(','), ['project_id', 'payment_date', 'amount'])
+  for (const hidden of ['id', 'manager', 'memo', 'source', 'payment_type', 'external_id', 'client_name_raw', 'status']) {
+    assert.equal(PAYMENT_SELECT.split(',').includes(hidden), false, hidden)
+  }
   assert.deepEqual(ITEM_SELECT.split(','), ['project_id', 'product_id', 'quantity', 'created_at'])
   assert.deepEqual(PRODUCT_SELECT.split(','), ['id', 'category', 'name'])
   for (const forbidden of FORBIDDEN_KEYS) {

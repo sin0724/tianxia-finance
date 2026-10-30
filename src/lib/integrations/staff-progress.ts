@@ -13,6 +13,7 @@ export const STAFF_PROGRESS_COLUMNS = [
   'contract_date',
   'contract_amount',
   'paid_amount',
+  'payments',
   'items',
   'totals',
 ] as const
@@ -25,10 +26,12 @@ export const STAFF_ITEM_COLUMNS = [
 
 export const TOTALS_COLUMNS = ['contracted'] as const
 
-/** 진행 피드가 읽는 열. 금액·급여 열은 없다. */
+export const STAFF_PAYMENT_COLUMNS = ['paid_at', 'amount'] as const
+
+/** 진행 피드가 읽는 열. 금액·급여 열은 없다. 입금 행은 날짜와 금액만. */
 export const PROJECT_SELECT = 'id,client_id,name,status,contract_date,total_amount'
 export const CLIENT_SELECT = 'id,name'
-export const PAYMENT_SELECT = 'project_id,amount'
+export const PAYMENT_SELECT = 'project_id,payment_date,amount'
 export const ITEM_SELECT = 'project_id,product_id,quantity,created_at'
 export const PRODUCT_SELECT = 'id,category,name'
 
@@ -45,6 +48,11 @@ export type StaffProgressTotals = {
   contracted: number
 }
 
+export type StaffPayment = {
+  paid_at: string
+  amount: number
+}
+
 export type StaffProgress = {
   client: string | null
   project: string
@@ -52,6 +60,7 @@ export type StaffProgress = {
   contract_date: string | null
   contract_amount: number
   paid_amount: number
+  payments: StaffPayment[]
   items: StaffProgressItem[]
   totals: StaffProgressTotals
 }
@@ -112,12 +121,16 @@ export function buildStaffProgress(input: {
     })
   }
 
-  const paidByProject = new Map<string, number>()
+  const paymentsByProject = new Map<string, { paidAt: string; amount: number; index: number }[]>()
   for (const row of input.payments) {
     const record = asRecord(row)
     const projectId = asStringOrNull(record.project_id)
     if (!projectId) continue
-    paidByProject.set(projectId, (paidByProject.get(projectId) ?? 0) + asNumber(record.amount))
+    const paidAt = asPaidAt(record.payment_date)
+    if (!paidAt) continue
+    const bucket = paymentsByProject.get(projectId) ?? []
+    bucket.push({ paidAt, amount: asNumber(record.amount), index: bucket.length })
+    paymentsByProject.set(projectId, bucket)
   }
 
   const itemsByProject = new Map<string, { createdAt: string; item: StaffProgressItem }[]>()
@@ -148,6 +161,10 @@ export function buildStaffProgress(input: {
     const itemRows = (itemsByProject.get(id) ?? []).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     const items = itemRows.map((entry) => entry.item)
     const contracted = items.reduce((sum, item) => sum + item.contracted, 0)
+    const payments = (paymentsByProject.get(id) ?? [])
+      .sort((a, b) => a.paidAt.localeCompare(b.paidAt) || a.index - b.index)
+      .map((entry) => ({ paid_at: entry.paidAt, amount: entry.amount }))
+    const paidAmount = payments.reduce((sum, payment) => sum + payment.amount, 0)
     projects.push({
       sortDate: asString(record.contract_date),
       project: {
@@ -156,7 +173,8 @@ export function buildStaffProgress(input: {
         status: asString(record.status),
         contract_date: asStringOrNull(record.contract_date),
         contract_amount: asNumber(record.total_amount),
-        paid_amount: paidByProject.get(id) ?? 0,
+        paid_amount: paidAmount,
+        payments,
         items,
         totals: { contracted },
       },
@@ -185,6 +203,12 @@ function asString(value: unknown): string {
 
 function asStringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null
+}
+
+function asPaidAt(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(value.trim())
+  return match ? match[1] : null
 }
 
 function asNumber(value: unknown): number {
