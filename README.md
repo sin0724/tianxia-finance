@@ -44,11 +44,13 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 - `GET /api/integrations/staff-progress?status=ongoing`
   - `status` 는 `ongoing`, `completed`, `cancelled` 중 하나이거나 생략한다.
   - 본문: `{ projects: [...] }`
-  - 각 프로젝트 키: `client`, `project`, `status`, `contract_date`, `contract_amount`, `paid_amount`, `items`, `totals`
+  - 각 프로젝트 키: `client`, `project`, `status`, `contract_date`, `contract_amount`, `paid_amount`, `payments`, `items`, `totals`
   - `client` 는 `clients.name` 이다. CRM 담당자는 이 고객명으로 맞춘다.
   - `project` 는 프로젝트명이다.
+  - `payments` 는 `[{ paid_at, amount }]` 이다. `paid_at` 은 `payments.payment_date` 를 `YYYY-MM-DD` 로 둔 값이고, `amount` 는 `payments.amount` 이다.
+  - 입금 행에는 담당자, 메모, 출처, id 를 넣지 않는다. CRM 은 고객명으로 담당자를 맞춘 뒤 `paid_at` 의 월로 매출을 모은다.
   - `items` 는 `[{ category, product_name, contracted }]`
   - `totals` 는 `{ contracted }` 이고, 구성 항목 계약 수량의 합이다.
   - `category` 는 연결된 상품의 카테고리(`products.category`)이고, `product_name` 은 `products.name` 이다.
   - `contract_amount` 는 `projects.total_amount` 이다.
-  - `paid_amount` 는 그 프로젝트 `payments.amount` 합계다. 확정·예정·환불을 가리지 않는다.
+  - `paid_amount` 는 그 프로젝트 `payments` 금액 합이다. 확정·예정·환불을 가리지 않는다.
