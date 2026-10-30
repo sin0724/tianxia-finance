@@ -46,15 +46,21 @@ export interface Database {
         Relationships: []
       }
       projects: {
-        Row: { id: string; client_id: string | null; name: string; total_amount: number; contract_date: string | null; status: 'ongoing' | 'completed' | 'cancelled'; memo: string | null; created_at: string; updated_at: string }
-        Insert: { id?: string; client_id?: string | null; name: string; total_amount: number; contract_date?: string | null; status?: 'ongoing' | 'completed' | 'cancelled'; memo?: string | null; created_at?: string; updated_at?: string }
-        Update: { id?: string; client_id?: string | null; name?: string; total_amount?: number; contract_date?: string | null; status?: 'ongoing' | 'completed' | 'cancelled'; memo?: string | null; created_at?: string; updated_at?: string }
+        Row: { id: string; client_id: string | null; assignee_employee_id: string | null; name: string; total_amount: number; contract_date: string | null; status: 'ongoing' | 'completed' | 'cancelled'; memo: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; client_id?: string | null; assignee_employee_id?: string | null; name: string; total_amount: number; contract_date?: string | null; status?: 'ongoing' | 'completed' | 'cancelled'; memo?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; client_id?: string | null; assignee_employee_id?: string | null; name?: string; total_amount?: number; contract_date?: string | null; status?: 'ongoing' | 'completed' | 'cancelled'; memo?: string | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
       project_items: {
         Row: { id: string; project_id: string; product_id: string | null; item_name: string | null; quantity: number; unit_price_snapshot: number; unit_cost_snapshot: number; created_at: string }
         Insert: { id?: string; project_id: string; product_id?: string | null; item_name?: string | null; quantity: number; unit_price_snapshot: number; unit_cost_snapshot: number; created_at?: string }
         Update: { id?: string; project_id?: string; product_id?: string | null; item_name?: string | null; quantity?: number; unit_price_snapshot?: number; unit_cost_snapshot?: number; created_at?: string }
+        Relationships: []
+      }
+      project_deliveries: {
+        Row: { id: string; project_item_id: string; quantity: number; delivered_at: string; note: string | null; source: string; external_key: string | null; created_at: string }
+        Insert: { id?: string; project_item_id: string; quantity: number; delivered_at?: string; note?: string | null; source?: string; external_key?: string | null; created_at?: string }
+        Update: { id?: string; project_item_id?: string; quantity?: number; delivered_at?: string; note?: string | null; source?: string; external_key?: string | null; created_at?: string }
         Relationships: []
       }
       payments: {
@@ -160,7 +166,27 @@ export interface Database {
         Relationships: []
       }
     }
-    Views: { [_ in never]: never }
+    Views: {
+      staff_project_progress: {
+        Row: {
+          project_id: string
+          client_id: string | null
+          client_name: string | null
+          project_name: string
+          status: 'ongoing' | 'completed' | 'cancelled'
+          contract_date: string | null
+          assignee_employee_id: string | null
+          assignee_name: string | null
+          contract_amount: number
+          paid_amount: number
+          items: Json
+          contracted: number
+          delivered: number
+          remaining: number
+        }
+        Relationships: []
+      }
+    }
     Functions: {
       confirm_pending_payment: {
         Args: { p_payment_id: string; p_amount: number; p_payment_date: string; p_project_id?: string | null }
@@ -186,6 +212,7 @@ export type Representative = Database['public']['Tables']['representatives']['Ro
 export type Settings = Database['public']['Tables']['settings']['Row']
 export type Project = Database['public']['Tables']['projects']['Row']
 export type ProjectItem = Database['public']['Tables']['project_items']['Row']
+export type ProjectDelivery = Database['public']['Tables']['project_deliveries']['Row']
 export type Payment = Database['public']['Tables']['payments']['Row']
 export type MonthlyExpense = Database['public']['Tables']['monthly_expenses']['Row']
 export type MonthlyIncentive = Database['public']['Tables']['monthly_incentives']['Row']
