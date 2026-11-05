@@ -1,8 +1,9 @@
 /**
  * 통장·카드 내역 파일 파서 (서버 전용 — 업로드 API에서 호출)
  *
- * 통장: KB국민은행 거래내역 CSV (cp949, 최신순)
+ * 통장: KB국민은행 거래내역 CSV(cp949) 또는 XLS, 둘 다 최신순
  *   거래일시, 보낸분/받는분, 출금액(원), 입금액(원), 잔액(원), 내 통장 표시, 적요, 처리점, 구분
+ *   XLS는 표 위에 계좌 요약 6줄이 있고, 거래일시가 "YYYY.MM.DD HH:MM:SS", 금액이 숫자 셀이다
  * 카드: KB국민 법인카드 승인내역조회 XLS (헤더 1행)
  *   승인일(YYYY.MM.DD), 승인시간, 카드번호, 가맹점명, 업종명, 승인금액, 부가세, 승인구분, 승인번호, 상태 …
  *   해외 승인금액은 "$240.65" 문자열, 취소는 음수 금액의 별도 행
@@ -79,12 +80,32 @@ function decodeKorean(buf: ArrayBuffer): string {
   }
 }
 
-export function parseBankCsv(buf: ArrayBuffer): { rows: ParsedBankTx[]; errors: string[] } {
-  const lines = decodeKorean(buf).split(/\r?\n/).filter((l) => l.trim())
-  const header = splitCsvLine(lines[0]).map((h) => h.trim())
+/** 엑셀 파일 시그니처 — XLS(OLE2) 또는 XLSX(ZIP). 확장자는 바뀔 수 있어 내용으로 판단한다 */
+function isExcelFile(buf: ArrayBuffer): boolean {
+  const b = new Uint8Array(buf)
+  return (b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0) || (b[0] === 0x50 && b[1] === 0x4b)
+}
+
+/** 통장 파일을 문자열 표로 읽는다. CSV·XLS 뒤쪽 처리는 같은 코드를 탄다 */
+async function readBankTable(buf: ArrayBuffer): Promise<string[][]> {
+  if (isExcelFile(buf)) {
+    const XLSX = await import('xlsx')
+    const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+    const data = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: true })
+    return data.map((r) => r.map((c) => String(c)))
+  }
+  return decodeKorean(buf).split(/\r?\n/).filter((l) => l.trim()).map(splitCsvLine)
+}
+
+export async function parseBankFile(buf: ArrayBuffer): Promise<{ rows: ParsedBankTx[]; errors: string[] }> {
+  const table = await readBankTable(buf)
+  // XLS는 표 위에 계좌 요약이 있으므로 헤더 줄을 찾아서 시작한다
+  const headerIdx = table.findIndex((r) => r.some((c) => c.trim().startsWith('거래일시')))
+  if (headerIdx < 0) throw new Error('통장 파일에서 "거래일시" 열을 찾지 못했습니다 — KB국민은행 거래내역 파일인지 확인해 주세요')
+  const header = table[headerIdx].map((h) => h.trim())
   const col = (name: string) => {
     const i = header.findIndex((h) => h.startsWith(name))
-    if (i < 0) throw new Error(`통장 CSV에 "${name}" 열이 없습니다 — KB국민은행 거래내역 CSV인지 확인해 주세요`)
+    if (i < 0) throw new Error(`통장 파일에 "${name}" 열이 없습니다 — KB국민은행 거래내역 파일인지 확인해 주세요`)
     return i
   }
   const C = {
@@ -93,10 +114,13 @@ export function parseBankCsv(buf: ArrayBuffer): { rows: ParsedBankTx[]; errors: 
   }
   const errors: string[] = []
   const parsed: Omit<ParsedBankTx, 'seq' | 'row_hash'>[] = []
-  for (let i = 1; i < lines.length; i++) {
-    const v = splitCsvLine(lines[i])
-    const at = (v[C.at] ?? '').trim()
-    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(at)) { errors.push(`${i + 1}행: 거래일시 형식 오류 "${at}"`); continue }
+  for (let i = headerIdx + 1; i < table.length; i++) {
+    const v = table[i]
+    if (v.every((c) => !c.trim())) continue
+    // XLS의 "2026.10.30 18:13:46"을 CSV 형식으로 맞춘다. 같은 거래가 같은 해시를 가져야 중복이 걸러진다
+    const rawAt = (v[C.at] ?? '').trim()
+    const at = rawAt.replace(/^(\d{4})\.(\d{2})\.(\d{2})/, '$1-$2-$3')
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(at)) { errors.push(`${i + 1}행: 거래일시 형식 오류 "${rawAt}"`); continue }
     const flag = (v[C.flag] ?? '').replace(/　/g, '').trim()
     const kind = (v[C.kind] ?? '').trim()
     try {

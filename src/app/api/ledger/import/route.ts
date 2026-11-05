@@ -9,7 +9,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { parseBankCsv, parseCardXls } from '@/lib/ledger/parse'
+import { parseBankFile, parseCardXls } from '@/lib/ledger/parse'
 import { importBank, importCard } from '@/lib/ledger/server'
 
 export async function POST(request: Request) {
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
     const buf = await file.arrayBuffer()
     const db = createAdminClient()
     if (kind === 'bank') {
-      const { rows, errors } = parseBankCsv(buf)
+      const { rows, errors } = await parseBankFile(buf)
       if (rows.length === 0) return Response.json({ error: '읽을 수 있는 거래가 없습니다.', errors }, { status: 400 })
       const result = await importBank(db, rows, file.name)
       return Response.json({ ok: true, kind, ...result, parseErrors: errors })
