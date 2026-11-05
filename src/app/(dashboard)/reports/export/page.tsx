@@ -166,12 +166,13 @@ export default function ExportPage() {
           year: number; month: number; base_salary: number; paid_at: string | null
           base_income_tax: number | null; base_local_tax: number | null
           incentive_income_tax: number | null; incentive_local_tax: number | null
-          employer_insurance: number | null
+          employer_insurance: number | null; other_deductions: number | null
           employees: { name: string } | null
         }
         const incomeTax = (pr.base_income_tax ?? 0) + (pr.incentive_income_tax ?? 0)
         const localTax = (pr.base_local_tax ?? 0) + (pr.incentive_local_tax ?? 0)
         const insurance = pr.employer_insurance ?? 0
+        const otherDeductions = pr.other_deductions ?? 0
         return {
           연도: pr.year,
           월: pr.month,
@@ -179,7 +180,8 @@ export default function ExportPage() {
           '기본급(세전)': pr.base_salary,
           소득세: incomeTax,
           지방소득세: localTax,
-          '차인지급액(세후)': pr.base_salary - incomeTax - localTax,
+          '기타공제(4대보험 등)': otherDeductions,
+          '차인지급액(세후)': pr.base_salary - incomeTax - localTax - otherDeductions,
           '4대보험_회사부담': insurance,
           인건비_총원가: pr.base_salary + insurance,
           지급일: pr.paid_at ?? '',

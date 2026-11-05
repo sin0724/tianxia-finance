@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { AttendanceTab } from '@/components/employees/attendance-tab'
 import { toast } from '@/lib/toast'
 import { ArrowRight, Plus, Pencil, UserMinus, UserPlus } from 'lucide-react'
 import { formatKRW } from '@/lib/calculations/settlement'
@@ -68,11 +69,12 @@ const emptyForm = {
   sort_order: '',
   hired_at: '',
   slack_user_id: '',
+  memo: '',
 }
 
 /**
- * 직원 마스터 — 몇 달에 한 번 바뀌는 설정값만 둔다.
- * 매달 반복되는 급여 산정·확정·지급은 /payroll 에서 처리한다.
+ * 직원 관리 — 급여 조건·근무 일정·메모와 월별 근태 기록을 모은다.
+ * 급여 금액은 세무사 명세서로 /payroll 에서 확정한다.
  */
 export default function EmployeesPage() {
   const supabase = createClient()
@@ -80,6 +82,7 @@ export default function EmployeesPage() {
   const [retired, setRetired] = useState<Employee[]>([])
   const [showRetired, setShowRetired] = useState(false)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
+  const [view, setView] = useState<'list' | 'attendance'>('list')
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Employee | null>(null)
@@ -130,6 +133,7 @@ export default function EmployeesPage() {
       sort_order: e.sort_order != null ? String(e.sort_order) : '',
       hired_at: e.hired_at ?? '',
       slack_user_id: e.slack_user_id ?? '',
+      memo: e.memo ?? '',
     })
     setDialogOpen(true)
   }
@@ -156,6 +160,7 @@ export default function EmployeesPage() {
       sort_order: form.sort_order ? parseInt(form.sort_order) : null,
       hired_at: form.hired_at || null,
       slack_user_id: form.slack_user_id.trim() || null,
+      memo: form.memo.trim() || null,
     }
 
     const { error } = editing
@@ -193,7 +198,10 @@ export default function EmployeesPage() {
     return (
       <TableRow key={e.id} className={isRetired ? 'opacity-60 bg-gray-50/50' : ''}>
         <TableCell className="text-center text-xs text-gray-400">{e.sort_order ?? '-'}</TableCell>
-        <TableCell className="font-medium">{e.name}</TableCell>
+        <TableCell className="font-medium max-w-48">
+          {e.name}
+          {e.memo && <div className="text-xs font-normal text-gray-400 truncate" title={e.memo}>{e.memo}</div>}
+        </TableCell>
         <TableCell>
           <Badge variant={e.employee_type === 'part_time' ? 'secondary' : 'outline'} className="text-xs">
             {e.employee_type === 'part_time' ? '아르바이트' : '정직원'}
@@ -276,18 +284,35 @@ export default function EmployeesPage() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold">직원 관리</h1>
-          <p className="text-xs text-gray-400 mt-0.5">기본급·시급·인센티브 조건 등 잘 바뀌지 않는 값만 둡니다.</p>
+          <p className="text-xs text-gray-400 mt-0.5">급여 조건·근무 일정·메모와 월별 근태를 관리합니다.</p>
         </div>
         <div className="flex items-center gap-2">
           <Link href="/payroll">
             <Button variant="outline" size="sm">
-              이번 달 급여 처리<ArrowRight size={14} className="ml-1" />
+              급여 명세서 올리기<ArrowRight size={14} className="ml-1" />
             </Button>
           </Link>
           <Button onClick={openAdd} size="sm"><Plus size={16} className="mr-1" />직원 추가</Button>
         </div>
       </div>
 
+      <div className="flex gap-1 border-b">
+        {([['list', '직원 목록'], ['attendance', '월별 근태']] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setView(key)}
+            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              view === key ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'attendance' ? <AttendanceTab employees={[...employees, ...retired]} /> : (
+      <div className="space-y-4">
       {/* 정직원 / 아르바이트 구분 */}
       <div className="flex items-center gap-1 overflow-x-auto">
         {TYPE_FILTERS.map(({ key, label }) => (
@@ -353,6 +378,7 @@ export default function EmployeesPage() {
                   <div className="text-xs text-purple-600 mt-1">근무: {formatWorkSchedule(e)}</div>
                 )}
                 {e.hired_at && <div className="text-xs text-gray-400 mt-1">입사일: {e.hired_at}</div>}
+                {e.memo && <div className="text-xs text-gray-500 mt-1">{e.memo}</div>}
               </div>
               <div className="flex flex-col gap-1 shrink-0">
                 <Button size="sm" variant="ghost" onClick={() => openEdit(e)}><Pencil size={14} /></Button>
@@ -414,11 +440,11 @@ export default function EmployeesPage() {
 
       <p className="text-xs text-gray-400 leading-relaxed">
         * 순번은 사업소득지급대장의 NO 순서입니다. 비워두면 이름 순으로 나갑니다.<br />
-        * 4대보험 가입으로 표시된 직원만 급여 화면에서 회사부담분 입력칸이 열립니다.<br />
-        * 아르바이트의 <strong>근무 요일·시간·휴게시간</strong>은 급여 화면에서 월 근무시간과 주휴수당을 산출하는 근거입니다.
-        비워두면 근무시간을 직접 입력해야 하고, 주휴는 월 평균으로 근사 계산됩니다.<br />
-        * 주민등록번호는 저장하지 않습니다 — 대장의 해당 칸은 비워서 내보냅니다.
+        * 아르바이트의 <strong>근무 요일·시간·휴게시간</strong>을 넣으면 월별 근태에서 소정근로 시간을 채울 수 있습니다.<br />
+        * 주민등록번호는 저장하지 않습니다.
       </p>
+      </div>
+      )}
 
       {/* 추가 / 수정 다이얼로그 */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -452,7 +478,6 @@ export default function EmployeesPage() {
               <div className="space-y-1">
                 <Label>기본급 (월, 세전)</Label>
                 <CurrencyInput value={form.base_salary} onChange={(v) => setForm({ ...form, base_salary: v })} />
-                <p className="text-xs text-gray-400">급여 화면에서 매달 이 값이 기본으로 채워집니다.</p>
               </div>
             ) : (
               <>
@@ -472,7 +497,7 @@ export default function EmployeesPage() {
                   <div className="min-w-0">
                     <div className="text-sm font-medium">시급에 주휴수당 포함 (포괄시급)</div>
                     <p className="text-xs text-gray-400 mt-0.5">
-                      체크하면 급여 화면에서 주휴수당을 따로 더하지 않습니다. 체크하지 않으면 주 15시간 이상일 때 주휴수당이 별도로 붙습니다.
+                      체크하면 시급에 주휴수당이 들어 있는 조건입니다. 체크하지 않으면 주 15시간 이상일 때 주휴수당이 별도로 붙습니다.
                     </p>
                     {form.wage_includes_holiday && formWage > 0 && (
                       <div className={`mt-2 rounded-md px-2 py-1.5 text-xs ${
@@ -574,7 +599,7 @@ export default function EmployeesPage() {
                     </div>
                   ) : (
                     <p className="text-xs text-gray-400 mt-1">
-                      근무 요일과 시간을 채우면 급여 화면에서 월 근무시간을 자동으로 산출할 수 있습니다.
+                      근무 요일과 시간을 채우면 월별 근태에서 소정근로 시간을 채울 수 있습니다.
                     </p>
                   )}
                 </div>
@@ -610,7 +635,7 @@ export default function EmployeesPage() {
               <div>
                 <div className="text-sm font-medium">4대보험 가입</div>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  체크하면 급여 화면에 회사부담분 입력칸이 열리고, 그 금액이 영업이익에서 차감됩니다.
+                  세무사 급여대장으로 급여를 받는 직원입니다.
                 </p>
               </div>
             </label>
@@ -629,6 +654,15 @@ export default function EmployeesPage() {
                 <Label>입사일</Label>
                 <Input type="date" value={form.hired_at} onChange={(e) => setForm({ ...form, hired_at: e.target.value })} />
               </div>
+            </div>
+
+            <div className="space-y-1">
+              <Label>메모</Label>
+              <textarea
+                className="w-full min-h-20 rounded-md border px-3 py-2 text-sm"
+                value={form.memo}
+                onChange={(e) => setForm({ ...form, memo: e.target.value })}
+              />
             </div>
 
             <div className="space-y-1">
