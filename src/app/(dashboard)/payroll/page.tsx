@@ -10,6 +10,7 @@ import { CurrencyInput } from '@/components/ui/currency-input'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
+import { computeAutoIncentives, isLedgerIncentiveMonth } from '@/lib/calculations/incentives'
 import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
 import { LedgerPasteDialog } from '@/components/payroll/ledger-paste-dialog'
@@ -121,7 +122,6 @@ export default function PayrollPage() {
   const [manualIds, setManualIds] = useState<Set<string>>(new Set())
   const [existingIds, setExistingIds] = useState<Set<string>>(new Set())
   const [preHireRecords, setPreHireRecords] = useState<{ id: string; name: string; hired_at: string }[]>([])
-  const [insuranceExpense, setInsuranceExpense] = useState<{ id: string; item_name: string | null; amount: number }[]>([])
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -146,7 +146,6 @@ export default function PayrollPage() {
       { data: payments },
       { data: settingsRows },
       { data: cancelledProjects },
-      { data: expenses },
     ] = await Promise.all([
       supabase.from('employees').select('*').order('sort_order', { nullsFirst: false }).order('name'),
       supabase.from('monthly_payroll').select('*').eq('year', year).eq('month', month),
@@ -154,7 +153,6 @@ export default function PayrollPage() {
       supabase.from('payments').select('amount, manager, status, excluded, project_id').gte('payment_date', start).lte('payment_date', end),
       supabase.from('settings').select('*'),
       supabase.from('projects').select('id').eq('status', 'cancelled'),
-      supabase.from('monthly_expenses').select('id, item_name, amount').eq('year', year).eq('month', month),
     ])
 
     // 재직 기간에 걸친 달만 급여 대상이다 — 입사 전 달은 빼고, 퇴사자는 퇴사한 달까지 넣는다.
@@ -174,12 +172,7 @@ export default function PayrollPage() {
       })
     )
 
-    // 4대보험 이중계상 감지 — 급여 화면에서 집계하므로 지출 항목에 또 있으면 안 된다
-    setInsuranceExpense(
-      (expenses ?? []).filter((e) => /4대보험|사대보험|사업주부담|회사부담/.test(e.item_name ?? '') && e.amount > 0)
-    )
-
-    // ── 인센티브: 수동 지정이 있으면 그 값, 없으면 입금 실적 기반 자동 산출 ──
+    // ── 인센티브: 세무사 대장·수동 지정 금액. 2026년 10월 이전 달만 입금 실적으로 자동 산출한다 ──
     const settings = Object.fromEntries((settingsRows ?? []).map((s) => [s.key, Number(s.value)]))
     const vatRate = settings.vat_rate ?? 0.1
     const cancelledIds = new Set((cancelledProjects ?? []).map((p) => p.id))
@@ -193,16 +186,8 @@ export default function PayrollPage() {
     for (const i of manualIncentives ?? []) {
       if (i.employee_id) gross[i.employee_id] = (gross[i.employee_id] ?? 0) + i.amount
     }
-    for (const emp of empList) {
-      if (manualSet.has(emp.id)) continue
-      if (!emp.incentive_type || emp.incentive_value <= 0) continue
-      const mine = confirmed.filter((p) => p.manager?.trim().toLowerCase() === emp.name.trim().toLowerCase())
-      if (mine.length === 0) continue
-      const revenue = mine.reduce((s, p) => s + p.amount, 0)
-      const supply = revenue / (1 + vatRate)
-      gross[emp.id] = emp.incentive_type === 'percent'
-        ? Math.round(supply * emp.incentive_value / 100)
-        : emp.incentive_value
+    for (const auto of computeAutoIncentives(empList, confirmed, vatRate, year, month, 'auto')) {
+      if (!manualSet.has(auto.employee_id)) gross[auto.employee_id] = auto.amount
     }
     setIncentiveGross(gross)
 
@@ -341,7 +326,7 @@ export default function PayrollPage() {
         .insert({ year, month, employee_id: empId, amount, memo: '수동 조정' })
       if (error) { toast.error('저장 실패'); return }
     }
-    toast.success(amount > 0 ? '인센티브를 수동 지정했습니다.' : '자동 계산으로 되돌렸습니다.')
+    toast.success(amount > 0 ? '인센티브를 저장했습니다.' : '인센티브를 지웠습니다.')
     setEditingIncentive((prev) => { const n = { ...prev }; delete n[empId]; return n })
     await load()
   }
@@ -432,7 +417,7 @@ export default function PayrollPage() {
   }
 
   // ── 세무사 회신 반영 ────────────────────────────────────────
-  function applyPaste(parsed: ParsedRow[]) {
+  async function applyPaste(parsed: ParsedRow[]) {
     setForms((prev) => {
       const next = { ...prev }
       for (const p of parsed) {
@@ -449,7 +434,38 @@ export default function PayrollPage() {
       return next
     })
     setDirty(true)
-    toast.success(`${parsed.length}명의 세액을 반영했습니다. 확인 후 저장하세요.`)
+
+    if (!isLedgerIncentiveMonth(year, month)) {
+      toast.success(`${parsed.length}명의 세액을 반영했습니다. 확인 후 저장하세요.`)
+      return
+    }
+
+    // 대장의 인센티브가 최종 금액이다. 대장에 있는 직원은 0원이어도 그 값으로 맞춘다
+    const matched = parsed.filter((p) => p.employeeId && forms[p.employeeId])
+    const ids = matched.map((p) => p.employeeId as string)
+    const { error: clearError } = await supabase.from('monthly_incentives').delete()
+      .eq('year', year).eq('month', month).in('employee_id', ids)
+    if (clearError) { toast.error('인센티브 반영 실패: ' + clearError.message); return }
+    const paid = matched.filter((p) => p.incentive > 0)
+    if (paid.length > 0) {
+      const { error } = await supabase.from('monthly_incentives').insert(
+        paid.map((p) => ({ year, month, employee_id: p.employeeId, amount: p.incentive, memo: '세무사 대장' }))
+      )
+      if (error) { toast.error('인센티브 반영 실패: ' + error.message); return }
+    }
+    setIncentiveGross((prev) => {
+      const next = { ...prev }
+      for (const id of ids) delete next[id]
+      for (const p of paid) next[p.employeeId as string] = p.incentive
+      return next
+    })
+    setManualIds((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) next.delete(id)
+      for (const p of paid) next.add(p.employeeId as string)
+      return next
+    })
+    toast.success(`${parsed.length}명 반영 완료 · 인센티브 ${paid.length}명은 저장됐고, 세액은 확인 후 저장하세요.`)
   }
 
   // ── 대장 내보내기 ───────────────────────────────────────────
@@ -491,15 +507,6 @@ export default function PayrollPage() {
     await load()
   }
 
-  // ── 4대보험 지출 항목 정리 ──────────────────────────────────
-  async function clearInsuranceExpense() {
-    const ids = insuranceExpense.map((e) => e.id)
-    const { error } = await supabase.from('monthly_expenses').update({ amount: 0 }).in('id', ids)
-    if (error) { toast.error('정리 실패: ' + error.message); return }
-    toast.success('지출 항목을 0으로 정리했습니다. 이제 급여 화면 값만 반영됩니다.')
-    await load()
-  }
-
   function applyBulkPayDate() {
     if (!bulkPayDate) { toast.error('지급일을 선택해주세요.'); return }
     setForms((prev) => {
@@ -509,9 +516,6 @@ export default function PayrollPage() {
     })
     setDirty(true)
   }
-
-  const insuranceTotalInExpense = insuranceExpense.reduce((s, e) => s + e.amount, 0)
-  const showDoubleCountWarning = insuranceTotalInExpense > 0 && totals.insurance > 0
 
   // ── 렌더 ─────────────────────────────────────────────────────
   const GRID_ESTIMATE = 'md:grid md:grid-cols-[1.4fr_1.3fr_1.2fr_1.1fr_1.1fr] md:gap-3'
@@ -594,26 +598,6 @@ export default function PayrollPage() {
               </p>
               <Button size="sm" variant="outline" className="h-7 text-xs border-amber-400" onClick={clearPreHireRecords}>
                 입사 전 급여 기록 삭제
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 4대보험 이중계상 경고 */}
-      {showDoubleCountWarning && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
-          <div className="flex items-start gap-2">
-            <AlertTriangle size={16} className="text-amber-600 mt-0.5 shrink-0" />
-            <div className="text-sm text-amber-900 space-y-1.5 min-w-0">
-              <p className="font-medium">4대보험이 두 번 계산되고 있습니다.</p>
-              <p className="text-xs leading-relaxed">
-                이 화면에서 집계된 회사부담분 <strong>{formatKRW(totals.insurance)}</strong>이 이미 영업이익에서 차감되는데,
-                월별 지출에도 {insuranceExpense.map((e) => `"${e.item_name}"`).join(', ')} 항목으로{' '}
-                <strong>{formatKRW(insuranceTotalInExpense)}</strong>이 들어가 있습니다.
-              </p>
-              <Button size="sm" variant="outline" className="h-7 text-xs border-amber-400" onClick={clearInsuranceExpense}>
-                월별 지출 항목을 0으로 정리
               </Button>
             </div>
           </div>
@@ -886,7 +870,7 @@ export default function PayrollPage() {
             * 아르바이트 <strong>근무시간</strong>은 휴게시간과 결근을 뺀 실근무시간입니다. 근무 일정이 등록된 직원은 계산기 아이콘으로 소정근로 기준 시간을 채울 수 있습니다.<br />
             * <strong>결근</strong>은 시급분에서 다시 빼지 않습니다 (근무시간에 이미 반영). 그 주의 주휴수당이 발생하지 않는지만 가립니다 — 결근 1일당 1주치가 소멸합니다.
             연차·유급휴일은 결근이 아니므로 넣지 마세요.<br />
-            * 인센티브는 이번 달 확정 입금 실적으로 자동 산출됩니다. 금액을 클릭하면 수동으로 덮어쓸 수 있고, 0으로 저장하면 자동 계산으로 돌아갑니다.<br />
+            * 인센티브는 ② 세무사 확정에서 대장을 올리면 그 금액으로 들어갑니다. 금액을 클릭하면 직접 고칠 수 있습니다.<br />
             * 여기 넣는 금액은 모두 <strong>세전</strong>입니다. 인센티브 3.3% 원천징수는 ② 확정 단계에서 소득세·지방소득세로 나눠 기록합니다.<br />
             * 대장을 내보내면 자동으로 <strong>세무사 확정 대기</strong> 상태로 넘어갑니다.
           </p>
@@ -905,7 +889,7 @@ export default function PayrollPage() {
                   <Sparkles size={13} className="mr-1" />3.3% 예상값 채우기
                 </Button>
                 <Button size="sm" onClick={() => setPasteOpen(true)}>
-                  <ClipboardPaste size={13} className="mr-1" />급여장부 붙여넣기
+                  <ClipboardPaste size={13} className="mr-1" />세무사 급여장부 올리기
                 </Button>
               </div>
             </div>

@@ -5,8 +5,24 @@ import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/lib/toast'
 import { Download } from 'lucide-react'
+import Decimal from 'decimal.js'
+import { CATEGORIES, LINE_LABEL, categoryOf, type CategoryDef } from '@/lib/ledger/categories'
 
 type ExportScope = 'month' | 'year'
+
+const CARD_FX_FALLBACK = 1400
+const PAGE_SIZE = 1000
+
+// Supabase는 한 번에 1,000건까지만 돌려준다. 연간 카드 내역은 이보다 많다
+async function fetchAll<T>(page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>) {
+  const out: T[] = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await page(from, from + PAGE_SIZE - 1)
+    if (error) throw new Error(error.message)
+    out.push(...(data ?? []))
+    if ((data ?? []).length < PAGE_SIZE) return out
+  }
+}
 
 export default function ExportPage() {
   const supabase = createClient()
@@ -24,7 +40,8 @@ export default function ExportPage() {
       const startMonth = scope === 'month' ? month : 1
       const endMonth = scope === 'month' ? month : 12
       const startDate = `${year}-${String(startMonth).padStart(2, '0')}-01`
-      const endDate = new Date(year, endMonth, 0).toISOString().split('T')[0]
+      // toISOString은 UTC로 바뀌어 한국 시간에서는 월말이 하루 앞당겨진다
+      const endDate = `${year}-${String(endMonth).padStart(2, '0')}-${String(new Date(year, endMonth, 0).getDate()).padStart(2, '0')}`
 
       // 데이터 병렬 로드
       const [
@@ -66,6 +83,20 @@ export default function ExportPage() {
           .order('month'),
       ])
 
+      const expenseKeys = (Object.entries(CATEGORIES) as [string, CategoryDef][])
+        .filter(([, c]) => c.cls === 'expense').map(([k]) => k)
+      const [bankExpenses, cardExpenses] = await Promise.all([
+        fetchAll((from, to) => supabase.from('bank_transactions')
+          .select('tx_date, seq, counterparty, memo, category, withdrawal, deposit')
+          .gte('tx_date', startDate).lte('tx_date', endDate)
+          .in('category', expenseKeys).eq('cancelled', false)
+          .order('seq').range(from, to)),
+        fetchAll((from, to) => supabase.from('card_transactions')
+          .select('id, approved_date, merchant, industry, amount_krw, amount_foreign')
+          .gte('approved_date', startDate).lte('approved_date', endDate)
+          .eq('excluded', false).order('approved_at').order('id').range(from, to)),
+      ])
+
       const wb = XLSX.utils.book_new()
 
       // 시트 1: 매출 상세
@@ -91,21 +122,42 @@ export default function ExportPage() {
       XLSX.utils.book_append_sheet(wb, ws1, '매출상세')
 
       // 시트 2: 지출 상세
-      const expenseRows = (expenses ?? []).map((e: unknown) => {
+      // 통장·카드 내역이 있는 달은 그 내역을, 없는 과거 달만 수기 지출을 쓴다
+      const fxOf = new Map((settlements ?? []).map((s) => [s.month, Number(s.card_fx_rate ?? CARD_FX_FALLBACK)]))
+      const monthOf = (d: string) => Number(d.slice(5, 7))
+      const bankRows = bankExpenses.map((t) => {
+        const def = categoryOf(t.category)
+        return {
+          연도: year, 월: monthOf(t.tx_date), 날짜: t.tx_date, 출처: '통장',
+          유형: def.line ? LINE_LABEL[def.line] : '', 카테고리: def.label,
+          거래처: t.counterparty, 금액: t.withdrawal - t.deposit, 메모: t.memo,
+        }
+      })
+      const cardRows = cardExpenses.map((c) => {
+        const m = monthOf(c.approved_date)
+        const fx = fxOf.get(m) ?? CARD_FX_FALLBACK
+        return {
+          연도: year, 월: m, 날짜: c.approved_date, 출처: '카드',
+          유형: '변동비', 카테고리: c.industry || '카드', 거래처: c.merchant,
+          금액: c.amount_krw ?? new Decimal(c.amount_foreign ?? 0).times(fx).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber(),
+          메모: c.amount_krw === null ? `USD ${c.amount_foreign} × ${fx}` : '',
+        }
+      })
+      const ledgerMonths = new Set([...bankRows, ...cardRows].map((r) => r.월))
+      const manualRows = (expenses ?? []).map((e: unknown) => {
         const exp = e as {
-          year: number; month: number; amount: number; memo: string | null
+          year: number; month: number; amount: number; memo: string | null; item_name: string | null
           expense_categories: { name: string; parent_type: string } | null
         }
         return {
-          연도: exp.year,
-          월: exp.month,
+          연도: exp.year, 월: exp.month, 날짜: '', 출처: '수기',
           유형: exp.expense_categories?.parent_type === 'fixed' ? '고정비' : exp.expense_categories?.parent_type === 'variable' ? '변동비' : '특수비',
-          카테고리: exp.expense_categories?.name ?? '',
-          금액: exp.amount,
-          메모: exp.memo ?? '',
+          카테고리: exp.expense_categories?.name ?? exp.item_name ?? '',
+          거래처: '', 금액: exp.amount, 메모: exp.memo ?? '',
         }
-      })
-      const ws2 = XLSX.utils.json_to_sheet(expenseRows.length ? expenseRows : [{ 연도: '', 월: '', 유형: '', 카테고리: '', 금액: '', 메모: '' }])
+      }).filter((r) => !ledgerMonths.has(r.월))
+      const expenseRows = [...manualRows, ...bankRows, ...cardRows].sort((a, b) => a.월 - b.월)
+      const ws2 = XLSX.utils.json_to_sheet(expenseRows.length ? expenseRows : [{ 연도: '', 월: '', 날짜: '', 출처: '', 유형: '', 카테고리: '', 거래처: '', 금액: '', 메모: '' }])
       XLSX.utils.book_append_sheet(wb, ws2, '지출상세')
 
       // 시트 3: 급여대장

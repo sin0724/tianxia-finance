@@ -238,13 +238,7 @@ export default function DashboardPage() {
           message: `미연결 결제 ${unmatchedCount}건 — 프로젝트를 연결해주세요.`,
           href: '/payments' })
       }
-      const [expRes, empRes] = await Promise.all([
-        supabase.from('monthly_expenses').select('id').eq('year', selYear).eq('month', selMonth).limit(1),
-        supabase.from('employees').select('id').eq('active', true).limit(1),
-      ])
-      if (!expRes.data || expRes.data.length === 0)
-        newAlerts.push({ id: `expenses_${ym}`, level: 'info',
-          message: `${selMonth}월 지출이 아직 입력되지 않았습니다.`, href: '/expenses' })
+      const empRes = await supabase.from('employees').select('id').eq('active', true).limit(1)
 
       if (empRes.data && empRes.data.length > 0) {
         // 0원 행은 "입력됨"으로 보지 않는다 — 전체 저장 시 미지급 직원도 행이 생기기 때문

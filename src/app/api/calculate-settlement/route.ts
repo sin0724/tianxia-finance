@@ -2,7 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { calculateMonthlySettlement, type SettlementResult } from '@/lib/calculations/settlement'
 import { NextResponse } from 'next/server'
 import { computeAutoIncentives } from '@/lib/calculations/incentives'
-import { computeBankSettlement, hasBankData, saveBankSettlement } from '@/lib/ledger/server'
+import { computeBankSettlement, hasBankData, projectedCostsFromBank, saveBankSettlement } from '@/lib/ledger/server'
 
 function toSnakeCase(r: SettlementResult) {
   return {
@@ -154,6 +154,15 @@ async function computeBothSettlements(year: number, month: number) {
     }))
     .filter((e) => !!e.category_type)
 
+  // 예상 정산 비용은 통장 실적 기준. 통장 정산이 하나도 없는 과거 달만 수기 지출을 쓴다
+  const bankCosts = await projectedCostsFromBank(supabase, year, month)
+  const projectedExpenses = bankCosts
+    ? (['fixed', 'variable', 'special'] as const).map((type) => ({
+        id: `bank-${type}`, year, month, category_id: null, item_name: null, parent_type: type,
+        amount: bankCosts[type], memo: null, created_at: '', category_type: type as string,
+      }))
+    : expenses
+
   const { data: payroll } = await supabase
     .from('monthly_payroll')
     .select('*')
@@ -230,7 +239,7 @@ async function computeBothSettlements(year: number, month: number) {
     year, month,
     payments: paymentsForProjected,
     projectItems: allProjectItems,
-    expenses,
+    expenses: projectedExpenses,
     incentives: projectedIncentives,
     payroll: payroll ?? [],
     gonggu,
@@ -254,7 +263,7 @@ async function computeBothSettlements(year: number, month: number) {
   const pendingTotal = allPendingPayments.reduce((sum, p) => sum + p.amount, 0)
   const pendingCount = allPendingPayments.length
 
-  return { supabase, result, projectedResult, pendingTotal, pendingCount }
+  return { supabase, result, projectedResult, pendingTotal, pendingCount, hasManualExpenses: expenses.length > 0 }
 }
 
 export async function GET(request: Request) {
@@ -282,7 +291,7 @@ export async function POST(request: Request) {
   const { year, month } = await request.json()
   if (!year || !month) return NextResponse.json({ error: 'year, month 필수' }, { status: 400 })
 
-  const { supabase, result, projectedResult, pendingTotal, pendingCount } = await computeBothSettlements(year, month)
+  const { supabase, result, projectedResult, pendingTotal, pendingCount, hasManualExpenses } = await computeBothSettlements(year, month)
 
   if (await hasBankData(supabase, year, month)) {
     // 통장 내역이 있는 달은 월 마감(통장 기준)으로 저장 — 수기 지출 기준으로 덮어쓰지 않는다
@@ -296,6 +305,11 @@ export async function POST(request: Request) {
       success: true, basis: 'bank', result: bank,
       projectedResult: toSnakeCase(projectedResult), pendingTotal, pendingCount,
     })
+  }
+
+  // 수기 지출도 통장 내역도 없는 달을 저장하면 비용 0원으로 이익이 부풀려진다
+  if (!hasManualExpenses) {
+    return NextResponse.json({ error: '이 달은 통장 내역이 없어요. 월 마감에서 통장·카드 내역을 먼저 올려 주세요.' }, { status: 400 })
   }
 
   const { error } = await supabase.from('monthly_settlements').upsert(

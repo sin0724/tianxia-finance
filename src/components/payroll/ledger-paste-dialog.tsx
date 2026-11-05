@@ -7,7 +7,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { parseLedgerPaste, type ParsedRow } from '@/lib/payroll/parse'
-import { AlertTriangle, ClipboardPaste } from 'lucide-react'
+import { toast } from '@/lib/toast'
+import { AlertTriangle, ClipboardPaste, Upload } from 'lucide-react'
 
 interface Props {
   open: boolean
@@ -17,7 +18,7 @@ interface Props {
 }
 
 /**
- * 세무사가 회신한 급여장부를 붙여넣어 세액·차인지급액을 일괄 반영한다.
+ * 세무사가 회신한 급여장부(엑셀 파일 또는 붙여넣기)로 인센티브 최종 금액과 세액을 일괄 반영한다.
  * 반영 전에 반드시 미리보기로 확인시킨다.
  */
 export function LedgerPasteDialog({ open, onOpenChange, employees, onApply }: Props) {
@@ -27,6 +28,18 @@ export function LedgerPasteDialog({ open, onOpenChange, employees, onApply }: Pr
     () => (text.trim() ? parseLedgerPaste(text, employees) : null),
     [text, employees]
   )
+
+  // 엑셀 파일은 복사·붙여넣기와 같은 탭 구분 표로 바꿔 같은 파서와 미리보기를 탄다
+  async function handleFile(file: File | undefined) {
+    if (!file) return
+    try {
+      const XLSX = await import('xlsx')
+      const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' })
+      setText(XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]], { FS: '\t' }))
+    } catch {
+      toast.error('엑셀 파일을 읽지 못했습니다. 비밀번호가 걸려 있으면 풀고 올려 주세요.')
+    }
+  }
 
   function handleApply() {
     if (!parsed || parsed.rows.length === 0) return
@@ -46,15 +59,22 @@ export function LedgerPasteDialog({ open, onOpenChange, employees, onApply }: Pr
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ClipboardPaste size={18} />
-            세무사 급여장부 붙여넣기
+            세무사 급여장부 올리기
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-3">
           <p className="text-xs text-gray-500 leading-relaxed">
-            세무사가 보내온 사업소득지급대장에서 <strong>머리글 행부터 마지막 직원 행까지</strong> 선택해 복사한 뒤
-            아래에 붙여넣으세요. 이름으로 직원을 찾아 소득세·지방소득세·차인지급액을 채웁니다.
+            세무사가 보내온 사업소득지급대장 엑셀 파일을 올리거나, <strong>머리글 행부터 마지막 직원 행까지</strong> 복사해 아래에 붙여넣으세요.
+            이름으로 직원을 찾아 인센티브 최종 금액과 세액을 반영합니다.
           </p>
+
+          <label className="flex items-center justify-center gap-2 rounded-lg border border-dashed p-3 text-sm text-gray-600 cursor-pointer hover:bg-gray-50">
+            <Upload size={16} className="text-gray-400" />
+            엑셀 파일 선택 (.xls, .xlsx)
+            <input type="file" accept=".xls,.xlsx" className="hidden"
+              onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = '' }} />
+          </label>
 
           <textarea
             value={text}

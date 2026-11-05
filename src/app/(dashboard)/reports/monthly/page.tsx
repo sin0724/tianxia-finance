@@ -272,7 +272,7 @@ export default function MonthlyReportPage() {
               {' · '}
               {settlement.basis === 'bank'
                 ? <Link href="/closing" className="underline text-blue-600">통장 기준 (월 마감)</Link>
-                : '월별 지출 수기 입력 기준'}
+                : <Link href="/expenses" className="underline">월별 지출 수기 입력 기준</Link>}
             </div>
           </div>
 
