@@ -230,8 +230,8 @@ export default function DashboardPage() {
       const nowDate = new Date()
       if (nowDate.getDate() >= 25) {
         newAlerts.push({ id: `monthend_${ym}`, level: 'info',
-          message: '월말입니다. 지출·급여를 입력하고 정산을 완료해주세요.',
-          href: '/reports/monthly' })
+          message: '월말입니다. 통장·카드 내역과 급여 명세서를 올리고 정산을 저장해주세요.',
+          href: '/closing' })
       }
       if (unmatchedCount > 0) {
         newAlerts.push({ id: 'unmatched', level: 'warn',
@@ -251,7 +251,7 @@ export default function DashboardPage() {
       }
       if (!s)
         newAlerts.push({ id: `settlement_${ym}`, level: 'info',
-          message: `${selMonth}월 정산이 아직 계산되지 않았습니다.`, href: '/reports/monthly' })
+          message: `${selMonth}월 정산이 아직 저장되지 않았습니다.`, href: '/closing' })
     }
     setAlerts(newAlerts)
     setInitialLoading(false)
@@ -531,7 +531,7 @@ export default function DashboardPage() {
                 <MoMDelta current={settlement.operating_profit} prev={prevSettlement.operating_profit} />
               )}
               {settlement && (
-                <Link href="/reports/monthly" className="text-xs text-blue-400 hover:underline">상세 보기</Link>
+                <Link href="/closing" className="text-xs text-blue-400 hover:underline">상세 보기</Link>
               )}
             </div>
           </CardContent>
@@ -570,7 +570,7 @@ export default function DashboardPage() {
         <Card>
           <CardContent className="py-8 text-center text-gray-400 text-sm">
             아직 정산 데이터가 없습니다.{' '}
-            <Link href="/reports/monthly" className="underline text-blue-500">월별 정산</Link>에서 계산해주세요.
+            <Link href="/closing" className="underline text-blue-500">월 마감</Link>에서 저장해주세요.
           </CardContent>
         </Card>
       )}

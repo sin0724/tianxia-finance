@@ -166,39 +166,6 @@ export async function autoMatchPayments(db: DB) {
 // ─────────────────────────────────────────────────────────────
 // 통장 기준 정산
 // ─────────────────────────────────────────────────────────────
-export async function hasBankData(db: DB, year: number, month: number) {
-  const { start, end } = monthRange(year, month)
-  const { count } = await db.from('bank_transactions').select('id', { count: 'exact', head: true })
-    .gte('tx_date', start).lte('tx_date', end)
-  return (count ?? 0) > 0
-}
-
-// 예상 정산의 고정·변동·특수비 — 이 달 통장 정산을 저장했으면 그 실적, 아니면 직전 저장 3개월 평균
-export interface ProjectedCostRow {
-  year: number
-  month: number
-  total_fixed_cost: number
-  total_variable_cost: number
-  total_special_cost: number
-}
-
-export function pickProjectedCosts(rows: ProjectedCostRow[], year: number, month: number) {
-  const key = (r: { year: number; month: number }) => r.year * 12 + r.month
-  const target = key({ year, month })
-  const own = rows.find((r) => key(r) === target)
-  const source = own ? [own] : rows.filter((r) => key(r) < target).sort((a, b) => key(b) - key(a)).slice(0, 3)
-  if (source.length === 0) return null
-  const avg = (k: 'total_fixed_cost' | 'total_variable_cost' | 'total_special_cost') =>
-    Math.round(source.reduce((s, r) => s + Number(r[k]), 0) / source.length)
-  return { fixed: avg('total_fixed_cost'), variable: avg('total_variable_cost'), special: avg('total_special_cost') }
-}
-
-export async function projectedCostsFromBank(db: DB, year: number, month: number) {
-  const { data } = await db.from('monthly_settlements')
-    .select('year, month, total_fixed_cost, total_variable_cost, total_special_cost').eq('basis', 'bank')
-  return pickProjectedCosts(data ?? [], year, month)
-}
-
 export interface ClosingChecks {
   bankRows: number
   lastBankDate: string | null

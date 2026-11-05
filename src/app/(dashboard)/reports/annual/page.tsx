@@ -40,6 +40,7 @@ export default function AnnualReportPage() {
   const [managerStats, setManagerStats] = useState<ManagerStat[]>([])
   const [settledMonths, setSettledMonths] = useState<Set<number>>(new Set())
   const [totalPending, setTotalPending] = useState(0)
+  const [repTotals, setRepTotals] = useState<{ id: string; name: string; share_ratio: number; amount: number }[]>([])
   const [loading, setLoading] = useState(true)
 
   async function load() {
@@ -53,6 +54,13 @@ export default function AnnualReportPage() {
       .order('month')
 
     const settledMonthSet = new Set((settlements ?? []).map((s) => s.month))
+
+    // 대표별 누적 정산액 — 저장된 달만 합산
+    const { data: reps } = await supabase.from('representatives').select('id, name, share_ratio').order('created_at')
+    setRepTotals((reps ?? []).map((rep) => ({
+      ...rep,
+      amount: (settlements ?? []).reduce((sum, s) => sum + Math.floor(s.distributable_profit * rep.share_ratio / 100), 0),
+    })))
 
     const summaryMap: Record<number, MonthlySummary> = {}
     for (const s of settlements ?? []) {
@@ -251,6 +259,18 @@ export default function AnnualReportPage() {
           )}
         </div>
       </div>
+
+      {repTotals.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          {repTotals.map((rep) => (
+            <div key={rep.id} className="bg-white rounded-lg border p-4">
+              <p className="text-xs text-gray-500">{rep.name} 연간 누적 정산액 ({rep.share_ratio}%)</p>
+              <p className={`text-xl font-bold mt-1 ${rep.amount >= 0 ? 'text-blue-600' : 'text-red-500'}`}>{formatKRW(rep.amount)}</p>
+              <p className="text-xs text-gray-400 mt-0.5">저장된 {settledMonths.size}개월 합산</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {loading && <div className="text-center py-12 text-gray-400">불러오는 중...</div>}
 

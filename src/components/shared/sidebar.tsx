@@ -12,7 +12,6 @@ import {
   Users,
   Building2,
   CreditCard,
-  BarChart3,
   TrendingUp,
   FileSpreadsheet,
   FolderKanban,
@@ -67,7 +66,6 @@ const navGroups: { title: string | null; items: NavItem[] }[] = [
   {
     title: '리포트',
     items: [
-      { href: '/reports/monthly', label: '월별 정산', icon: BarChart3 },
       { href: '/reports/annual',  label: '연간 분석', icon: TrendingUp },
     ],
   },

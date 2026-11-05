@@ -54,7 +54,7 @@ export default function SettingsPage() {
       if (error) { toast.error(`저장 실패: ${error.message}`); setSaving(false); return }
     }
     setSaving(false)
-    toast.success('설정이 저장되었습니다. 월별 정산을 재계산하면 새 요율이 반영됩니다.')
+    toast.success('설정이 저장되었습니다. 월 마감에서 정산을 다시 저장하면 새 요율이 반영됩니다.')
   }
 
   async function saveRep() {

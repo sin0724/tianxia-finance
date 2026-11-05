@@ -6,7 +6,7 @@
  *   1. 통장 거래내역 CSV / 카드 승인내역 XLS 업로드 (겹쳐 올려도 중복 저장 안 됨)
  *   2. 점검: 월말까지 들어왔는지, 잔액 연속, 미분류, 결제와 연결 안 된 매출 입금, 급여 확정 여부
  *   3. 거래 분류 확인·수정 — "앞으로도 이렇게"를 고르면 다음 업로드부터 자동 적용
- *   4. 정산 미리보기 → 저장 (월별 정산 리포트·대시보드에 반영)
+ *   4. 정산 미리보기 → 저장 (대시보드·연간 분석에 반영)
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -62,7 +62,8 @@ export default function ClosingPage() {
   const [cards, setCards] = useState<CardTransaction[]>([])
   const [result, setResult] = useState<SettleResult | null>(null)
   const [checks, setChecks] = useState<ClosingChecks | null>(null)
-  const [saved, setSaved] = useState<{ basis: string; calculated_at: string } | null>(null)
+  const [saved, setSaved] = useState<{ basis: string; calculated_at: string; distributable_profit: number } | null>(null)
+  const [reps, setReps] = useState<{ id: string; name: string; share_ratio: number }[]>([])
   const [fx, setFx] = useState('')
   const [filter, setFilter] = useState<Filter>('review')
   const [uploading, setUploading] = useState<'bank' | 'card' | null>(null)
@@ -88,14 +89,16 @@ export default function ClosingPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [{ data: bank }, { data: card }, { data: st }] = await Promise.all([
+    const [{ data: bank }, { data: card }, { data: st }, { data: repRows }] = await Promise.all([
       supabase.from('bank_transactions').select('*').gte('tx_date', start).lte('tx_date', end).order('seq'),
       supabase.from('card_transactions').select('*').gte('approved_date', start).lte('approved_date', end).order('approved_at'),
-      supabase.from('monthly_settlements').select('basis, calculated_at').eq('year', year).eq('month', month).maybeSingle(),
+      supabase.from('monthly_settlements').select('basis, calculated_at, distributable_profit').eq('year', year).eq('month', month).maybeSingle(),
+      supabase.from('representatives').select('id, name, share_ratio').order('created_at'),
     ])
     setTxs(bank ?? [])
     setCards(card ?? [])
     setSaved(st ?? null)
+    setReps(repRows ?? [])
     await loadPreview()
     setLoading(false)
   }, [supabase, start, end, year, month, loadPreview])
@@ -509,8 +512,17 @@ export default function ClosingPage() {
                   <span className={`tabular-nums ${l.value < 0 ? 'text-red-600' : ''}`}>{formatKRW(l.value)}</span>
                 </div>
               ))}
-              <div className="flex justify-between py-2 text-sm font-bold border-t mt-1">
-                <span>대표 1인 정산액</span><span className="tabular-nums">{formatKRW(r.representative_share)}</span>
+              <div className="border-t mt-1 py-1">
+                {reps.length > 0 ? reps.map((rep) => (
+                  <div key={rep.id} className="flex justify-between py-1 text-sm font-bold">
+                    <span>{rep.name} 정산액 ({rep.share_ratio}%)</span>
+                    <span className="tabular-nums">{formatKRW(Math.floor(r.distributable_profit * rep.share_ratio / 100))}</span>
+                  </div>
+                )) : (
+                  <div className="flex justify-between py-1 text-sm font-bold">
+                    <span>대표 1인 정산액</span><span className="tabular-nums">{formatKRW(r.representative_share)}</span>
+                  </div>
+                )}
               </div>
             </div>
             <div className="space-y-3">
@@ -532,6 +544,11 @@ export default function ClosingPage() {
                 <p className="text-xs text-gray-400 mt-1">급여·원천세·4대보험 이체는 급여 대장으로, 카드대금은 카드 승인내역으로 이미 비용에 들어가 있어 중복으로 빼지 않습니다.</p>
               </div>
             </div>
+            {saved && Number(saved.distributable_profit) !== r.distributable_profit && (
+              <div className="lg:col-span-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                저장 뒤에 내용이 바뀌었습니다. 위 금액이 최신이고, 대시보드에는 저장된 분배 가능 이익 {formatKRW(Number(saved.distributable_profit))}이 보입니다. 저장하면 같아집니다.
+              </div>
+            )}
             <div className="lg:col-span-2 flex items-center justify-between border-t pt-3">
               <span className="text-xs text-gray-500">
                 {saved ? `저장됨 · ${saved.basis === 'bank' ? '통장 기준' : '수기 지출 기준'} · ${new Date(saved.calculated_at).toLocaleString('ko-KR')}` : '아직 저장 전'}
