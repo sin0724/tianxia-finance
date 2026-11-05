@@ -62,6 +62,28 @@ function paymentNames(p: MatchPayment): string[] {
 const dayDiff = (a: string, b: string) => Math.round((Date.parse(a) - Date.parse(b)) / 86_400_000)
 
 /**
+ * 자동 매칭에서 빠진 입금에 손으로 연결할 결제 후보.
+ * 금액이 달라도 이름이 비슷하면 보여준다 — 수기로 넣은 결제는 금액이 조금 다를 수 있어서,
+ * 후보를 안 보여주면 새로 등록해 중복이 생긴다.
+ * 수금 예정 건은 금액이 같을 때만 낸다. 금액이 다르면 입금 확정 금액을 앱이 정할 수 없다.
+ */
+export function rankPaymentCandidates<P extends MatchPayment>(r: MatchBankRow, payments: P[], limit = 10) {
+  const amount = r.deposit > 0 ? r.deposit : -r.withdrawal
+  const who = `${r.counterparty} ${r.memo}`
+  return payments
+    .map((payment) => ({
+      payment,
+      exact: payment.amount === amount,
+      sim: Math.max(0, ...paymentNames(payment).map((n) => nameSimilarity(who, n))),
+      days: Math.abs(dayDiff(r.tx_date, payment.payment_date)),
+    }))
+    .filter((c) => c.exact || (c.sim >= 0.3 && c.payment.status === 'confirmed'))
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || b.sim - a.sim || a.days - b.days)
+    .slice(0, limit)
+}
+
+
+/**
  * @param linked 이미 다른 통장 거래와 연결된 결제 id (중복 연결 방지)
  * 창(window)을 넓혀 가며 3회 — 가까운 날짜를 먼저 확정해야 같은 금액의 정기 결제가 엉키지 않는다
  */

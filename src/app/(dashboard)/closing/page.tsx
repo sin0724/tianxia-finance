@@ -15,17 +15,25 @@ import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { MonthNavigator } from '@/components/shared/month-navigator'
 import { useMonth } from '@/components/shared/month-context'
 import { CATEGORIES, categoryOf, type CategoryKey } from '@/lib/ledger/categories'
+import { rankPaymentCandidates, type MatchPayment } from '@/lib/ledger/match'
 import type { SettleResult } from '@/lib/ledger/settle'
 import type { ClosingChecks } from '@/lib/ledger/server'
 import type { BankTransaction, CardTransaction } from '@/types/database'
 import { AlertTriangle, CheckCircle2, RefreshCw, Upload } from 'lucide-react'
 
 type Filter = 'review' | 'all' | 'non_pl'
+
+type LinkablePayment = MatchPayment & { project_id: string | null }
+type PaymentCandidate = ReturnType<typeof rankPaymentCandidates<LinkablePayment>>[number]
+
+const SEARCH_DAYS = 60
+const shiftDate = (date: string, days: number) => new Date(Date.parse(date) + days * 86_400_000).toISOString().slice(0, 10)
 
 const CLS_LABEL: Record<string, string> = {
   revenue: '매출', expense: '비용', payroll_cash: '급여 현금', card: '카드대금', non_pl: '손익 외', unclassified: '미분류',
@@ -62,6 +70,10 @@ export default function ClosingPage() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
   const [remember, setRemember] = useState(true)
+  const [linkTx, setLinkTx] = useState<BankTransaction | null>(null)
+  const [candidates, setCandidates] = useState<PaymentCandidate[] | null>(null)
+  const [linkedIds, setLinkedIds] = useState<Set<string>>(new Set())
+  const [linking, setLinking] = useState(false)
 
   const loadPreview = useCallback(async (fxValue?: string) => {
     const q = new URLSearchParams({ year: String(year), month: String(month) })
@@ -130,6 +142,43 @@ export default function ClosingPage() {
     await load()
   }
 
+  // 새로 등록하기 전에 수기로 넣어 둔 결제부터 찾는다. 바로 등록하면 같은 입금이 두 번 잡힌다
+  async function openLink(tx: BankTransaction) {
+    setLinkTx(tx)
+    setCandidates(null)
+    const [{ data: pays, error }, { data: linked }] = await Promise.all([
+      supabase.from('payments')
+        .select('id, payment_date, amount, status, client_name_raw, memo, project_id, excluded, projects(name)')
+        .gte('payment_date', shiftDate(tx.tx_date, -SEARCH_DAYS)).lte('payment_date', shiftDate(tx.tx_date, SEARCH_DAYS)),
+      supabase.from('bank_transactions').select('payment_id').not('payment_id', 'is', null),
+    ])
+    if (error) { toast.error(error.message); setLinkTx(null); return }
+    const list: LinkablePayment[] = (pays ?? []).filter((p) => !p.excluded).map((p) => ({
+      ...p, project_name: (p.projects as unknown as { name: string } | null)?.name ?? null,
+    }))
+    setLinkedIds(new Set((linked ?? []).map((r) => r.payment_id as string)))
+    setCandidates(rankPaymentCandidates(tx, list))
+  }
+
+  async function linkPayment(tx: BankTransaction, p: LinkablePayment) {
+    setLinking(true)
+    try {
+      if (p.status !== 'confirmed') {
+        const { error } = await supabase.rpc('confirm_pending_payment', {
+          p_payment_id: p.id, p_amount: p.amount, p_payment_date: tx.tx_date, p_project_id: p.project_id,
+        })
+        if (error) { toast.error(error.message); return }
+      }
+      const { error } = await supabase.from('bank_transactions').update({ payment_id: p.id }).eq('id', tx.id)
+      if (error) { toast.error(error.message); return }
+      toast.success(`${tx.counterparty} 입금을 기존 결제에 연결했어요.`)
+      setLinkTx(null)
+      await load()
+    } finally {
+      setLinking(false)
+    }
+  }
+
   async function registerPayment(tx: BankTransaction) {
     const amount = tx.deposit - tx.withdrawal
     const { data, error } = await supabase.rpc('add_payment_with_auto_project', {
@@ -140,6 +189,7 @@ export default function ClosingPage() {
     const paymentId = (data as { payment_id: string }).payment_id
     await supabase.from('bank_transactions').update({ payment_id: paymentId }).eq('id', tx.id)
     toast.success(`${tx.counterparty} ${formatKRW(amount)} 결제 내역에 등록했어요. 프로젝트·담당자는 결제 내역에서 확인해 주세요.`)
+    setLinkTx(null)
     await load()
   }
 
@@ -165,12 +215,14 @@ export default function ClosingPage() {
     }
   }
 
+  // 자동으로 기타 경비가 된 건만 확인 대상이다. 사람이 확인·지정한 건은 다시 묻지 않는다
+  const needsExpenseCheck = (t: BankTransaction) => t.category === 'other_expense' && t.classified_by === 'rule'
   const unmatchedIds = useMemo(() => new Set((checks?.unmatchedRevenue ?? []).map((r) => r.id)), [checks])
   const shown = txs.filter((t) => {
     const cls = categoryOf(t.category).cls
     if (filter === 'all') return true
     if (filter === 'non_pl') return cls === 'non_pl'
-    return !t.cancelled && (cls === 'unclassified' || unmatchedIds.has(t.id) || t.category === 'other_expense')
+    return !t.cancelled && (cls === 'unclassified' || unmatchedIds.has(t.id) || needsExpenseCheck(t))
   })
 
   const r = result
@@ -254,7 +306,7 @@ export default function ClosingPage() {
             <CheckRow ok={checks.unclassified === 0}>미분류 거래 {checks.unclassified}건</CheckRow>
             <CheckRow ok={checks.unmatchedRevenue.length === 0}>
               결제 내역과 연결 안 된 매출 입금 {checks.unmatchedRevenue.length}건
-              {checks.unmatchedRevenue.length > 0 && <span className="text-gray-500"> — 아래 표에서 결제 등록하거나 매출이 아니면 분류를 바꿔 주세요</span>}
+              {checks.unmatchedRevenue.length > 0 && <span className="text-gray-500"> — 아래 표에서 결제를 연결하거나 매출이 아니면 분류를 바꿔 주세요</span>}
             </CheckRow>
             <CheckRow ok={checks.payroll.total > 0 && checks.payroll.draft === 0}>
               급여 대장 {checks.payroll.total === 0 ? '없음' : `${checks.payroll.confirmed}/${checks.payroll.total}명 확정`}
@@ -299,7 +351,7 @@ export default function ClosingPage() {
                   <th className="text-right pr-2">입금</th>
                   <th className="text-right pr-2">출금</th>
                   <th className="text-left pr-2">분류</th>
-                  <th className="text-left">결제</th>
+                  <th className="text-left">처리</th>
                 </tr>
               </thead>
               <tbody>
@@ -329,7 +381,9 @@ export default function ClosingPage() {
                       <td className="text-xs whitespace-nowrap">
                         {t.payment_id ? <span className="text-green-700">연결됨</span>
                           : unmatchedIds.has(t.id) ? (
-                            <Button size="sm" variant="outline" className="h-6 text-xs px-2" onClick={() => registerPayment(t)}>결제 등록</Button>
+                            <Button size="sm" variant="outline" className="h-6 text-xs px-2" onClick={() => openLink(t)}>결제 연결</Button>
+                          ) : !t.cancelled && needsExpenseCheck(t) ? (
+                            <Button size="sm" variant="outline" className="h-6 text-xs px-2" onClick={() => reclassify(t, 'other_expense')}>확인</Button>
                           ) : null}
                       </td>
                     </tr>
@@ -340,6 +394,49 @@ export default function ClosingPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* 결제 연결 */}
+      <Dialog open={!!linkTx} onOpenChange={(open) => { if (!open) setLinkTx(null) }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>결제 연결</DialogTitle></DialogHeader>
+          {linkTx && (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600">
+                {linkTx.tx_date} · {linkTx.counterparty} · <strong>{formatKRW(linkTx.deposit - linkTx.withdrawal)}</strong>
+              </p>
+              {candidates === null ? (
+                <p className="text-sm text-gray-400 py-3">결제 내역을 찾는 중이에요...</p>
+              ) : candidates.length === 0 ? (
+                <p className="text-sm text-gray-500 py-3">앞뒤 {SEARCH_DAYS}일 안에 비슷한 결제가 없어요.</p>
+              ) : (
+                <div className="max-h-72 overflow-y-auto divide-y border rounded-lg">
+                  {candidates.map(({ payment: p, exact }) => (
+                    <button key={p.id} disabled={linking} onClick={() => linkPayment(linkTx, p)}
+                      className="w-full text-left p-2.5 hover:bg-gray-50 disabled:opacity-50">
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="truncate">{p.client_name_raw ?? p.project_name ?? '이름 없음'}</span>
+                        <span className={`tabular-nums shrink-0 ${exact ? 'font-semibold' : 'text-amber-600'}`}>{formatKRW(p.amount)}</span>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {[p.payment_date, p.project_name, exact ? '금액 일치' : '금액 다름',
+                          p.status !== 'confirmed' ? '수금 예정 → 입금 확정' : null,
+                          linkedIds.has(p.id) ? '다른 입금과 이미 연결됨' : null].filter(Boolean).join(' · ')}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="border-t pt-3 flex items-center justify-between gap-3">
+                <p className="text-xs text-gray-500">
+                  {candidates?.some((c) => c.exact) ? '금액이 같은 결제가 있어요. 새로 등록하면 중복될 수 있습니다.' : '위에 없을 때만 새로 등록하세요.'}
+                </p>
+                <Button size="sm" variant="outline" className="shrink-0" disabled={linking || candidates === null}
+                  onClick={() => registerPayment(linkTx)}>새 결제로 등록</Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* 카드 */}
       {cards.length > 0 && (
