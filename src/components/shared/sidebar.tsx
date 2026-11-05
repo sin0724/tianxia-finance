@@ -4,7 +4,6 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { countUnmatchedPayments } from '@/lib/payments/unmatched'
 import { countPendingLeaves } from '@/lib/leave/pending'
 import { cn } from '@/lib/utils'
 import {
@@ -30,7 +29,7 @@ type NavItem = {
   href: string
   label: string
   icon: typeof LayoutDashboard
-  badge?: 'unmatched' | 'pendingLeave'
+  badge?: 'pendingLeave'
 }
 
 const navGroups: { title: string | null; items: NavItem[] }[] = [
@@ -54,7 +53,7 @@ const navGroups: { title: string | null; items: NavItem[] }[] = [
     items: [
       { href: '/closing',   label: '월 마감',   icon: ClipboardCheck },
       { href: '/cashflow',  label: '현금 흐름', icon: Wallet },
-      { href: '/payments',  label: '결제 내역', icon: CreditCard, badge: 'unmatched' },
+      { href: '/payments',  label: '결제 내역', icon: CreditCard },
       { href: '/payroll',   label: '급여 관리', icon: FileSpreadsheet },
     ],
   },
@@ -88,22 +87,15 @@ interface SidebarProps {
 export function Sidebar({ open = false, onClose }: SidebarProps) {
   const pathname = usePathname()
   const router = useRouter()
-  const [unmatchedCount, setUnmatchedCount] = useState(0)
   const [pendingLeaveCount, setPendingLeaveCount] = useState(0)
 
-  // 배지 갱신 — 페이지 이동·창 포커스 시. 각 판정 기준은 lib 한 곳에서만 정의한다
-  // (countUnmatchedPayments / countPendingLeaves — 대시보드·목록 필터와 같은 기준)
+  // 승인 대기 배지 갱신 — 페이지 이동·창 포커스 시
   useEffect(() => {
     let alive = true
     const supabase = createClient()
     const refresh = async () => {
-      const [unmatched, pendingLeave] = await Promise.all([
-        countUnmatchedPayments(supabase),
-        countPendingLeaves(supabase),
-      ])
-      if (!alive) return
-      setUnmatchedCount(unmatched)
-      setPendingLeaveCount(pendingLeave)
+      const pendingLeave = await countPendingLeaves(supabase)
+      if (alive) setPendingLeaveCount(pendingLeave)
     }
     refresh()
     const onVisible = () => { if (document.visibilityState === 'visible') refresh() }
@@ -183,14 +175,6 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                   >
                     <Icon size={18} className={active ? 'text-blue-500' : 'text-gray-400'} />
                     <span className="flex-1">{label}</span>
-                    {badge === 'unmatched' && unmatchedCount > 0 && (
-                      <span
-                        className="text-[11px] font-bold bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"
-                        title={`프로젝트 미연결 입금 ${unmatchedCount}건 (전체 기간) — 결제 내역의 '미연결만' 필터에서 연결해주세요`}
-                      >
-                        {unmatchedCount}
-                      </span>
-                    )}
                     {badge === 'pendingLeave' && pendingLeaveCount > 0 && (
                       <span
                         className="text-[11px] font-bold bg-orange-500 text-white rounded-full px-1.5 py-0.5 min-w-5 text-center"

@@ -4,7 +4,7 @@ import type { Database } from '@/types/database'
 type Client = SupabaseClient<Database>
 
 /**
- * "프로젝트 미연결" 판정 기준 — 사이드바 배지·대시보드 알림·결제 내역 필터가 모두 이걸 쓴다.
+ * "프로젝트 미연결" 판정 기준 — 대시보드 알림·결제 내역 필터가 모두 이걸 쓴다.
  *
  * - project_id 가 유일한 기준이다. matched 컬럼은 project_id 를 갱신하는 경로가 여럿이라
  *   값이 어긋날 수 있어 표시용으로 신뢰하지 않는다.
@@ -38,9 +38,4 @@ export function isUnmatchedPayment(p: {
   excluded: boolean
 }) {
   return !p.project_id && p.status === 'confirmed' && !p.excluded
-}
-
-/** 사이드바 배지 즉시 갱신 요청 */
-export function refreshBadges() {
-  if (typeof window !== 'undefined') window.dispatchEvent(new Event('refresh-badges'))
 }

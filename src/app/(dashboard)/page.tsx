@@ -145,7 +145,7 @@ export default function DashboardPage() {
     const confirmed = paymentRows.filter(
       (p) => p.status === 'confirmed' && !p.excluded && p.projects?.status !== 'cancelled'
     )
-    // 미연결 알림은 사이드바 배지와 같은 기준 — 전체 기간·확정 입금·집계 제외 건 제외
+    // 미연결 알림 기준 — 전체 기간·확정 입금·집계 제외 건 제외
     const unmatchedCount = await countUnmatchedPayments(supabase)
     const refunds = confirmed.filter((p) => p.amount < 0)
     setPaymentTotal(confirmed.reduce((sum, p) => sum + p.amount, 0))

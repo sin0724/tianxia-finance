@@ -18,7 +18,6 @@ import {
 } from '@/components/ui/table'
 import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
-import { refreshBadges } from '@/lib/payments/unmatched'
 import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, Check, X, Ban, Copy } from 'lucide-react'
 import { CurrencyInput } from '@/components/ui/currency-input'
 import { yearOptions } from '@/components/shared/month-context'
@@ -250,8 +249,6 @@ export default function ProjectsPage() {
     if (error) { toast.error('삭제 실패: ' + error.message); return }
     toast.success('프로젝트가 삭제되었습니다.')
     setDeleteTarget(null)
-    // 연결이 끊긴 결제가 생기므로 사이드바 미연결 배지를 즉시 갱신
-    refreshBadges()
     load()
   }
 

@@ -22,7 +22,7 @@ import { formatKRW } from '@/lib/calculations/settlement'
 import { findSimilar } from '@/lib/utils/levenshtein'
 import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
-import { unmatchedPaymentsQuery, isUnmatchedPayment, refreshBadges } from '@/lib/payments/unmatched'
+import { unmatchedPaymentsQuery, isUnmatchedPayment } from '@/lib/payments/unmatched'
 import type { Payment, Project, Client, PaymentStatus } from '@/types/database'
 
 type PaymentWithRelations = Payment & {
@@ -67,7 +67,7 @@ export default function PaymentsPage() {
 
   // 검색·정렬
   const [search, setSearch] = useState('')
-  // 미연결만 보기 — 사이드바 배지와 같은 기준(전체 기간)이라 월 필터를 무시한다
+  // 미연결만 보기 — 대시보드 알림과 같은 기준(전체 기간)이라 월 필터를 무시한다
   const [unmatchedOnly, setUnmatchedOnly] = useState(false)
   const [unmatchedAll, setUnmatchedAll] = useState<PaymentWithRelations[]>([])
   const [sortKey, setSortKey] = useState<SortKey>('payment_date')
@@ -147,7 +147,7 @@ export default function PaymentsPage() {
         .in('status', ['ongoing', 'completed'])
         .order('name'),
       supabase.from('clients').select('*').order('name'),
-      // 미연결 확정 입금 — 전체 기간 (사이드바 배지와 동일 기준)
+      // 미연결 확정 입금 — 전체 기간 (대시보드 알림과 동일 기준)
       unmatchedPaymentsQuery(supabase).order('payment_date', { ascending: false }),
     ])
 
@@ -161,8 +161,6 @@ export default function PaymentsPage() {
     setClients(clientRes.data ?? [])
     setUnmatchedAll((unmatchedRes.data as unknown as PaymentWithRelations[]) ?? [])
     setLoading(false)
-    // 사이드바 미연결 배지 즉시 갱신
-    refreshBadges()
   }
 
   useEffect(() => { load() }, [year, month])  // eslint-disable-line react-hooks/exhaustive-deps

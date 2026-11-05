@@ -15,3 +15,8 @@ export async function countPendingLeaves(supabase: Client): Promise<number> {
     .eq('status', 'pending')
   return count ?? 0
 }
+
+/** 승인·반려 직후 사이드바 배지를 바로 갱신한다 */
+export function refreshBadges() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('refresh-badges'))
+}
