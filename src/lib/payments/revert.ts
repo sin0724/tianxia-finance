@@ -28,7 +28,7 @@ export const REVERT_STATUS_LABEL: Record<RevertStatus, string> = {
 
 /** DB 상태 → 시트 I열 드롭다운 값 (register.ts 의 toDbStatus 와 반대 방향) */
 const toSheetStatus = (s: RevertStatus): SheetStatus =>
-  s === 'balance_due' ? '잔금처리요망' : '미입금'
+  s === 'balance_due' ? '잔금 처리 요망' : '미입금'
 
 export function isRevertStatus(v: unknown): v is RevertStatus {
   return v === 'unpaid' || v === 'balance_due'
