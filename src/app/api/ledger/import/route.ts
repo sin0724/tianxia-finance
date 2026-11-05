@@ -33,9 +33,9 @@ export async function POST(request: Request) {
     const buf = await file.arrayBuffer()
     const db = createAdminClient()
     if (kind === 'bank') {
-      const { rows, errors } = await parseBankFile(buf)
+      const { rows, errors, statementEnd } = await parseBankFile(buf)
       if (rows.length === 0) return Response.json({ error: '읽을 수 있는 거래가 없습니다.', errors }, { status: 400 })
-      const result = await importBank(db, rows, file.name)
+      const result = await importBank(db, rows, file.name, statementEnd)
       return Response.json({ ok: true, kind, ...result, parseErrors: errors })
     }
     const { rows, errors } = await parseCardXls(buf)

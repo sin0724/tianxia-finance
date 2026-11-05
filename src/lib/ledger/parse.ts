@@ -97,7 +97,13 @@ async function readBankTable(buf: ArrayBuffer): Promise<string[][]> {
   return decodeKorean(buf).split(/\r?\n/).filter((l) => l.trim()).map(splitCsvLine)
 }
 
-export async function parseBankFile(buf: ArrayBuffer): Promise<{ rows: ParsedBankTx[]; errors: string[] }> {
+/** XLS 표 위 "조회기간 : 2026.10.01 ~ 2026.10.31"의 끝 날짜. 마지막 거래 뒤로 거래가 없던 날까지 확인된 범위다 */
+function statementEndOf(summary: string[][]): string | null {
+  const m = /조회기간[^~]*~\s*(\d{4})\.(\d{2})\.(\d{2})/.exec(summary.flat().join(' '))
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null
+}
+
+export async function parseBankFile(buf: ArrayBuffer): Promise<{ rows: ParsedBankTx[]; errors: string[]; statementEnd: string | null }> {
   const table = await readBankTable(buf)
   // XLS는 표 위에 계좌 요약이 있으므로 헤더 줄을 찾아서 시작한다
   const headerIdx = table.findIndex((r) => r.some((c) => c.trim().startsWith('거래일시')))
@@ -156,7 +162,7 @@ export async function parseBankFile(buf: ArrayBuffer): Promise<{ rows: ParsedBan
       row_hash: hash(['bank', r.tx_at, r.counterparty, r.withdrawal, r.deposit, r.balance]),
     }
   })
-  return { rows, errors }
+  return { rows, errors, statementEnd: statementEndOf(table.slice(0, headerIdx)) }
 }
 
 /** 잔액 연속성 — 앞 거래 잔액 ± 이번 거래 = 이번 잔액 인지 확인. 끊긴 위치를 돌려준다 */

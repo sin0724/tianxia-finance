@@ -44,7 +44,15 @@ export async function loadClassifyContext(db: DB): Promise<ClassifyContext> {
 // ─────────────────────────────────────────────────────────────
 // 업로드
 // ─────────────────────────────────────────────────────────────
-export async function importBank(db: DB, rows: ParsedBankTx[], filename: string) {
+/** 파일이 확인해 주는 마지막 날 — 조회기간 끝을 쓰되, 아직 오지 않은 날은 거래가 없다고 볼 수 없어 오늘까지만 인정한다 */
+function coveredUntil(lastTxDate: string | null, statementEnd: string | null) {
+  const today = new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10)
+  const stated = statementEnd && statementEnd < today ? statementEnd : statementEnd ? today : null
+  if (!stated) return lastTxDate
+  return lastTxDate && lastTxDate > stated ? lastTxDate : stated
+}
+
+export async function importBank(db: DB, rows: ParsedBankTx[], filename: string, statementEnd: string | null = null) {
   const breaks = checkBalanceChain(rows)
   const hashes = rows.map((r) => r.row_hash)
   const existing = new Set<string>()
@@ -56,7 +64,7 @@ export async function importBank(db: DB, rows: ParsedBankTx[], filename: string)
 
   const { data: imp, error: impErr } = await db.from('statement_imports').insert({
     kind: 'bank', filename,
-    period_start: rows[0]?.tx_date ?? null, period_end: rows.at(-1)?.tx_date ?? null,
+    period_start: rows[0]?.tx_date ?? null, period_end: coveredUntil(rows.at(-1)?.tx_date ?? null, statementEnd),
     total_rows: rows.length, inserted: fresh.length, skipped: rows.length - fresh.length,
   }).select('id').single()
   if (impErr) throw new Error(`업로드 기록 실패: ${impErr.message}`)
@@ -194,7 +202,7 @@ export async function projectedCostsFromBank(db: DB, year: number, month: number
 export interface ClosingChecks {
   bankRows: number
   lastBankDate: string | null
-  /** 통장 내역이 월말까지 다 들어왔는지 (마지막 거래일이 다음 달 이후거나, 월말 이후 업로드) */
+  /** 통장 내역이 월말까지 다 들어왔는지 (마지막 거래일이 월말 이후거나, 조회기간이 월말까지인 파일을 올림) */
   monthComplete: boolean
   cardRows: number
   lastCardDate: string | null
@@ -264,11 +272,14 @@ export async function computeBankSettlement(db: DB, year: number, month: number,
 
   const bankRows = bankRes.data ?? []
   const lastBankDate = lastBank.data?.[0]?.tx_date ?? null
+  // 월말에 거래가 없었어도 조회기간이 월말까지인 파일을 올렸으면 그 달은 다 들어온 것이다
+  const { count: coveringImports } = await db.from('statement_imports').select('id', { count: 'exact', head: true })
+    .eq('kind', 'bank').gte('period_end', end)
   const payroll = payrollRes.data ?? []
   const checks: ClosingChecks = {
     bankRows: bankRows.length,
     lastBankDate,
-    monthComplete: !!lastBankDate && lastBankDate >= end,
+    monthComplete: (!!lastBankDate && lastBankDate >= end) || (coveringImports ?? 0) > 0,
     cardRows: (cardRes.data ?? []).length,
     lastCardDate: lastCard.data?.[0]?.approved_date ?? null,
     unclassified: result.breakdown.unclassified,
