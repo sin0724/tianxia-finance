@@ -127,7 +127,7 @@ export async function importCard(db: DB, rows: ParsedCardTx[], filename: string)
 // ─────────────────────────────────────────────────────────────
 // 결제 자동 매칭 — 매출 입금·환불 중 아직 결제와 연결 안 된 것
 //   · 확정 결제와 맞으면 연결만
-//   · 수금 예정(잔금처리요망·미입금) 결제와 맞으면 입금일로 확정 처리 (시트 동기화는 확정 건을 덮어쓰지 않는다)
+//   · 수금 예정(잔금 처리 요망·미입금) 결제와 맞으면 입금일로 확정 처리 (시트 동기화는 확정 건을 덮어쓰지 않는다)
 // ─────────────────────────────────────────────────────────────
 export async function autoMatchPayments(db: DB) {
   const { data: bank } = await db.from('bank_transactions')

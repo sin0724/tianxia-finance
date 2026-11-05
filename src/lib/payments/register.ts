@@ -55,7 +55,7 @@ export type RegisterResult = {
 }
 
 const toDbStatus = (s: PaymentStatus): 'confirmed' | 'balance_due' | 'unpaid' =>
-  s === '잔금처리요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
+  s === '잔금 처리 요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
 
 /**
  * 클라이언트 조회 또는 생성.
@@ -194,7 +194,7 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
   const project = await findOrCreateProject(admin, { clientId, clientName, amount, date, status, memo })
 
   // ── 3) 결제 저장 ────────────────────────────────────────────────
-  const paymentType = status === '잔금처리요망' ? '잔금' : status === '미입금' ? '기타' : null
+  const paymentType = status === '잔금 처리 요망' ? '잔금' : status === '미입금' ? '기타' : null
 
   const { data: inserted, error: insertErr } = await admin.from('payments').insert({
     project_id: project?.id ?? null,

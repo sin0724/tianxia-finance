@@ -357,7 +357,7 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
       }
 
       const emoji =
-        input.status === '잔금처리요망' ? '⚠️' :
+        input.status === '잔금 처리 요망' ? '⚠️' :
         input.status === '미입금' ? '🔴' :
         input.status === '추가계약' ? '🔁' : '✅'
 
