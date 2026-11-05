@@ -61,24 +61,42 @@ function paymentNames(p: MatchPayment): string[] {
 
 const dayDiff = (a: string, b: string) => Math.round((Date.parse(a) - Date.parse(b)) / 86_400_000)
 
+/** 카드 결제는 수수료를 뗀 금액이 PG 코드 이름으로 입금된다. 결제액의 90~100% 입금이면 수수료 차이로 본다 */
+const isFeeDeducted = (deposit: number, paymentAmount: number) =>
+  deposit > 0 && deposit < paymentAmount && deposit * 10 >= paymentAmount * 9
+
 /**
- * 자동 매칭에서 빠진 입금에 손으로 연결할 결제 후보.
- * 금액이 달라도 이름이 비슷하면 보여준다 — 수기로 넣은 결제는 금액이 조금 다를 수 있어서,
- * 후보를 안 보여주면 새로 등록해 중복이 생긴다.
- * 수금 예정 건은 금액이 같을 때만 낸다. 금액이 다르면 입금 확정 금액을 앱이 정할 수 없다.
+ * 수금 예정 건을 입금 확정할 금액.
+ * 수수료 차이면 계약금액 전체가 입금된 것이고, 그보다 적으면 부분 입금이라 잔여분이 수금 예정으로 남는다.
  */
-export function rankPaymentCandidates<P extends MatchPayment>(r: MatchBankRow, payments: P[], limit = 10) {
+export function pendingConfirmAmount(r: MatchBankRow, payment: MatchPayment) {
+  if (r.deposit <= 0 || r.deposit >= payment.amount || isFeeDeducted(r.deposit, payment.amount)) return payment.amount
+  return r.deposit
+}
+
+/**
+ * 자동 매칭에서 빠진 입금에 손으로 연결할 결제 후보. 후보가 없으면 새로 등록해 중복이 생기므로 넓게 보여준다.
+ *   · 기본: 금액 일치, 수수료 차이, 또는 이름이 비슷한 확정 결제
+ *   · 검색어가 있으면 거래처·프로젝트·메모에 그 말이 들어간 결제 전부
+ */
+export function rankPaymentCandidates<P extends MatchPayment>(
+  r: MatchBankRow, payments: P[], { query = '', limit = 10 }: { query?: string; limit?: number } = {},
+) {
   const amount = r.deposit > 0 ? r.deposit : -r.withdrawal
   const who = `${r.counterparty} ${r.memo}`
+  const q = norm(query)
   return payments
     .map((payment) => ({
       payment,
       exact: payment.amount === amount,
+      feeDeducted: isFeeDeducted(r.deposit, payment.amount),
       sim: Math.max(0, ...paymentNames(payment).map((n) => nameSimilarity(who, n))),
       days: Math.abs(dayDiff(r.tx_date, payment.payment_date)),
     }))
-    .filter((c) => c.exact || (c.sim >= 0.3 && c.payment.status === 'confirmed'))
-    .sort((a, b) => Number(b.exact) - Number(a.exact) || b.sim - a.sim || a.days - b.days)
+    .filter((c) => q
+      ? norm([...paymentNames(c.payment), c.payment.memo ?? ''].join(' ')).includes(q)
+      : c.exact || c.feeDeducted || (c.sim >= 0.3 && c.payment.status === 'confirmed'))
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || Number(b.feeDeducted) - Number(a.feeDeducted) || b.sim - a.sim || a.days - b.days)
     .slice(0, limit)
 }
 

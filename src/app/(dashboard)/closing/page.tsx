@@ -21,7 +21,7 @@ import { formatKRW } from '@/lib/calculations/settlement'
 import { MonthNavigator } from '@/components/shared/month-navigator'
 import { useMonth } from '@/components/shared/month-context'
 import { CATEGORIES, categoryOf, type CategoryKey } from '@/lib/ledger/categories'
-import { rankPaymentCandidates, type MatchPayment } from '@/lib/ledger/match'
+import { pendingConfirmAmount, rankPaymentCandidates, type MatchPayment } from '@/lib/ledger/match'
 import type { SettleResult } from '@/lib/ledger/settle'
 import type { ClosingChecks } from '@/lib/ledger/server'
 import type { BankTransaction, CardTransaction } from '@/types/database'
@@ -30,9 +30,8 @@ import { AlertTriangle, CheckCircle2, RefreshCw, Upload } from 'lucide-react'
 type Filter = 'review' | 'all' | 'non_pl'
 
 type LinkablePayment = MatchPayment & { project_id: string | null }
-type PaymentCandidate = ReturnType<typeof rankPaymentCandidates<LinkablePayment>>[number]
 
-const SEARCH_DAYS = 60
+const SEARCH_DAYS = 120
 const shiftDate = (date: string, days: number) => new Date(Date.parse(date) + days * 86_400_000).toISOString().slice(0, 10)
 
 const CLS_LABEL: Record<string, string> = {
@@ -71,7 +70,8 @@ export default function ClosingPage() {
   const [loading, setLoading] = useState(false)
   const [remember, setRemember] = useState(true)
   const [linkTx, setLinkTx] = useState<BankTransaction | null>(null)
-  const [candidates, setCandidates] = useState<PaymentCandidate[] | null>(null)
+  const [linkPays, setLinkPays] = useState<LinkablePayment[] | null>(null)
+  const [linkQuery, setLinkQuery] = useState('')
   const [linkedIds, setLinkedIds] = useState<Set<string>>(new Set())
   const [linking, setLinking] = useState(false)
 
@@ -145,7 +145,8 @@ export default function ClosingPage() {
   // 새로 등록하기 전에 수기로 넣어 둔 결제부터 찾는다. 바로 등록하면 같은 입금이 두 번 잡힌다
   async function openLink(tx: BankTransaction) {
     setLinkTx(tx)
-    setCandidates(null)
+    setLinkPays(null)
+    setLinkQuery('')
     const [{ data: pays, error }, { data: linked }] = await Promise.all([
       supabase.from('payments')
         .select('id, payment_date, amount, status, client_name_raw, memo, project_id, excluded, projects(name)')
@@ -157,7 +158,7 @@ export default function ClosingPage() {
       ...p, project_name: (p.projects as unknown as { name: string } | null)?.name ?? null,
     }))
     setLinkedIds(new Set((linked ?? []).map((r) => r.payment_id as string)))
-    setCandidates(rankPaymentCandidates(tx, list))
+    setLinkPays(list)
   }
 
   async function linkPayment(tx: BankTransaction, p: LinkablePayment) {
@@ -165,7 +166,7 @@ export default function ClosingPage() {
     try {
       if (p.status !== 'confirmed') {
         const { error } = await supabase.rpc('confirm_pending_payment', {
-          p_payment_id: p.id, p_amount: p.amount, p_payment_date: tx.tx_date, p_project_id: p.project_id,
+          p_payment_id: p.id, p_amount: pendingConfirmAmount(tx, p), p_payment_date: tx.tx_date, p_project_id: p.project_id,
         })
         if (error) { toast.error(error.message); return }
       }
@@ -217,6 +218,10 @@ export default function ClosingPage() {
 
   // 자동으로 기타 경비가 된 건만 확인 대상이다. 사람이 확인·지정한 건은 다시 묻지 않는다
   const needsExpenseCheck = (t: BankTransaction) => t.category === 'other_expense' && t.classified_by === 'rule'
+  const candidates = useMemo(
+    () => (linkTx && linkPays ? rankPaymentCandidates(linkTx, linkPays, { query: linkQuery }) : null),
+    [linkTx, linkPays, linkQuery],
+  )
   const unmatchedIds = useMemo(() => new Set((checks?.unmatchedRevenue ?? []).map((r) => r.id)), [checks])
   const shown = txs.filter((t) => {
     const cls = categoryOf(t.category).cls
@@ -404,13 +409,17 @@ export default function ClosingPage() {
               <p className="text-sm text-gray-600">
                 {linkTx.tx_date} · {linkTx.counterparty} · <strong>{formatKRW(linkTx.deposit - linkTx.withdrawal)}</strong>
               </p>
+              <Input placeholder="거래처·프로젝트 이름으로 찾기" value={linkQuery} onChange={(e) => setLinkQuery(e.target.value)} />
               {candidates === null ? (
                 <p className="text-sm text-gray-400 py-3">결제 내역을 찾는 중이에요...</p>
               ) : candidates.length === 0 ? (
-                <p className="text-sm text-gray-500 py-3">앞뒤 {SEARCH_DAYS}일 안에 비슷한 결제가 없어요.</p>
+                <p className="text-sm text-gray-500 py-3">앞뒤 {SEARCH_DAYS}일 안에 맞는 결제가 없어요.{linkQuery ? '' : ' 카드 입금처럼 이름이 다르면 거래처 이름으로 찾아보세요.'}</p>
               ) : (
                 <div className="max-h-72 overflow-y-auto divide-y border rounded-lg">
-                  {candidates.map(({ payment: p, exact }) => (
+                  {candidates.map(({ payment: p, exact, feeDeducted }) => {
+                    const deposit = linkTx.deposit - linkTx.withdrawal
+                    const remainder = p.amount - pendingConfirmAmount(linkTx, p)
+                    return (
                     <button key={p.id} disabled={linking} onClick={() => linkPayment(linkTx, p)}
                       className="w-full text-left p-2.5 hover:bg-gray-50 disabled:opacity-50">
                       <div className="flex items-center justify-between gap-3 text-sm">
@@ -418,17 +427,19 @@ export default function ClosingPage() {
                         <span className={`tabular-nums shrink-0 ${exact ? 'font-semibold' : 'text-amber-600'}`}>{formatKRW(p.amount)}</span>
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">
-                        {[p.payment_date, p.project_name, exact ? '금액 일치' : '금액 다름',
-                          p.status !== 'confirmed' ? '수금 예정 → 입금 확정' : null,
+                        {[p.payment_date, p.project_name,
+                          exact ? '금액 일치' : feeDeducted ? `카드 수수료 차이 ${formatKRW(p.amount - deposit)}` : '금액 다름',
+                          p.status === 'confirmed' ? null : remainder > 0 ? `부분 입금 확정, 잔여 ${formatKRW(remainder)}` : '수금 예정 → 입금 확정',
                           linkedIds.has(p.id) ? '다른 입금과 이미 연결됨' : null].filter(Boolean).join(' · ')}
                       </div>
                     </button>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
               <div className="border-t pt-3 flex items-center justify-between gap-3">
                 <p className="text-xs text-gray-500">
-                  {candidates?.some((c) => c.exact) ? '금액이 같은 결제가 있어요. 새로 등록하면 중복될 수 있습니다.' : '위에 없을 때만 새로 등록하세요.'}
+                  {candidates?.some((c) => c.exact || c.feeDeducted) ? '이 입금으로 보이는 결제가 있어요. 새로 등록하면 중복될 수 있습니다.' : '위에 없을 때만 새로 등록하세요.'}
                 </p>
                 <Button size="sm" variant="outline" className="shrink-0" disabled={linking || candidates === null}
                   onClick={() => registerPayment(linkTx)}>새 결제로 등록</Button>
