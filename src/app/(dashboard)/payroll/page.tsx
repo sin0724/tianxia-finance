@@ -6,21 +6,22 @@ import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { CurrencyInput } from '@/components/ui/currency-input'
 import { toast } from '@/lib/toast'
 import { formatKRW } from '@/lib/calculations/settlement'
 import { computeAutoIncentives, isLedgerIncentiveMonth } from '@/lib/calculations/incentives'
 import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
 import { StatementUpload } from '@/components/payroll/statement-upload'
-import { clearAmounts } from '@/lib/payroll/save-statement'
+import { clearAmounts, saveCashPay } from '@/lib/payroll/save-statement'
 import { STATEMENT_KIND_LABEL, type StatementKind } from '@/lib/payroll/statement'
 import { hiredBy, workedThrough } from '@/lib/payroll/tax'
 import type { Employee, MonthlyPayroll } from '@/types/database'
-import { AlertTriangle, Check, FileText } from 'lucide-react'
+import { AlertTriangle, Check, FileText, X } from 'lucide-react'
 
 interface Row {
   emp: Employee
-  kind: StatementKind | null
+  kind: StatementKind | 'cash' | null
   file: string | null
   base: number
   incentive: number
@@ -56,6 +57,7 @@ function toRow(emp: Employee, p: MonthlyPayroll | undefined, incentive: number):
 
 /**
  * 급여 관리 — 세무사 명세서가 최종 금액이다. 앱에서 계산하거나 손으로 고치지 않는다.
+ * 예외는 명세서에 없는 현금 지급뿐이며, 지급액을 그대로 비용으로 넣는다.
  * 고른 달은 귀속월이다. 10월을 고르면 11월에 지급하는 10월 귀속분을 다룬다.
  * 근무시간·결근·메모는 직원 관리에서 기록한다.
  */
@@ -70,6 +72,8 @@ export default function PayrollPage() {
   const [preHireRecords, setPreHireRecords] = useState<{ id: string; name: string; hired_at: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
+  const [cashEmployee, setCashEmployee] = useState('')
+  const [cashAmount, setCashAmount] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -149,6 +153,23 @@ export default function PayrollPage() {
     }
   }
 
+  async function addCashPay() {
+    const amount = Math.round(Number(cashAmount) || 0)
+    if (!cashEmployee || amount <= 0) { toast.error('직원과 금액을 입력해 주세요.'); return }
+    setClearing(true)
+    try {
+      await saveCashPay(supabase, year, month, cashEmployee, amount)
+      toast.success('현금 지급을 반영했습니다.')
+      setCashEmployee('')
+      setCashAmount('')
+      await load()
+    } catch (e) {
+      toast.error('저장 실패: ' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setClearing(false)
+    }
+  }
+
   const payMonth = month === 12 ? 1 : month + 1
 
   return (
@@ -183,6 +204,16 @@ export default function PayrollPage() {
                 </div>
               </div>
             ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-white p-3">
+            <span className="text-sm font-medium mr-auto">현금 지급 <span className="text-xs font-normal text-gray-400">명세서에 없는 직원 · 세금 없음</span></span>
+            <select className="h-8 border rounded-md px-2 text-sm" aria-label="현금 지급 직원"
+              value={cashEmployee} onChange={(e) => setCashEmployee(e.target.value)}>
+              <option value="">직원 선택</option>
+              {missing.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+            <CurrencyInput className="h-8 text-sm w-32" placeholder="지급액" aria-label="현금 지급액" value={cashAmount} onChange={setCashAmount} />
+            <Button size="sm" variant="outline" disabled={clearing} onClick={addCashPay}>반영</Button>
           </div>
         </div>
       ) : (
@@ -282,8 +313,15 @@ export default function PayrollPage() {
               <div className="flex items-center gap-1.5 flex-wrap min-w-0">
                 <span className="font-medium text-gray-900">{r.emp.name}</span>
                 {r.kind && <Badge variant="outline" className={`text-xs py-0 ${r.kind === 'insured' ? 'text-purple-600 border-purple-300' : 'text-gray-500'}`}>
-                  {r.kind === 'insured' ? '4대보험' : '3.3%'}
+                  {r.kind === 'insured' ? '4대보험' : r.kind === 'cash' ? '현금' : '3.3%'}
                 </Badge>}
+                {r.kind === 'cash' && (
+                  <button type="button" aria-label={`${r.emp.name} 현금 지급 지우기`} disabled={clearing}
+                    className="text-gray-300 hover:text-red-500"
+                    onClick={() => clearRows([r.emp.id], `${r.emp.name} 현금 지급을 지웠습니다.`)}>
+                    <X size={13} />
+                  </button>
+                )}
                 {!r.emp.active && (
                   <Badge variant="outline" className="text-xs py-0 text-red-500 border-red-200">
                     퇴사{r.emp.terminated_at ? ` ${r.emp.terminated_at.slice(5)}` : ''}
@@ -306,7 +344,7 @@ export default function PayrollPage() {
       </div>
 
       <p className="text-xs text-gray-400 leading-relaxed">
-        * 금액은 세무사 명세서 그대로입니다. 틀렸다면 세무사에게 수정본을 받아 다시 올리면 그 종류의 명세서 전체가 바뀝니다.<br />
+        * 금액은 세무사 명세서 그대로입니다. 틀렸다면 세무사에게 수정본을 받아 다시 올리면 그 종류의 명세서 전체가 바뀝니다. 현금 지급은 명세서를 다시 올려도 유지됩니다.<br />
         * 영업이익에서 차감되는 인건비는 세전 지급액 + 4대보험 회사부담입니다.<br />
         * 근무시간·결근·급여 조건·메모는 <Link href="/employees" className="underline">직원 관리</Link>에서 기록합니다.
       </p>

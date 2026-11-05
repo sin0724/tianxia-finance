@@ -37,6 +37,16 @@ export async function clearAmounts(db: DB, year: number, month: number, employee
   if (incentiveError) throw new Error(incentiveError.message)
 }
 
+/** 명세서에 없는 현금 지급 — 세금 없이 지급액이 그대로 비용이다 */
+export async function saveCashPay(db: DB, year: number, month: number, employeeId: string, amount: number) {
+  const { error } = await db.from('monthly_payroll').upsert({
+    ...cleared, year, month, employee_id: employeeId,
+    base_salary: amount, net_pay: amount,
+    status: 'confirmed', statement_kind: 'cash',
+  }, { onConflict: 'year,month,employee_id' })
+  if (error) throw new Error(error.message)
+}
+
 export async function saveStatement(db: DB, { year, month, kind, filename, rows, droppedIds }: SaveInput) {
   const today = new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10)
   await clearAmounts(db, year, month, droppedIds)

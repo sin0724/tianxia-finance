@@ -17,7 +17,7 @@ import { AlertTriangle, Check, FileUp } from 'lucide-react'
 
 const NEW_EMPLOYEE = 'new'
 
-interface SavedStatement { employeeId: string; name: string; kind: StatementKind | null }
+interface SavedStatement { employeeId: string; name: string; kind: StatementKind | 'cash' | null }
 
 interface Props {
   year: number
