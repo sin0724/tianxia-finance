@@ -235,14 +235,15 @@ export default function ClosingPage() {
   })
 
   const r = result
+  const taxNote = (amount?: number) => (amount ? ` · 외주 원천세 ${formatKRW(amount)}` : '')
   const lines: { label: string; value: number; strong?: boolean }[] = r ? [
     { label: '총매출 (VAT 포함, 통장 입금 − 환불)', value: r.total_revenue },
     { label: '공급가액', value: r.supply_value },
     { label: '− 인센티브', value: -r.total_incentive },
-    { label: '− 실행비 (실제 지급)', value: -r.total_product_cost },
+    { label: `− 실행비 (실제 지급${taxNote(r.breakdown.outsourcedTax?.product_cost)})`, value: -r.total_product_cost },
     { label: '매출총이익', value: r.gross_profit, strong: true },
     { label: '− 고정비', value: -r.total_fixed_cost },
-    { label: `− 변동비 (카드 ${formatKRW(r.breakdown.card.krw + r.breakdown.card.foreignKrw)} 포함)`, value: -r.total_variable_cost },
+    { label: `− 변동비 (카드 ${formatKRW(r.breakdown.card.krw + r.breakdown.card.foreignKrw)}${taxNote(r.breakdown.outsourcedTax?.variable)} 포함)`, value: -r.total_variable_cost },
     { label: '− 특수비용', value: -r.total_special_cost },
     { label: '− 급여 (세전, 급여 대장)', value: -r.total_payroll },
     { label: `− 4대보험 회사부담${r.breakdown.employerInsuranceEstimated ? ' (납부액으로 추정)' : ''}`, value: -r.total_employer_insurance },

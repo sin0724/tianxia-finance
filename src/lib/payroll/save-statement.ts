@@ -4,6 +4,8 @@
  */
 
 import type { createClient } from '@/lib/supabase/client'
+import type { Json } from '@/types/database'
+import { outsourcedKey, type OutsourcedEntry } from './outsourced'
 import type { StatementKind, StatementRow } from './statement'
 
 type DB = ReturnType<typeof createClient>
@@ -18,6 +20,8 @@ interface SaveInput {
   rows: ConfirmedRow[]
   /** 같은 종류의 이전 명세서에는 있었지만 이번 파일에 없는 직원 */
   droppedIds: string[]
+  /** 사업소득지급대장의 외주 소득자 — 파일을 다시 올리면 통째로 바뀐다 */
+  outsourced?: OutsourcedEntry[]
 }
 
 const cleared = {
@@ -54,9 +58,16 @@ export async function setPaidCheck(db: DB, year: number, month: number, employee
   if (error) throw new Error(error.message)
 }
 
-export async function saveStatement(db: DB, { year, month, kind, filename, rows, droppedIds }: SaveInput) {
+export async function saveStatement(db: DB, { year, month, kind, filename, rows, droppedIds, outsourced = [] }: SaveInput) {
   const today = new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10)
   await clearAmounts(db, year, month, droppedIds)
+
+  if (kind === 'business') {
+    const { error } = await db.from('settings').upsert(
+      { key: outsourcedKey(year, month), value: outsourced as unknown as Json }, { onConflict: 'key' },
+    )
+    if (error) throw new Error(error.message)
+  }
 
   const { error } = await db.from('monthly_payroll').upsert(
     rows.map((r) => ({

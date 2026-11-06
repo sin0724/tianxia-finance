@@ -7,7 +7,8 @@
  *   · 귀속월: 파일에 적힌 귀속이 고른 달과 다르면 막는다 (예: 10월 귀속 = 11월 지급)
  *
  * 지원 양식
- *   business  사업소득지급대장 — 직원 1명 2행, 윗줄 기본급·아랫줄 인센티브
+ *   business  사업소득지급대장 — 1명 3행(윗줄 소득세, 가운데 성명·지급액, 아랫줄 지방소득세·차인지급액)
+ *             또는 직원 1명 2행(윗줄 기본급·아랫줄 인센티브)
  *   insured   4대보험 급여대장 — 직원 1명 1행 이상의 표, 또는 직원별 급여명세서
  */
 
@@ -90,6 +91,8 @@ const isPersonName = (cell: string) => {
   return /^[가-힣a-zA-Z]{2,20}$/.test(n) && !SUMMARY_NAME.test(n) && !LABEL.name.test(n)
 }
 
+// 사업소득지급대장에도 "고용보험료" 칸이 있어(예술인·특고용) 제목을 먼저 본다
+const isBusinessLedger = (text: string) => /사업소득지급대장|사업소득\s*지급\s*대장/.test(text)
 const hasInsuredTerms = (text: string) => /국민연금|건강보험|고용보험|공제합계|장기요양/.test(text)
 
 // ── 귀속월 ─────────────────────────────────────────────────
@@ -204,6 +207,51 @@ function parseBusiness(grid: Grid) {
 
     if (base + incentive !== gross) errors.push(`${name}: 기본급+인센티브 ${won(base + incentive)}이 지급액 ${won(gross)}과 다릅니다.`)
     rows.push(row)
+  }
+  return { rows, errors, fileTotal }
+}
+
+/** 세무 프로그램의 사업소득지급대장(상세). 1명 3행이고 총계도 같은 모양이다. 지급액 칸에 인센티브가 합쳐져 있다 */
+function parseBusinessLedger(grid: Grid) {
+  const header = grid.findIndex((row, r) => {
+    const cells = row.map(norm)
+    return r > 0 && cells.includes('성명') && cells.includes('지급액')
+      && grid[r - 1].some((c) => norm(c) === '소득세') && (grid[r + 1] ?? []).some((c) => norm(c) === '차인지급액')
+  })
+  if (header < 0) return null
+
+  const colOf = (r: number, label: string) => grid[r].findIndex((c) => norm(c) === label)
+  const no = colOf(header, 'NO')
+  const name = colOf(header, '성명')
+  const grossCol = colOf(header, '지급액')
+  const incomeTax = colOf(header - 1, '소득세')
+  const localTax = colOf(header + 1, '지방소득세')
+  const net = colOf(header + 1, '차인지급액')
+  const upperOthers = [colOf(header - 1, '학자금상환액')]
+  const lowerOthers = [colOf(header + 1, '고용보험료'), colOf(header + 1, '산재보험료')]
+  const sum = (r: number, cols: number[]) => cols.reduce((s, c) => s + (c < 0 ? 0 : money(grid[r]?.[c])), 0)
+
+  const rows: StatementRow[] = []
+  const errors: string[] = []
+  let fileTotal: ParsedStatement['fileTotal'] = null
+  for (let r = header + 1; r < grid.length; r++) {
+    const rawName = (grid[r][name] ?? '').trim()
+    if (/^(총|합)계/.test(norm(rawName))) {
+      fileTotal = { gross: money(grid[r][grossCol]), net: money(grid[r + 1]?.[net]) }
+      continue
+    }
+    if (!rawName || !/^\d+$/.test(norm(grid[r][no]))) continue
+
+    const gross = amountOf(grid[r][grossCol])
+    if (gross === null) { errors.push(`${rawName}: 지급액을 읽지 못했습니다.`); continue }
+    rows.push({
+      rawName, base: gross, incentive: 0,
+      baseIncomeTax: money(grid[r - 1]?.[incomeTax]), baseLocalTax: money(grid[r + 1]?.[localTax]),
+      incentiveIncomeTax: 0, incentiveLocalTax: 0,
+      otherDeductions: sum(r - 1, upperOthers) + sum(r + 1, lowerOthers),
+      employerInsurance: 0,
+      net: money(grid[r + 1]?.[net]),
+    })
   }
   return { rows, errors, fileTotal }
 }
@@ -372,9 +420,10 @@ function mergeSameName(rows: StatementRow[], warnings: string[]) {
 }
 
 function parseSheet(sheet: StatementSheet): ParsedStatement | null {
-  const kind: StatementKind = hasInsuredTerms(sheet.grid.flat().join(' ')) ? 'insured' : 'business'
+  const text = sheet.grid.flat().join(' ')
+  const kind: StatementKind = !isBusinessLedger(text) && hasInsuredTerms(text) ? 'insured' : 'business'
   const body = kind === 'business'
-    ? parseBusiness(sheet.grid)
+    ? parseBusinessLedger(sheet.grid) ?? parseBusiness(sheet.grid)
     : parseInsuredTable(sheet.grid) ?? parsePerPerson(sheet.grid)
   if (!body || (body.rows.length === 0 && body.errors.length === 0)) return null
 
@@ -424,10 +473,14 @@ export function parseStatement(sheets: StatementSheet[], year: number, month: nu
   return a.sure ? { ...only, errors: [text, ...only.errors] } : { ...only, warnings: [...only.warnings, text] }
 }
 
-/** 이름으로 직원을 찾는다. 정확히 같지 않으면 추정으로 표시해 사람이 확인하게 한다 */
-export function matchEmployee<E extends { id: string; name: string }>(rawName: string, employees: E[]) {
-  const exact = employees.find((e) => norm(e.name) === norm(rawName))
-  if (exact) return { employeeId: exact.id, fuzzy: false }
+/**
+ * 이름으로 직원을 찾는다. 정확히 같지 않으면 추정으로 표시해 사람이 확인하게 한다.
+ * "이현우(이한빛)"처럼 괄호로 다른 이름을 적기도 하고, 재입사로 같은 이름이 둘이면 재직 중인 쪽이다.
+ */
+export function matchEmployee<E extends { id: string; name: string; active?: boolean }>(rawName: string, employees: E[]) {
+  const names = [rawName, rawName.replace(/\(.*\)/, ''), /\((.+)\)/.exec(rawName)?.[1] ?? ''].map(norm).filter(Boolean)
+  const exact = employees.filter((e) => names.includes(norm(e.name)))
+  if (exact.length > 0) return { employeeId: (exact.find((e) => e.active) ?? exact[0]).id, fuzzy: false }
   const [best] = findSimilar(rawName, employees, 1, 0.6)
   return best ? { employeeId: best.id, fuzzy: true } : { employeeId: null, fuzzy: false }
 }

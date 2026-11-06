@@ -11,11 +11,15 @@ import {
   deductionsOf, grossOf, matchEmployee, parseStatement, STATEMENT_KIND_LABEL,
   type ParsedStatement, type StatementKind, type StatementSheet,
 } from '@/lib/payroll/statement'
+import { findOutsourced } from '@/lib/payroll/outsourced'
 import { saveStatement } from '@/lib/payroll/save-statement'
 import { toast } from '@/lib/toast'
 import { AlertTriangle, Check, FileUp } from 'lucide-react'
 
 const NEW_EMPLOYEE = 'new'
+const OUTSOURCED = 'outsourced'
+/** 통장에서 비용 이체를 못 찾았는데 사람이 외주로 고른 경우 */
+const DEFAULT_OUTSOURCED_CATEGORY = 'exec_cost'
 
 interface SavedStatement { employeeId: string; name: string; kind: StatementKind | 'cash' | null }
 
@@ -23,7 +27,7 @@ interface Props {
   year: number
   month: number
   /** 퇴사자까지 전체 직원 */
-  employees: { id: string; name: string }[]
+  employees: { id: string; name: string; active: boolean }[]
   saved: SavedStatement[]
   onDone: () => void
 }
@@ -31,9 +35,21 @@ interface Props {
 interface Preview {
   filename: string
   parsed: ParsedStatement
-  /** 명세서 이름 → 직원 id | NEW_EMPLOYEE | '' */
+  /** 명세서 이름 → 직원 id | NEW_EMPLOYEE | OUTSOURCED | '' */
   picks: Record<string, string>
   fuzzy: Set<string>
+  /** 통장에서 비용 이체를 찾은 이름 → 비용 분류 */
+  outsourced: Map<string, string>
+}
+
+/** 사업소득은 지급일이 귀속월 또는 다음 달이다 */
+async function expenseTransfers(supabase: ReturnType<typeof createClient>, year: number, month: number) {
+  const { data, error } = await supabase.from('bank_transactions').select('counterparty, withdrawal, category')
+    .gt('withdrawal', 0).eq('cancelled', false)
+    .gte('tx_date', new Date(Date.UTC(year, month - 1, 1)).toISOString().slice(0, 10))
+    .lte('tx_date', new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10))
+  if (error) throw new Error(error.message)
+  return data ?? []
 }
 
 async function readPdf(file: File): Promise<StatementSheet[]> {
@@ -72,14 +88,18 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
         toast.error('명세서 표를 찾지 못했습니다. 세무사가 보낸 급여대장 파일인지 확인해 주세요.')
         return
       }
+      const outsourced = parsed.kind === 'business'
+        ? findOutsourced(parsed.rows, await expenseTransfers(supabase, year, month))
+        : new Map<string, string>()
       const picks: Record<string, string> = {}
       const fuzzy = new Set<string>()
       for (const r of parsed.rows) {
         const m = matchEmployee(r.rawName, employees)
-        picks[r.rawName] = m.employeeId ?? ''
-        if (m.fuzzy) fuzzy.add(r.rawName)
+        const exact = !!m.employeeId && !m.fuzzy
+        picks[r.rawName] = !exact && outsourced.has(r.rawName) ? OUTSOURCED : m.employeeId ?? ''
+        if (m.fuzzy && picks[r.rawName] !== OUTSOURCED) fuzzy.add(r.rawName)
       }
-      setPreview({ filename: file.name, parsed, picks, fuzzy })
+      setPreview({ filename: file.name, parsed, picks, fuzzy, outsourced })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '파일을 읽지 못했습니다.')
     } finally {
@@ -90,7 +110,7 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
   const check = useMemo(() => {
     if (!preview) return null
     const { parsed, picks } = preview
-    const ids = Object.values(picks).filter((v) => v && v !== NEW_EMPLOYEE)
+    const ids = Object.values(picks).filter((v) => v && v !== NEW_EMPLOYEE && v !== OUTSOURCED)
     const unresolved = parsed.rows.filter((r) => !picks[r.rawName]).length
     const duplicated = ids.length !== new Set(ids).size
     const picked = new Set(ids)
@@ -104,10 +124,11 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
 
   async function confirm() {
     if (!preview || !check?.canConfirm) return
-    const { parsed, picks, filename } = preview
+    const { parsed, picks, filename, outsourced } = preview
     setSaving(true)
     try {
-      const fresh = parsed.rows.filter((r) => picks[r.rawName] === NEW_EMPLOYEE)
+      const staff = parsed.rows.filter((r) => picks[r.rawName] !== OUTSOURCED)
+      const fresh = staff.filter((r) => picks[r.rawName] === NEW_EMPLOYEE)
       const created = new Map<string, string>()
       if (fresh.length > 0) {
         const { data, error } = await supabase.from('employees')
@@ -118,13 +139,17 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
       }
       await saveStatement(supabase, {
         year, month, kind: parsed.kind, filename,
-        rows: parsed.rows.map((r) => ({
+        rows: staff.map((r) => ({
           ...r,
           employeeId: picks[r.rawName] === NEW_EMPLOYEE ? (created.get(r.rawName.trim()) as string) : picks[r.rawName],
         })),
         droppedIds: check.dropped.map((d) => d.employeeId),
+        outsourced: parsed.rows.filter((r) => picks[r.rawName] === OUTSOURCED).map((r) => ({
+          name: r.rawName, gross: grossOf(r), net: r.net, category: outsourced.get(r.rawName) ?? DEFAULT_OUTSOURCED_CATEGORY,
+        })),
       })
-      toast.success(`${month}월 귀속 ${STATEMENT_KIND_LABEL[parsed.kind]} ${parsed.rows.length}명을 확정했습니다.`)
+      const others = parsed.rows.length - staff.length
+      toast.success(`${month}월 귀속 ${STATEMENT_KIND_LABEL[parsed.kind]} ${staff.length}명을 확정했습니다.${others > 0 ? ` 외주 ${others}명은 급여에서 제외했습니다.` : ''}`)
       if (fresh.length > 0) toast.info('새로 등록한 직원의 급여 조건은 직원 관리에서 채워 주세요.')
       setPreview(null)
       onDone()
@@ -141,6 +166,7 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
     { gross: 0, deduction: 0, net: 0 },
   )
   const showEmployer = parsed?.rows.some((r) => r.employerInsurance > 0)
+  const outsourcedRows = parsed?.rows.filter((r) => preview?.picks[r.rawName] === OUTSOURCED) ?? []
 
   return (
     <>
@@ -224,6 +250,7 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
                               onChange={(e) => setPreview({ ...preview, picks: { ...preview.picks, [r.rawName]: e.target.value } })}
                             >
                               <option value="">선택해 주세요</option>
+                              {parsed.kind === 'business' && <option value={OUTSOURCED}>외주 (급여 제외)</option>}
                               <option value={NEW_EMPLOYEE}>새 직원으로 등록</option>
                               {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                             </select>
@@ -247,6 +274,11 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
                 </div>
               )}
 
+              {outsourcedRows.length > 0 && (
+                <p className="text-xs text-gray-500">
+                  외주 {outsourcedRows.length}명은 통장에서 이미 비용 처리되어 급여에 넣지 않고, 원천세 {formatKRW(outsourcedRows.reduce((s, r) => s + grossOf(r) - r.net, 0))}만 비용에 더합니다.
+                </p>
+              )}
               {check.unresolved > 0 && <p className="text-xs text-red-600">직원 관리에 없는 이름 {check.unresolved}명을 연결하거나 새로 등록해 주세요.</p>}
               {check.duplicated && <p className="text-xs text-red-600">한 직원에 두 이름이 연결되어 있습니다.</p>}
             </div>

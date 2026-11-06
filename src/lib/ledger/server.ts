@@ -10,6 +10,7 @@ import { classifyBankTx, EMPTY_ACCOUNTS, type ClassifyContext, type LedgerAccoun
 import { matchPayments } from './match'
 import { checkBalanceChain, type ParsedBankTx, type ParsedCardTx } from './parse'
 import { settleMonth, type SettleResult } from './settle'
+import { outsourcedKey, type OutsourcedEntry } from '@/lib/payroll/outsourced'
 
 type DB = SupabaseClient<Database>
 
@@ -219,12 +220,15 @@ export async function computeBankSettlement(db: DB, year: number, month: number,
     amount: r.withdrawal - r.deposit,
   }))
 
+  const outsourced = (settings[outsourcedKey(year, month)] ?? []) as OutsourcedEntry[]
+
   const result: SettleResult = settleMonth({
     year, month,
     bank: [...(prevRes.data ?? []), ...(bankRes.data ?? [])],
     card: cardRes.data ?? [],
     insuranceForMonth,
     payroll: (payrollRes.data ?? []).map((p) => ({ base_salary: Number(p.base_salary), employer_insurance: Number(p.employer_insurance ?? 0) })),
+    outsourcedTax: outsourced.map((o) => ({ category: o.category, amount: o.gross - o.net })),
     incentiveTotal,
     gongguMargin: (gongguRes.data ?? []).reduce((s, r) => s + Number(r.margin), 0),
     gongguGrossSales: (gongguRes.data ?? []).reduce((s, r) => s + Number(r.gross_sales), 0),

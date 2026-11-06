@@ -242,7 +242,7 @@ export default function PayrollPage() {
         <div className="space-y-2">
           <StatementUpload
             year={year} month={month}
-            employees={allEmployees.map((e) => ({ id: e.id, name: e.name }))}
+            employees={allEmployees.map((e) => ({ id: e.id, name: e.name, active: e.active }))}
             saved={rows.filter((r) => r.kind).map((r) => ({ employeeId: r.emp.id, name: r.emp.name, kind: r.kind }))}
             onDone={load}
           />

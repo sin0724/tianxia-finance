@@ -7,6 +7,7 @@
  */
 
 import { stripBankPrefix } from '@/lib/ledger/classify'
+import { nameKey } from './outsourced'
 
 export interface PayTransfer {
   tx_date: string
@@ -27,8 +28,6 @@ export interface PaidStatus {
   over: number
   transfers: PayTransfer[]
 }
-
-const nameKey = (s: string) => s.normalize('NFKC').replace(/\s/g, '').toUpperCase()
 
 /** 이체가 어느 귀속월 급여인지. 통장 메모에는 전각 문자가 섞여 NFKC로 맞춘 뒤 읽는다 */
 export function payAttribution(tx: Pick<PayTransfer, 'tx_date' | 'memo'>) {

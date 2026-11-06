@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { parseStatement, type Grid } from './statement'
+import { matchEmployee, parseStatement, type Grid } from './statement'
 
 /** 세무 프로그램 PDF 급여대장 모양 — 머리글 4줄(영수인이 끼어든 줄 포함), 직원 1명 3줄, 가운데 줄에 "합계(2명)" */
 const grid: Grid = [
@@ -47,4 +47,52 @@ test('읽은 합계가 파일 총계와 다르면 막는다', () => {
   tampered[15][4] = '4,000,001'
   const parsed = parseStatement([{ name: 'pdf', grid: tampered }], 2026, 10)
   assert.ok(parsed?.errors.some((e) => e.includes('파일 총계')))
+})
+
+/** 사업소득지급대장(상세) 모양 — 1명 3행, 예술인용 "고용보험료" 칸이 있고 같은 사람이 두 번 나온다 */
+const ledger: Grid = [
+  ['', '', '', '', '', '(2026년10월)사업소득지급대장(상세)', '', '', '', '', ''],
+  ['', '회사명:(주)회사', '', '', '', '', '', '', '', '', ''],
+  ['', '', '', '귀속년월', '', '', '소득세', '예술/특고인경비', '학자금상환액', '', ''],
+  ['NO', '코드', '성명', '', '지급액', '세율(%)', '', '', '', '', '영수인'],
+  ['', '', '', '지급년월일', '', '', '지방소득세', '고용보험료', '산재보험료', '차인지급액', ''],
+  ['', '', '', '2026.10', '', '', '3,000', '', '', '', ''],
+  ['1', '000001', '김하나', '', '100,000', '3', '', '', '', '', ''],
+  ['', '', '', '2026.10.31', '', '', '300', '', '', '96,700', ''],
+  ['', '', '', '2026.10', '', '', '1,500', '', '', '', ''],
+  ['2', '000001', '김하나', '', '50,000', '3', '', '', '', '', ''],
+  ['', '', '', '2026.10.31', '', '', '150', '', '', '48,350', ''],
+  ['', '', '', '', '', '(2026년10월)사업소득지급대장(상세)', '', '', '', '', ''],
+  ['', '', '', '귀속년월', '', '', '소득세', '예술/특고인경비', '학자금상환액', '', ''],
+  ['NO', '코드', '성명', '', '지급액', '세율(%)', '', '', '', '', '영수인'],
+  ['', '', '', '지급년월일', '', '', '지방소득세', '고용보험료', '산재보험료', '차인지급액', ''],
+  ['', '', '', '2026.10', '', '', '6,000', '', '', '', ''],
+  ['3', '000002', '박둘(최둘)', '', '200,000', '3', '', '', '', '', ''],
+  ['', '', '', '2026.10.31', '', '', '600', '', '', '193,400', ''],
+  ['', '', '', '', '', '', '10,500', '', '', '', ''],
+  ['', '', '총계', '', '350,000', '', '', '', '', '', ''],
+  ['', '', '', '', '', '', '1,050', '', '', '338,450', ''],
+]
+
+test('사업소득지급대장을 고용보험료 칸과 상관없이 사업소득으로 읽는다', () => {
+  const parsed = parseStatement([{ name: 'pdf', grid: ledger }], 2026, 10)
+  assert.ok(parsed)
+  assert.equal(parsed.kind, 'business')
+  assert.deepEqual(parsed.errors, [])
+  assert.deepEqual(parsed.attribution, { year: 2026, month: 10, sure: true })
+  assert.deepEqual(parsed.fileTotal, { gross: 350_000, net: 338_450 })
+  assert.deepEqual(parsed.rows.map((r) => [r.rawName, r.base, r.baseIncomeTax, r.baseLocalTax, r.net]), [
+    ['김하나', 150_000, 4_500, 450, 145_050],
+    ['박둘(최둘)', 200_000, 6_000, 600, 193_400],
+  ])
+})
+
+test('직원 이름은 괄호 안 이름도 보고, 동명이인이면 재직자를 고른다', () => {
+  const employees = [
+    { id: 'old', name: '김하나', active: false },
+    { id: 'now', name: '김하나', active: true },
+    { id: 'b', name: '최둘', active: true },
+  ]
+  assert.deepEqual(matchEmployee('김하나', employees), { employeeId: 'now', fuzzy: false })
+  assert.deepEqual(matchEmployee('박둘(최둘)', employees), { employeeId: 'b', fuzzy: false })
 })

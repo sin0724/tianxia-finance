@@ -7,6 +7,7 @@
  *   고정비·변동비·특수 = 통장 비용 출금(분류의 line) + 카드 승인(변동비, 해외는 환율 환산)
  *   급여               = 세무사 대장 기준 세전 급여 (monthly_payroll.base_salary) — 통장 급여·원천세 이체는 현금 이동일 뿐
  *   4대보험 회사부담   = 급여 화면 입력값, 없으면 통장 4대보험 납부액에서 회사부담 비율로 추정
+ *   외주 원천세        = 사업소득지급대장의 외주 소득자 세전 − 실지급액 — 이체는 비용에 있지만 원천세 납부는 현금 이동이라 따로 더한다
  *   손익 외            = 대출·배당·보증금·가수금·대납·부가세 — 이익과 무관, 현금 표에만 표시
  *
  * 금액은 전부 원 단위 정수. 공급가·적립금처럼 나눗셈이 들어가는 곳만 Decimal 로 계산 후 정수로 내린다.
@@ -43,6 +44,8 @@ export interface SettleInput {
   /** 이 달 귀속 4대보험 납부 (다음 달 10일경 지로 출금) — 귀속월 기준으로 모아 넘긴다 */
   insuranceForMonth: { kind: string; amount: number }[]
   payroll: { base_salary: number; employer_insurance: number }[]
+  /** 외주 소득자 원천세 — category는 이체가 들어간 비용 분류 */
+  outsourcedTax: { category: string; amount: number }[]
   incentiveTotal: number
   gongguMargin: number
   gongguGrossSales: number
@@ -83,6 +86,8 @@ export interface SettleBreakdown {
   byCategory: Record<string, { in: number; out: number; count: number }>
   card: { krw: number; foreign: number; foreignKrw: number; vat: number; count: number; excluded: number }
   employerInsuranceEstimated: boolean
+  /** 비용 줄별로 더한 외주 원천세 */
+  outsourcedTax: Record<SettleLine, number>
   unclassified: number
   balanceBreaks: number
 }
@@ -130,6 +135,10 @@ export function settleMonth(input: SettleInput): SettleResult {
     else if (def.cls === 'non_pl') { non_pl_in += r.deposit; non_pl_out += r.withdrawal }
     else if (def.cls === 'unclassified') unclassified++
   }
+
+  const outsourcedTax: Record<SettleLine, number> = { product_cost: 0, fixed: 0, variable: 0, special: 0 }
+  for (const t of input.outsourcedTax) outsourcedTax[categoryOf(t.category).line ?? 'variable'] += t.amount
+  for (const key of Object.keys(line) as SettleLine[]) line[key] += outsourcedTax[key]
 
   // ── 카드 (승인 기준, 해외는 환율 환산) ────────────────────
   const cards = input.card.filter((c) => c.approved_date.startsWith(ym))
@@ -188,6 +197,7 @@ export function settleMonth(input: SettleInput): SettleResult {
       byCategory,
       card: { krw: cardKrw, foreign: foreign.toNumber(), foreignKrw, vat: cards.reduce((s, c) => s + c.vat, 0), count: cards.length, excluded: excludedKrw },
       employerInsuranceEstimated,
+      outsourcedTax,
       unclassified,
       balanceBreaks,
     },
