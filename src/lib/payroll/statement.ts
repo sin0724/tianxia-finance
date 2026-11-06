@@ -82,7 +82,7 @@ const LABEL = {
   split: /기본급|인센티브/,
 } as const
 
-const SUMMARY_NAME = /^(총계|합계|소계|계|누계)$|(합|총|소)계$|인원/
+const SUMMARY_NAME = /^(총계|합계|소계|계|누계)(\(.*\))?$|(합|총|소)계$|인원/
 
 /** 명세서에서 직원 이름으로 볼 수 있는 칸 — 머리글·합계·사번은 제외 */
 const isPersonName = (cell: string) => {
@@ -226,17 +226,25 @@ function insuredSlots(grid: Grid): { slots: Partial<Record<InsuredKey, Slot>>; s
 
     const slots: Partial<Record<InsuredKey, Slot>> = {}
     const put = (key: InsuredKey, slot: Slot) => { slots[key] ??= slot }
-    headerRows.forEach((row, offset) => row.forEach((raw, col) => {
-      const l = norm(raw)
-      if (!l || /d/.test(l)) return
-      if (LABEL.name.test(l)) put('name', { col, offset })
-      else if (LABEL.employer.test(l)) put('employer', { col, offset })
-      else if (LABEL.net.test(l)) put('net', { col, offset })
-      else if (LABEL.deduction.test(l)) put('deduction', { col, offset })
-      else if (LABEL.localTax.test(l)) put('localTax', { col, offset })
-      else if (LABEL.incomeTax.test(l)) put('incomeTax', { col, offset })
-      else if (LABEL.gross.test(l)) put('gross', { col, offset })
-    }))
+    let offset = 0
+    for (const row of headerRows) {
+      // PDF에서 "영수인" 같은 세로 병합 칸은 줄 사이에 찍혀 머리글 한 줄처럼 보인다. 직원 칸과 대응하는 줄이 아니라 세지 않는다
+      const filled = row.map(norm).filter(Boolean)
+      if (filled.length === 1 && !Object.values(LABEL).some((label) => label.test(filled[0]))) continue
+
+      row.forEach((raw, col) => {
+        const l = norm(raw)
+        if (!l || /d/.test(l)) return
+        if (LABEL.name.test(l)) put('name', { col, offset })
+        else if (LABEL.employer.test(l)) put('employer', { col, offset })
+        else if (LABEL.net.test(l)) put('net', { col, offset })
+        else if (LABEL.deduction.test(l)) put('deduction', { col, offset })
+        else if (LABEL.localTax.test(l)) put('localTax', { col, offset })
+        else if (LABEL.incomeTax.test(l)) put('incomeTax', { col, offset })
+        else if (LABEL.gross.test(l)) put('gross', { col, offset })
+      })
+      offset++
+    }
 
     if (slots.name && slots.gross && (slots.net || slots.deduction)) return { slots, start: r + headerRows.length }
   }
@@ -279,10 +287,12 @@ function parseInsuredTable(grid: Grid) {
   let fileTotal: ParsedStatement['fileTotal'] = null
   for (let r = start; r < grid.length; r++) {
     if (!grid[r].slice(0, name.col + 2).some((c) => SUMMARY_NAME.test(norm(c)))) continue
-    const top = height > 1 ? r - (name.offset % height) : r
-    const gross = amountOf(at(top, slots.gross)) ?? amountOf(grid[r][(slots.gross as Slot).col])
-    const net = amountOf(at(top, slots.net))
-    if (gross !== null && net !== null) fileTotal = { gross, net }
+    // "합계(8명)"은 합계 칸들의 가운데 줄에 있을 수 있어, 금액이 다 읽히는 블록을 위로 찾아 올라간다
+    for (let top = r; top > r - height; top--) {
+      const gross = amountOf(at(top, slots.gross)) ?? (top === r ? amountOf(grid[r][(slots.gross as Slot).col]) : null)
+      const net = amountOf(at(top, slots.net))
+      if (gross !== null && net !== null) { fileTotal = { gross, net }; break }
+    }
   }
   return { rows, errors, fileTotal }
 }
