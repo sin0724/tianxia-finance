@@ -23,7 +23,7 @@ interface SaveInput {
 const cleared = {
   base_salary: 0, deductions: 0, net_pay: 0, other_deductions: 0, employer_insurance: 0,
   base_income_tax: 0, base_local_tax: 0, incentive_income_tax: 0, incentive_local_tax: 0,
-  status: 'draft' as const, confirmed_at: null, statement_kind: null, statement_file: null,
+  status: 'draft' as const, confirmed_at: null, statement_kind: null, statement_file: null, paid_at: null,
 }
 
 /** 금액만 지운다. 근태 기록이 같은 행에 있어 행을 삭제하지 않는다 */
@@ -44,6 +44,13 @@ export async function saveCashPay(db: DB, year: number, month: number, employeeI
     base_salary: amount, net_pay: amount,
     status: 'confirmed', statement_kind: 'cash',
   }, { onConflict: 'year,month,employee_id' })
+  if (error) throw new Error(error.message)
+}
+
+/** 통장에서 찾을 수 없는 지급(현금 등)을 사람이 지급 완료로 표시한다. null이면 표시를 푼다 */
+export async function setPaidCheck(db: DB, year: number, month: number, employeeId: string, paidAt: string | null) {
+  const { error } = await db.from('monthly_payroll').update({ paid_at: paidAt })
+    .eq('year', year).eq('month', month).eq('employee_id', employeeId)
   if (error) throw new Error(error.message)
 }
 

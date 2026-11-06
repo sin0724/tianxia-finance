@@ -13,7 +13,8 @@ import { computeAutoIncentives, isLedgerIncentiveMonth } from '@/lib/calculation
 import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
 import { StatementUpload } from '@/components/payroll/statement-upload'
-import { clearAmounts, saveCashPay } from '@/lib/payroll/save-statement'
+import { paidStatus, transfersByEmployee, type PaidStatus, type PayTransfer } from '@/lib/payroll/paid'
+import { clearAmounts, saveCashPay, setPaidCheck } from '@/lib/payroll/save-statement'
 import { STATEMENT_KIND_LABEL, type StatementKind } from '@/lib/payroll/statement'
 import { hiredBy, workedThrough } from '@/lib/payroll/tax'
 import type { Employee, MonthlyPayroll } from '@/types/database'
@@ -29,9 +30,12 @@ interface Row {
   deduction: number
   net: number
   employerInsurance: number
+  /** 명세서가 있는 직원만 지급 현황을 본다 */
+  pay: PaidStatus | null
+  checkedAt: string | null
 }
 
-const GRID = 'md:grid md:grid-cols-[1.5fr_1fr_1fr_1fr_1fr_1fr_1fr] md:gap-3'
+const GRID = 'md:grid md:grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr_1fr_1.5fr] md:gap-3'
 
 /** 모바일에서만 라벨이 보이는 셀 — 데스크톱은 위쪽 헤더 행이 라벨 역할을 한다 */
 function Cell({ label, children, className = '' }: { label: string; children: React.ReactNode; className?: string }) {
@@ -43,16 +47,47 @@ function Cell({ label, children, className = '' }: { label: string; children: Re
   )
 }
 
-function toRow(emp: Employee, p: MonthlyPayroll | undefined, incentive: number): Row {
+function toRow(emp: Employee, p: MonthlyPayroll | undefined, incentive: number, transfers: PayTransfer[]): Row {
   const base = Number(p?.base_salary ?? 0)
   const gross = base + incentive
   const deduction = Number(p?.base_income_tax ?? 0) + Number(p?.base_local_tax ?? 0)
     + Number(p?.incentive_income_tax ?? 0) + Number(p?.incentive_local_tax ?? 0) + Number(p?.other_deductions ?? 0)
+  const net = gross - deduction
+  const checkedAt = p?.paid_at ?? null
   return {
     emp, kind: p?.statement_kind ?? null, file: p?.statement_file ?? null,
-    base, incentive, gross, deduction, net: gross - deduction,
+    base, incentive, gross, deduction, net,
     employerInsurance: Number(p?.employer_insurance ?? 0),
+    pay: p?.statement_kind ? paidStatus(net, transfers, checkedAt) : null,
+    checkedAt,
   }
+}
+
+const transferDates = (pay: PaidStatus) => pay.transfers.map((t) => t.tx_date.slice(5).replace('-', '/')).join(', ')
+
+/** 통장에서 찾은 이체로 판단하고, 못 찾는 지급만 사람이 체크한다 */
+function PaidCell({ row, busy, onCheck }: { row: Row; busy: boolean; onCheck: (checked: boolean) => void }) {
+  const { pay, checkedAt } = row
+  if (!pay) return <span className="text-gray-300">-</span>
+  if (pay.state === 'paid') return <span className="text-green-700">지급 완료 · {transferDates(pay)}</span>
+  if (pay.state === 'over') {
+    return (
+      <span className="text-amber-700">
+        {formatKRW(pay.paid)} 지급 ({transferDates(pay)})
+        <span className="block text-xs">명세서보다 {formatKRW(pay.over)} 더 지급</span>
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex flex-col md:items-end gap-0.5">
+      {pay.paid > 0 && <span className="text-xs text-gray-500">{formatKRW(pay.paid)} 지급 ({transferDates(pay)})</span>}
+      {pay.state === 'partial' && <span className="text-xs text-red-500">잔액 {formatKRW(pay.remaining)}</span>}
+      <label className="inline-flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+        <input type="checkbox" disabled={busy} checked={!!checkedAt} onChange={(e) => onCheck(e.target.checked)} />
+        {checkedAt ? `지급 처리 ${checkedAt.slice(5).replace('-', '/')}` : '이미 지급'}
+      </label>
+    </span>
+  )
 }
 
 /**
@@ -82,7 +117,7 @@ export default function PayrollPage() {
     const end = `${year}-${mm}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
 
     const [
-      { data: emps }, { data: payroll }, { data: manualIncentives }, { data: payments }, { data: settingsRows }, { data: cancelledProjects },
+      { data: emps }, { data: payroll }, { data: manualIncentives }, { data: payments }, { data: settingsRows }, { data: cancelledProjects }, { data: bank },
     ] = await Promise.all([
       supabase.from('employees').select('*').order('sort_order', { nullsFirst: false }).order('name'),
       supabase.from('monthly_payroll').select('*').eq('year', year).eq('month', month),
@@ -90,6 +125,11 @@ export default function PayrollPage() {
       supabase.from('payments').select('amount, manager, status, excluded, project_id').gte('payment_date', start).lte('payment_date', end),
       supabase.from('settings').select('*'),
       supabase.from('projects').select('id').eq('status', 'cancelled'),
+      // 귀속월 급여는 보통 다음 달에 나가지만 선지급·늦은 지급도 있어 앞뒤 한 달씩 더 본다
+      supabase.from('bank_transactions').select('tx_date, counterparty, memo, withdrawal')
+        .in('category', ['payroll_pay', 'incentive_pay']).eq('cancelled', false)
+        .gte('tx_date', new Date(Date.UTC(year, month - 2, 1)).toISOString().slice(0, 10))
+        .lte('tx_date', new Date(Date.UTC(year, month + 2, 0)).toISOString().slice(0, 10)),
     ])
     const employees = emps ?? []
     setAllEmployees(employees)
@@ -112,7 +152,9 @@ export default function PayrollPage() {
     }
 
     const saved = new Map((payroll ?? []).map((p) => [p.employee_id ?? '', p]))
-    const all = employees.map((e) => toRow(e, saved.get(e.id), incentive[e.id] ?? 0))
+    const onStatement = employees.filter((e) => saved.get(e.id)?.statement_kind)
+    const transfers = transfersByEmployee(onStatement, bank ?? [], year, month)
+    const all = employees.map((e) => toRow(e, saved.get(e.id), incentive[e.id] ?? 0, transfers.get(e.id) ?? []))
     const paid = all.filter((r) => r.gross !== 0 || r.kind)
     setRows(paid.filter((r) => hiredBy(r.emp, end) || r.kind))
     const paidIds = new Set(paid.map((r) => r.emp.id))
@@ -132,7 +174,8 @@ export default function PayrollPage() {
     deduction: t.deduction + r.deduction,
     net: t.net + r.net,
     insurance: t.insurance + r.employerInsurance,
-  }), { gross: 0, deduction: 0, net: 0, insurance: 0 }), [rows])
+    remaining: t.remaining + (r.pay?.remaining ?? 0),
+  }), { gross: 0, deduction: 0, net: 0, insurance: 0, remaining: 0 }), [rows])
 
   const leftovers = usesStatements ? rows.filter((r) => !r.kind) : []
   const statements = (['business', 'insured'] as const).map((kind) => {
@@ -162,6 +205,19 @@ export default function PayrollPage() {
       toast.success('현금 지급을 반영했습니다.')
       setCashEmployee('')
       setCashAmount('')
+      await load()
+    } catch (e) {
+      toast.error('저장 실패: ' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setClearing(false)
+    }
+  }
+
+  async function checkPaid(r: Row, checked: boolean) {
+    setClearing(true)
+    try {
+      const today = new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10)
+      await setPaidCheck(supabase, year, month, r.emp.id, checked ? today : null)
       await load()
     } catch (e) {
       toast.error('저장 실패: ' + (e instanceof Error ? e.message : ''))
@@ -233,7 +289,10 @@ export default function PayrollPage() {
         </Card>
         <Card className="border-green-200 bg-green-50">
           <CardHeader className="pb-1"><CardTitle className="text-xs text-green-600">차인지급액 (입금액)</CardTitle></CardHeader>
-          <CardContent><div className="text-lg font-bold text-green-800">{formatKRW(totals.net)}</div></CardContent>
+          <CardContent>
+            <div className="text-lg font-bold text-green-800">{formatKRW(totals.net)}</div>
+            {rows.some((r) => r.pay) && <p className="text-xs text-green-700/80 mt-0.5">남은 지급 {formatKRW(totals.remaining)}</p>}
+          </CardContent>
         </Card>
         <Card className="border-purple-200 bg-purple-50/50">
           <CardHeader className="pb-1"><CardTitle className="text-xs text-purple-600">4대보험 회사부담</CardTitle></CardHeader>
@@ -299,6 +358,7 @@ export default function PayrollPage() {
           <div className="text-right">공제</div>
           <div className="text-right">차인지급액</div>
           <div className="text-right">4대보험 회사부담</div>
+          <div className="text-right">지급</div>
         </div>
 
         <div className="divide-y">
@@ -338,6 +398,9 @@ export default function PayrollPage() {
               <Cell label="4대보험 회사부담" className="md:text-right">
                 {r.employerInsurance > 0 ? <span className="text-purple-700">{formatKRW(r.employerInsurance)}</span> : <span className="text-gray-300">-</span>}
               </Cell>
+              <Cell label="지급" className="md:text-right">
+                <PaidCell row={r} busy={clearing} onCheck={(checked) => checkPaid(r, checked)} />
+              </Cell>
             </div>
           ))}
         </div>
@@ -346,6 +409,7 @@ export default function PayrollPage() {
       <p className="text-xs text-gray-400 leading-relaxed">
         * 금액은 세무사 명세서 그대로입니다. 틀렸다면 세무사에게 수정본을 받아 다시 올리면 그 종류의 명세서 전체가 바뀝니다. 현금 지급은 명세서를 다시 올려도 유지됩니다.<br />
         * 영업이익에서 차감되는 인건비는 세전 지급액 + 4대보험 회사부담입니다.<br />
+        * 지급 현황은 통장 업로드 후 이름과 메모(&quot;10월 급여&quot;)로 자동 확인합니다. 현금·묶음 이체처럼 통장에서 찾을 수 없는 지급만 체크하세요. 정산 금액에는 영향이 없습니다.<br />
         * 근무시간·결근·급여 조건·메모는 <Link href="/employees" className="underline">직원 관리</Link>에서 기록합니다.
       </p>
     </div>

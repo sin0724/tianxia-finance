@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import tsx --test src/lib/integrations/staff-progress.test.ts src/lib/payroll/statement.test.ts",
+    "test": "node --import tsx --test src/lib/integrations/staff-progress.test.ts src/lib/payroll/statement.test.ts src/lib/payroll/paid.test.ts src/lib/ledger/classify.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

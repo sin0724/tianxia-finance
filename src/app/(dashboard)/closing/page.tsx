@@ -136,9 +136,10 @@ export default function ClosingPage() {
     if (remember && tx.counterparty) {
       const direction = tx.deposit > 0 ? 'in' : 'out'
       await supabase.from('classification_rules').insert({ counterparty: tx.counterparty, direction, category, priority: 100 })
-      // 같은 거래처의 자동 분류 거래(이 달)도 함께 바꾼다 — 손으로 고친 건은 그대로 둔다
+      // 같은 거래처의 자동 분류 거래(이 달)도 함께 바꾼다 — 손으로 고친 건과 급여 이체는 그대로 둔다
       await supabase.from('bank_transactions').update({ category, classified_by: 'user_rule' })
         .eq('counterparty', tx.counterparty).eq('classified_by', 'rule')
+        .not('category', 'in', '(payroll_pay,incentive_pay)')
         .gte('tx_date', start).lte('tx_date', end)
         .gt(direction === 'in' ? 'deposit' : 'withdrawal', 0)
     }

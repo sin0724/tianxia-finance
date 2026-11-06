@@ -60,6 +60,9 @@ const INSURANCE = /^([０-９0-9]{4})(국민건강|국민연금|고용보험|산
 // 세무서 납부 표시 "강서(109)부가세"
 const TAX_OFFICE_VAT = /^\S+\(\d+\)부가세$/
 
+// 거래처 규칙은 소액 경비 하나를 보고 만들어지기도 한다. 같은 사람의 급여까지 덮으면 대장 금액과 이중계상된다
+const SALARY_MEMO = /급여|퇴사|수당/
+
 const toHalfWidth = (s: string) => s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
 
 export const EMPTY_ACCOUNTS: LedgerAccounts = { company: [], shareholder: [], execPayees: [] }
@@ -68,13 +71,13 @@ export function stripBankPrefix(name: string) {
   return name.replace(BANK_PREFIX, '')
 }
 
-function userRule(tx: BankTxInput, rules: ClassificationRule[]): string | null {
+function userRule(tx: BankTxInput, rules: ClassificationRule[]): ClassificationRule | null {
   const dir = tx.deposit > 0 ? 'in' : 'out'
   for (const r of [...rules].sort((a, b) => a.priority - b.priority)) {
     if (r.direction !== 'any' && r.direction !== dir) continue
     if (r.counterparty && r.counterparty !== tx.counterparty) continue
     if (r.memo_contains && !tx.memo.includes(r.memo_contains)) continue
-    return r.category
+    return r
   }
   return null
 }
@@ -141,8 +144,9 @@ function builtin(tx: BankTxInput, ctx: ClassifyContext): { category: CategoryKey
 export function classifyBankTx(tx: BankTxInput, ctx: ClassifyContext): Classified {
   const base = builtin(tx, ctx)
   const user = userRule(tx, ctx.rules)
-  if (user) {
-    return { category: user as CategoryKey, classified_by: 'user_rule', attribution_month: base.month ?? null, note: null }
+  const isSalary = (base.category === 'payroll_pay' || base.category === 'incentive_pay') && SALARY_MEMO.test(tx.memo)
+  if (user && (user.memo_contains || !isSalary)) {
+    return { category: user.category as CategoryKey, classified_by: 'user_rule', attribution_month: base.month ?? null, note: null }
   }
   return { category: base.category, classified_by: 'rule', attribution_month: base.month ?? null, note: null }
 }
