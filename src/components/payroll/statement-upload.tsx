@@ -117,7 +117,9 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
     return {
       unresolved, duplicated, picked,
       dropped: saved.filter((s) => s.kind === parsed.kind && !picked.has(s.employeeId)),
-      otherKind: saved.filter((s) => s.kind && s.kind !== parsed.kind && picked.has(s.employeeId)),
+      /** 다른 명세서에도 있는 직원 — 금액을 합친다. 현금 지급만 이 파일 금액으로 바뀐다 */
+      otherKind: saved.filter((s) => s.kind && s.kind !== 'cash' && s.kind !== parsed.kind && picked.has(s.employeeId)),
+      replacedCash: saved.filter((s) => s.kind === 'cash' && picked.has(s.employeeId)),
       canConfirm: parsed.rows.length > 0 && parsed.errors.length === 0 && unresolved === 0 && !duplicated,
     }
   }, [preview, saved])
@@ -202,14 +204,17 @@ export function StatementUpload({ year, month, employees, saved, onDone }: Props
                 </div>
               )}
 
-              {(parsed.warnings.length > 0 || check.otherKind.length > 0 || check.dropped.length > 0) && (
+              {(parsed.warnings.length > 0 || check.otherKind.length > 0 || check.replacedCash.length > 0 || check.dropped.length > 0) && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-1 text-xs text-amber-800">
                   {parsed.warnings.map((w) => <p key={w}>{w}</p>)}
                   {check.otherKind.length > 0 && (
-                    <p>{check.otherKind.map((s) => s.name).join(', ')}: 다른 명세서로 이미 반영된 금액을 이 파일 금액으로 바꿉니다.</p>
+                    <p>{check.otherKind.map((s) => s.name).join(', ')}: {STATEMENT_KIND_LABEL[check.otherKind[0].kind as StatementKind]} 명세서 금액과 합쳐 저장합니다.</p>
+                  )}
+                  {check.replacedCash.length > 0 && (
+                    <p>{check.replacedCash.map((s) => s.name).join(', ')}: 현금 지급으로 넣은 금액을 이 파일 금액으로 바꿉니다.</p>
                   )}
                   {check.dropped.length > 0 && (
-                    <p>{check.dropped.map((s) => s.name).join(', ')}: 이전 명세서에 있었지만 이번 파일에 없어 금액을 지웁니다.</p>
+                    <p>{check.dropped.map((s) => s.name).join(', ')}: 이전 명세서에 있었지만 이번 파일에 없어 이 명세서 금액을 지웁니다.</p>
                   )}
                 </div>
               )}

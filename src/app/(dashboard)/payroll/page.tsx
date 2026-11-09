@@ -15,7 +15,8 @@ import { MonthNavigator } from '@/components/shared/month-navigator'
 import { StatementUpload } from '@/components/payroll/statement-upload'
 import { paidStatus, transfersByEmployee, type PaidStatus, type PayTransfer } from '@/lib/payroll/paid'
 import { clearAmounts, saveCashPay, setPaidCheck } from '@/lib/payroll/save-statement'
-import { STATEMENT_KIND_LABEL, type StatementKind } from '@/lib/payroll/statement'
+import { STATEMENT_KIND_LABEL, grossOf, type StatementKind } from '@/lib/payroll/statement'
+import { PART_ORDER, partsKey, type StatementPart, type StatementParts } from '@/lib/payroll/parts'
 import { hiredBy, workedThrough } from '@/lib/payroll/tax'
 import type { Employee, MonthlyPayroll } from '@/types/database'
 import { AlertTriangle, Check, FileText, X } from 'lucide-react'
@@ -24,6 +25,8 @@ interface Row {
   emp: Employee
   kind: StatementKind | 'cash' | null
   file: string | null
+  /** 이 직원이 든 명세서 — 두 명세서에 함께 나오면 둘 다 */
+  parts: { kind: StatementKind; part: StatementPart | null }[]
   base: number
   incentive: number
   gross: number
@@ -47,7 +50,15 @@ function Cell({ label, children, className = '' }: { label: string; children: Re
   )
 }
 
-function toRow(emp: Employee, p: MonthlyPayroll | undefined, incentive: number, transfers: PayTransfer[]): Row {
+function partsOf(p: MonthlyPayroll | undefined, parts: StatementParts[string] | undefined): Row['parts'] {
+  if (parts) return PART_ORDER.flatMap((kind) => (parts[kind] ? [{ kind, part: parts[kind] as StatementPart }] : []))
+  const kind = p?.statement_kind
+  return kind === 'business' || kind === 'insured' ? [{ kind, part: null }] : []
+}
+
+function toRow(
+  emp: Employee, p: MonthlyPayroll | undefined, incentive: number, transfers: PayTransfer[], parts: StatementParts[string] | undefined,
+): Row {
   const base = Number(p?.base_salary ?? 0)
   const gross = base + incentive
   const deduction = Number(p?.base_income_tax ?? 0) + Number(p?.base_local_tax ?? 0)
@@ -55,7 +66,7 @@ function toRow(emp: Employee, p: MonthlyPayroll | undefined, incentive: number, 
   const net = gross - deduction
   const checkedAt = p?.paid_at ?? null
   return {
-    emp, kind: p?.statement_kind ?? null, file: p?.statement_file ?? null,
+    emp, kind: p?.statement_kind ?? null, file: p?.statement_file ?? null, parts: partsOf(p, parts),
     base, incentive, gross, deduction, net,
     employerInsurance: Number(p?.employer_insurance ?? 0),
     pay: p?.statement_kind ? paidStatus(net, transfers, checkedAt) : null,
@@ -151,10 +162,11 @@ export default function PayrollPage() {
       if (!manualSet.has(auto.employee_id)) incentive[auto.employee_id] = auto.amount
     }
 
+    const parts = ((settingsRows ?? []).find((s) => s.key === partsKey(year, month))?.value ?? {}) as unknown as StatementParts
     const saved = new Map((payroll ?? []).map((p) => [p.employee_id ?? '', p]))
     const onStatement = employees.filter((e) => saved.get(e.id)?.statement_kind)
     const transfers = transfersByEmployee(onStatement, bank ?? [], year, month)
-    const all = employees.map((e) => toRow(e, saved.get(e.id), incentive[e.id] ?? 0, transfers.get(e.id) ?? []))
+    const all = employees.map((e) => toRow(e, saved.get(e.id), incentive[e.id] ?? 0, transfers.get(e.id) ?? [], parts[e.id]))
     const paid = all.filter((r) => r.gross !== 0 || r.kind)
     setRows(paid.filter((r) => hiredBy(r.emp, end) || r.kind))
     const paidIds = new Set(paid.map((r) => r.emp.id))
@@ -179,8 +191,12 @@ export default function PayrollPage() {
 
   const leftovers = usesStatements ? rows.filter((r) => !r.kind) : []
   const statements = (['business', 'insured'] as const).map((kind) => {
-    const list = rows.filter((r) => r.kind === kind)
-    return { kind, count: list.length, gross: list.reduce((s, r) => s + r.gross, 0), file: list[0]?.file ?? null }
+    const list = rows.flatMap((r) => r.parts.filter((x) => x.kind === kind).map((x) => ({ r, part: x.part })))
+    return {
+      kind, count: list.length,
+      gross: list.reduce((s, { r, part }) => s + (part ? grossOf(part) : r.gross), 0),
+      file: list[0] ? list[0].part?.file ?? list[0].r.file : null,
+    }
   })
 
   async function clearRows(ids: string[], done: string) {
@@ -243,7 +259,8 @@ export default function PayrollPage() {
           <StatementUpload
             year={year} month={month}
             employees={allEmployees.map((e) => ({ id: e.id, name: e.name, active: e.active }))}
-            saved={rows.filter((r) => r.kind).map((r) => ({ employeeId: r.emp.id, name: r.emp.name, kind: r.kind }))}
+            saved={rows.flatMap((r) => (r.parts.length > 0 ? r.parts.map((x) => x.kind) : r.kind ? [r.kind] : [])
+              .map((kind) => ({ employeeId: r.emp.id, name: r.emp.name, kind })))}
             onDone={load}
           />
           <div className="grid sm:grid-cols-2 gap-2">
@@ -372,9 +389,13 @@ export default function PayrollPage() {
             <div key={r.emp.id} className={`px-4 py-3 space-y-1.5 md:space-y-0 ${GRID} md:items-center text-sm`}>
               <div className="flex items-center gap-1.5 flex-wrap min-w-0">
                 <span className="font-medium text-gray-900">{r.emp.name}</span>
-                {r.kind && <Badge variant="outline" className={`text-xs py-0 ${r.kind === 'insured' ? 'text-purple-600 border-purple-300' : 'text-gray-500'}`}>
-                  {r.kind === 'insured' ? '4대보험' : r.kind === 'cash' ? '현금' : '3.3%'}
-                </Badge>}
+                {r.kind === 'cash' && <Badge variant="outline" className="text-xs py-0 text-gray-500">현금</Badge>}
+                {r.parts.map(({ kind, part }) => (
+                  <Badge key={kind} variant="outline" title={part ? `${STATEMENT_KIND_LABEL[kind]} ${formatKRW(grossOf(part))}` : undefined}
+                    className={`text-xs py-0 ${kind === 'insured' ? 'text-purple-600 border-purple-300' : 'text-gray-500'}`}>
+                    {kind === 'insured' ? '4대보험' : '3.3%'}{r.parts.length > 1 && part ? ` ${formatKRW(grossOf(part))}` : ''}
+                  </Badge>
+                ))}
                 {r.kind === 'cash' && (
                   <button type="button" aria-label={`${r.emp.name} 현금 지급 지우기`} disabled={clearing}
                     className="text-gray-300 hover:text-red-500"
@@ -407,7 +428,7 @@ export default function PayrollPage() {
       </div>
 
       <p className="text-xs text-gray-400 leading-relaxed">
-        * 금액은 세무사 명세서 그대로입니다. 틀렸다면 세무사에게 수정본을 받아 다시 올리면 그 종류의 명세서 전체가 바뀝니다. 현금 지급은 명세서를 다시 올려도 유지됩니다.<br />
+        * 금액은 세무사 명세서 그대로입니다. 틀렸다면 세무사에게 수정본을 받아 다시 올리면 그 종류의 명세서 전체가 바뀝니다. 두 명세서에 함께 있는 직원은 금액을 합쳐 보여 주고, 한쪽을 다시 올려도 다른 쪽 금액은 그대로입니다. 현금 지급은 명세서를 다시 올려도 유지됩니다.<br />
         * 영업이익에서 차감되는 인건비는 세전 지급액 + 4대보험 회사부담입니다.<br />
         * 지급 현황은 통장 업로드 후 이름과 메모(&quot;10월 급여&quot;)로 자동 확인합니다. 현금·묶음 이체처럼 통장에서 찾을 수 없는 지급만 체크하세요. 정산 금액에는 영향이 없습니다.<br />
         * 근무시간·결근·급여 조건·메모는 <Link href="/employees" className="underline">직원 관리</Link>에서 기록합니다.
