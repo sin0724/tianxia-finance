@@ -59,15 +59,15 @@ export async function POST(request: Request) {
     return new Response('', { status: 200 })
   }
 
-  // 담당자 드롭다운 — 재직 중인 직원. 대장 순번을 따르고 없으면 이름 순.
-  const { data: employees } = await admin
-    .from('employees')
-    .select('name, sort_order')
-    .eq('active', true)
-    .order('sort_order', { ascending: true, nullsFirst: false })
-    .order('name')
-
-  const managers = (employees ?? []).map((e) => e.name).filter(Boolean)
+  // 담당자 드롭다운 — 고정된 6개 옵션 (이름 + 팀)
+  const managers = [
+    '나병훈 0팀',
+    '나병훈 1팀',
+    '이현우 0팀',
+    '이현우 2팀',
+    '신현준 0팀',
+    '이강산 0팀',
+  ]
   const today = new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD
 
   const result = await openSlackModal(

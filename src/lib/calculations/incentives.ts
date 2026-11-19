@@ -23,9 +23,13 @@ export function computeAutoIncentives(
   return employees
     .filter((e) => e.incentive_type && e.incentive_value > 0)
     .map((e) => {
-      const myPayments = payments.filter(
-        (p) => p.manager?.trim().toLowerCase() === e.name.trim().toLowerCase()
-      )
+      const employeeName = e.name.trim().toLowerCase()
+      const myPayments = payments.filter((p) => {
+        const manager = p.manager?.trim().toLowerCase() || ''
+        // "나병훈 0팀" → "나병훈"으로 추출하여 비교 (2026/10 이전 데이터 호환)
+        const managerName = manager.split(/\s+/)[0] || manager
+        return managerName === employeeName || manager === employeeName
+      })
       if (myPayments.length === 0) return null
       const myRevenue = myPayments.reduce((sum, p) => sum + p.amount, 0)
       const mySupplyValue = myRevenue / (1 + vatRate)
