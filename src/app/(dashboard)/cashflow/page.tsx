@@ -2,7 +2,7 @@
 
 /**
  * 현금 흐름 — 최신 통장 잔액 + 미수금 − 반복 지출(최근 3개월 실적 평균) − 부가세 로 3개월 앞을 본다.
- * 통장 내역은 월 마감에서 올린 것을 쓴다. 미수금은 결제 내역의 잔금처리요망·미입금 건.
+ * 통장 내역은 월 마감에서 올린 것을 쓴다. 미수금은 결제 내역의 잔금 처리 요망·미입금 건.
  */
 
 import { useEffect, useState } from 'react'
@@ -131,7 +131,7 @@ export default function CashflowPage() {
                     <tr key={p.id} className="border-b last:border-0">
                       <td className={`py-1.5 pr-2 whitespace-nowrap ${p.overdue ? 'text-amber-600' : 'text-gray-500'}`}>{p.payment_date}{p.overdue ? ' 지연' : ''}</td>
                       <td className="pr-2">{p.client}</td>
-                      <td className="pr-2 text-xs text-gray-400">{p.status === 'balance_due' ? '잔금처리요망' : '미입금'}</td>
+                      <td className="pr-2 text-xs text-gray-400">{p.status === 'balance_due' ? '잔금 처리 요망' : '미입금'}</td>
                       <td className="text-right tabular-nums">{formatKRW(p.amount)}</td>
                     </tr>
                   ))}

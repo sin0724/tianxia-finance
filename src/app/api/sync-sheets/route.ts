@@ -27,7 +27,7 @@ type ExistingPayment = {
 }
 
 const toDbStatus = (s: SheetRow['status']): 'confirmed' | 'balance_due' | 'unpaid' =>
-  s === '잔금처리요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
+  s === '잔금 처리 요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
 
 /**
  * 시트 행 하나가 DB 결제 여러 건으로 나뉜 경우의 잔여분 ID — `{시트 동기화 ID}#{접미사}`.
@@ -395,7 +395,7 @@ export async function POST(request: Request) {
       if (isPending) pending++
 
       const paymentType =
-        row.status === '잔금처리요망' ? '잔금' :
+        row.status === '잔금 처리 요망' ? '잔금' :
         row.status === '미입금' ? '기타' : null
 
       const { error: insertErr } = await supabase.from('payments').insert({

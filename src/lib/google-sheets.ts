@@ -1,7 +1,7 @@
 import { google } from 'googleapis'
 import type { sheets_v4 } from 'googleapis'
 
-export type PaymentStatus = '입금완료' | '잔금처리요망' | '미입금' | '추가계약'
+export type PaymentStatus = '입금완료' | '잔금 처리 요망' | '미입금' | '추가계약'
 
 export type SheetRow = {
   rowIndex: number       // 시트 내 실제 행 번호 (1-based)
@@ -281,7 +281,7 @@ export async function updateSheetStatusBySyncId(
 /** I열 드롭다운 값을 입금 상태로 정규화 */
 function normalizeStatus(raw: string): PaymentStatus {
   if (/미입금/.test(raw)) return '미입금'
-  if (/잔금/.test(raw)) return '잔금처리요망'
+  if (/잔금/.test(raw)) return '잔금 처리 요망'
   // '추가/재계약' — 진행 중인 업체라도 별도 계약 입금으로 처리 (새 프로젝트로 분리)
   if (/추가|재계약/.test(raw)) return '추가계약'
   if (/입금완료|완료|완납/.test(raw)) return '입금완료'

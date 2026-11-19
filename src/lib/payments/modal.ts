@@ -25,7 +25,7 @@ export const FIELD = {
 /** 모든 입력 요소가 공유하는 action_id */
 export const ACTION = 'value'
 
-const STATUS_OPTIONS: PaymentStatus[] = ['입금완료', '잔금처리요망', '미입금', '추가계약']
+const STATUS_OPTIONS: PaymentStatus[] = ['입금완료', '잔금 처리 요망', '미입금', '추가계약']
 
 const plain = (text: string) => ({ type: 'plain_text', text, emoji: true })
 
