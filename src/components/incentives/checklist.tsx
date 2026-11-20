@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { baseSyncId, calcLine, needsPaidInput } from '@/lib/incentives/engine'
+import { baseSyncId, calcLine, monthConfig, needsPaidInput } from '@/lib/incentives/engine'
 import type { UnmappedOwner } from '@/lib/incentives/owners'
 import type { CrmView, FinanceView, MonthView } from '@/lib/incentives/types'
 import type { IncentiveManager } from '@/types/database'
@@ -36,7 +36,7 @@ export function Checklist({
   const checks = view.checks.filter((c) => !(c.year === view.year && c.month === view.month && closed.has(c.managerId)))
   const needs = openLines.filter((l) => needsPaidInput(l))
   const errors = openLines
-    .map((l) => ({ line: l, error: calcLine(l, view.config).error }))
+    .map((l) => ({ line: l, error: calcLine(l, monthConfig(view.config, view.months.find((m) => m.manager_id === l.manager_id))).error }))
     .filter((x): x is { line: typeof x.line; error: string } => x.error !== null)
   const gone = crm ? openLines.filter((l) => l.sync_id && !crm.bySid[baseSyncId(l.sync_id)]) : []
   const pending = crm ? Object.entries(crm.preview).filter(([, p]) => p.add.length > 0) : []

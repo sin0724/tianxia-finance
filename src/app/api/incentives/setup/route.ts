@@ -3,6 +3,7 @@
  * 담당자는 지우지 않고 쉬게(active=false) 한다 — 지난 달 정산표가 담당자를 가리키고 있다.
  * CRM 담당자명은 한 담당자에만 둔다 — 두 담당자에 있으면 같은 CRM 줄이 두 번 정산된다.
  * Slack 결제 담당자(Slack /결제 담당자 목록에 보일 이름)는 CRM 담당자명에도 넣는다 — /결제로 등록한 줄이 그 담당자 정산에 들어간다.
+ * 담당자 기본율은 새로 만드는 달부터 들어간다 (이미 만든 달은 정산표 위에서 고친다).
  *
  *   PATCH /api/incentives/setup  { settings?, managers? }
  */
@@ -28,6 +29,8 @@ const schema = z.object({
     crm_names: z.array(crmName).max(20),
     slack_names: z.array(crmName).max(10).optional(),
     base_salary: won.min(0).nullable(),
+    /** 담당자 기본 인센티브율 (0.05 = 5%). null 이면 설정의 기본 인센티브율 */
+    default_rate: rate.nullable().optional(),
     sort_order: z.number().int().min(0).max(1000),
     active: z.boolean(),
   })).max(50).optional(),
@@ -44,10 +47,13 @@ export async function PATCH(request: Request) {
     if (!body.managers?.length) return { ok: true }
 
     const rows = body.managers.map((m) => {
-      const slackNames = [...new Set(m.slack_names ?? [])]
-      const crmNames = [...new Set([...m.crm_names, ...slackNames])]
+      const slackNames = m.slack_names === undefined ? undefined : [...new Set(m.slack_names)]
+      const crmNames = [...new Set([...m.crm_names, ...(slackNames ?? [])])]
       if (!crmNames.length) throw new HttpError(400, `${m.name}: CRM 담당자명이나 Slack 결제 담당자를 적어 주세요.`)
-      return { id: m.id, slackNames, row: { name: m.name, crm_names: crmNames, base_salary: m.base_salary, sort_order: m.sort_order, active: m.active } }
+      return {
+        id: m.id, slackNames, defaultRate: m.default_rate,
+        row: { name: m.name, crm_names: crmNames, base_salary: m.base_salary, sort_order: m.sort_order, active: m.active },
+      }
     })
 
     const { data: current, error } = await supabase.from('incentive_managers').select('*')
@@ -59,15 +65,19 @@ export async function PATCH(request: Request) {
       throw new HttpError(400, `CRM 담당자명은 한 담당자에만 둡니다: ${dup.map((d) => `‘${d.crmName}’ (${d.managers.join(', ')})`).join(' · ')}`)
     }
 
-    // 028 마이그레이션 전에는 slack_names 칸이 없다 — 비어 있으면 빼고 저장한다
-    const hasSlackColumn = (current ?? []).some((m) => 'slack_names' in m)
+    // 028 · 029 마이그레이션 전에는 slack_names · default_rate 칸이 없다 — 비어 있으면 빼고 저장한다.
+    // 보내지 않은 칸(예전 화면)은 그대로 둔다.
+    const cols = new Set((current ?? []).flatMap((m) => Object.keys(m)))
     for (const r of rows) {
-      const row = hasSlackColumn || r.slackNames.length ? { ...r.row, slack_names: r.slackNames } : r.row
+      const row: typeof r.row & { slack_names?: string[]; default_rate?: number | null } = { ...r.row }
+      if (r.slackNames !== undefined && (cols.has('slack_names') || r.slackNames.length)) row.slack_names = r.slackNames
+      if (r.defaultRate !== undefined && (cols.has('default_rate') || r.defaultRate !== null)) row.default_rate = r.defaultRate
       const { error: e } = r.id
         ? await supabase.from('incentive_managers').update(row).eq('id', r.id)
         : await supabase.from('incentive_managers').insert(row)
       if (e) {
         if (e.message.includes('slack_names')) throw new HttpError(409, 'Slack 결제 담당자를 저장하려면 028 마이그레이션을 먼저 실행해 주세요.')
+        if (e.message.includes('default_rate')) throw new HttpError(409, '담당자 기본율을 저장하려면 029 마이그레이션을 먼저 실행해 주세요.')
         throw new Error(e.message.includes('duplicate') ? `같은 이름의 담당자가 있습니다: ${r.row.name}` : e.message)
       }
     }

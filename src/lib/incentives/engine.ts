@@ -48,6 +48,24 @@ export const DEFAULT_CONFIG: IncentiveConfig = {
 /** 숫자 설정값을 Decimal 로 — 0.1 같은 값이 부동소수 오차 없이 들어가게 문자열을 거친다 */
 const dec = (n: number | string) => new Dec(String(n))
 
+/**
+ * 이 달 정산표에 쓰는 설정 — 그 달에 담당자별 기본율을 남겼으면 설정의 기본 인센티브율 대신 쓴다.
+ * F칸을 비운 줄과 작업별 구성의 나머지에 이 기본율이 들어간다 (환수 계산의 지급률 · 인정률은 그대로).
+ */
+export function monthConfig(cfg: IncentiveConfig, month: { default_rate?: number | string | null } | null | undefined): IncentiveConfig {
+  const r = month?.default_rate
+  return r === null || r === undefined ? cfg : { ...cfg, defaultRate: Number(r) }
+}
+
+/** 화면에 적은 % (5 · 5% · 12.5) → 비율 0.05. 빈칸은 null, 0~100 숫자가 아니면 undefined */
+export function percentInput(raw: string): number | null | undefined {
+  const t = raw.replace('%', '').trim()
+  if (!t) return null
+  if (!/^\d+(\.\d+)?$/.test(t)) return undefined
+  const v = new Dec(t).div(100)
+  return v.gt(1) ? undefined : v.toNumber()
+}
+
 // ── 표시용 (Apps Script comma_ · man_) ───────────────────────
 
 /** 1234567 → "1,234,567" (Apps Script comma_) */

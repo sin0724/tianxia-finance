@@ -2,7 +2,7 @@
  * 인센티브 정산 — 달 정산표. 관리자만 (아니면 404).
  *
  *   POST  /api/incentives/months  { year, month }            새 달 정산표를 만들고 CRM 동기화 (정산시트 "새 월 탭 만들기")
- *   PATCH /api/incentives/months  { id, base_salary?, special_allowance?, summary_note? }   I · K · L
+ *   PATCH /api/incentives/months  { id, base_salary?, default_rate?, special_allowance?, summary_note? }   I · 기본율 · K · L
  *   PATCH /api/incentives/months  { id, action: 'close' | 'reopen' }                      마감 / 마감 취소
  */
 import { z } from 'zod'
@@ -26,6 +26,8 @@ const patchSchema = z.union([
   z.object({
     id,
     base_salary: won.min(0).optional(),
+    /** 이 달 기본 인센티브율 (0.05 = 5%). null 이면 설정의 기본 인센티브율 */
+    default_rate: z.number().min(0).max(1).nullable().optional(),
     special_allowance: won.nullable().optional(),
     summary_note: z.string().max(2000).optional(),
   }),
@@ -47,12 +49,16 @@ export async function PATCH(request: Request) {
     }
 
     await assertOpen(supabase, month.manager_id, month.year, month.month)
-    const patch: { base_salary?: number; special_allowance?: number | null; summary_note?: string } = {}
+    const patch: { base_salary?: number; default_rate?: number | null; special_allowance?: number | null; summary_note?: string } = {}
     if (body.base_salary !== undefined) patch.base_salary = body.base_salary
+    if (body.default_rate !== undefined) patch.default_rate = body.default_rate
     if (body.special_allowance !== undefined) patch.special_allowance = body.special_allowance
     if (body.summary_note !== undefined) patch.summary_note = body.summary_note
     const { data, error: e } = await supabase.from('incentive_months').update(patch).eq('id', body.id).select('*').single()
-    if (e) throw new Error(e.message)
+    if (e) {
+      if (e.message.includes('default_rate')) throw new HttpError(409, '기본율을 고치려면 029 마이그레이션을 먼저 실행해 주세요.')
+      throw new Error(e.message)
+    }
     return { month: data }
   })
 }

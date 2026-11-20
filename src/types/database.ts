@@ -166,15 +166,15 @@ export interface Database {
         Relationships: []
       }
       incentive_managers: {
-        Row: { id: string; name: string; crm_names: string[]; slack_names: string[]; base_salary: number | null; sort_order: number; active: boolean; created_at: string; updated_at: string }
-        Insert: { id?: string; name: string; crm_names: string[]; slack_names?: string[]; base_salary?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
-        Update: { id?: string; name?: string; crm_names?: string[]; slack_names?: string[]; base_salary?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
+        Row: { id: string; name: string; crm_names: string[]; slack_names: string[]; base_salary: number | null; default_rate: number | null; sort_order: number; active: boolean; created_at: string; updated_at: string }
+        Insert: { id?: string; name: string; crm_names: string[]; slack_names?: string[]; base_salary?: number | null; default_rate?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
+        Update: { id?: string; name?: string; crm_names?: string[]; slack_names?: string[]; base_salary?: number | null; default_rate?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
         Relationships: []
       }
       incentive_months: {
-        Row: { id: string; manager_id: string; year: number; month: number; base_salary: number; special_allowance: number | null; summary_note: string; status: 'open' | 'closed'; closed_at: string | null; snapshot: Json | null; created_at: string; updated_at: string }
-        Insert: { id?: string; manager_id: string; year: number; month: number; base_salary: number; special_allowance?: number | null; summary_note?: string; status?: 'open' | 'closed'; closed_at?: string | null; snapshot?: Json | null; created_at?: string; updated_at?: string }
-        Update: { id?: string; manager_id?: string; year?: number; month?: number; base_salary?: number; special_allowance?: number | null; summary_note?: string; status?: 'open' | 'closed'; closed_at?: string | null; snapshot?: Json | null; created_at?: string; updated_at?: string }
+        Row: { id: string; manager_id: string; year: number; month: number; base_salary: number; default_rate: number | null; special_allowance: number | null; summary_note: string; status: 'open' | 'closed'; closed_at: string | null; snapshot: Json | null; created_at: string; updated_at: string }
+        Insert: { id?: string; manager_id: string; year: number; month: number; base_salary: number; default_rate?: number | null; special_allowance?: number | null; summary_note?: string; status?: 'open' | 'closed'; closed_at?: string | null; snapshot?: Json | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; manager_id?: string; year?: number; month?: number; base_salary?: number; default_rate?: number | null; special_allowance?: number | null; summary_note?: string; status?: 'open' | 'closed'; closed_at?: string | null; snapshot?: Json | null; created_at?: string; updated_at?: string }
         Relationships: []
       }
       incentive_lines: {

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   DEFAULT_CONFIG as cfg, calcClawback, calcLine, comma, formatRate, man, mixRate, needsPaidInput,
-  normalizeRateInput, parseRate, paymentOf, planSync, summarize, RateError,
+  monthConfig, normalizeRateInput, parseRate, paymentOf, percentInput, planSync, summarize, RateError,
   type Carryover, type CrmRow, type ExistingLine,
 } from './engine'
 
@@ -50,6 +50,33 @@ test('F 인센티브율 — 분수식 · 소수 · 작업별 혼합', () => {
   const bad = line(1100000, null, 'A작업 500만')
   assert.equal(bad.incentive, null)
   assert.match(bad.error ?? '', /인센율/)
+})
+
+test('담당자별 기본율 — 그 달에 남긴 기본율을 F칸을 비운 줄 · 작업별 구성의 나머지에 쓴다', () => {
+  const five = monthConfig(cfg, { default_rate: 0.05 })
+  assert.equal(five.defaultRate, 0.05)
+  assert.equal(monthConfig(cfg, { default_rate: '0.05000000' }).defaultRate, 0.05)
+  assert.equal(monthConfig(cfg, { default_rate: null }), cfg)
+  assert.equal(monthConfig(cfg, {}), cfg) // 029 전 (칸 없음)
+  assert.equal(monthConfig(cfg, undefined), cfg)
+  assert.equal(calcLine({ sales: 3300000, paid: null, rate: null }, five).incentive, 150000)
+  assert.equal(calcLine({ sales: 3300000, paid: null, rate: '20%' }, five).incentive, 600000) // F를 적으면 그 값
+  assert.equal(calcLine({ sales: 3300000, paid: null, rate: 'C작업 100만 10%' }, five).incentive, 200000) // 100만 10% + 200만 5%
+  assert.equal(calcLine({ sales: 3300000, paid: null, rate: null }, cfg).incentive, 600000)
+  assert.equal(summarize([{ sales: 3300000, paid: null, rate: null }], { base_salary: 2500000, special_allowance: null }, [], five).gross, 2650000)
+  assert.equal(five.paidRate, cfg.paidRate)
+})
+
+test('% 입력 — 5 · 5% · 12.5 → 비율, 빈칸 null, 잘못된 값 undefined', () => {
+  assert.equal(percentInput('5'), 0.05)
+  assert.equal(percentInput(' 5% '), 0.05)
+  assert.equal(percentInput('12.5'), 0.125)
+  assert.equal(percentInput('0'), 0)
+  assert.equal(percentInput(''), null)
+  assert.equal(percentInput(' '), null)
+  assert.equal(percentInput('101'), undefined)
+  assert.equal(percentInput('-1'), undefined)
+  assert.equal(percentInput('abc'), undefined)
 })
 
 test('F 입력값 정리 — 시트의 % 서식 칸과 같은 해석', () => {

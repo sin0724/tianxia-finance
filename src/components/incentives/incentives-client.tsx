@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
 import { toast } from '@/lib/toast'
-import { parseRate, summarize, type MonthSummary } from '@/lib/incentives/engine'
+import { formatRate, monthConfig, parseRate, percentInput, summarize, type MonthSummary } from '@/lib/incentives/engine'
 import type { CrmResponse, ViewResponse } from '@/lib/incentives/types'
 import type { IncentiveClawback, IncentiveLine, IncentiveManager, IncentiveMonth } from '@/types/database'
 import { call, errorText, MoneyCell, TextCell, won } from './cells'
@@ -110,7 +110,7 @@ function MonthScreen({ year, month }: { year: number; month: number }) {
     for (const { manager, month: m } of sheets) {
       const live = summarize(
         view.lines.filter((l) => l.manager_id === manager.id), m,
-        view.clawbacks.filter((c) => c.manager_id === manager.id), view.config,
+        view.clawbacks.filter((c) => c.manager_id === manager.id), monthConfig(view.config, m),
       )
       const snap = m.status === 'closed' ? snapshotOf(m) : null
       out[manager.id] = { live, shown: snap ?? live, drift: !!snap && !sameSummary(snap, live) }
@@ -158,7 +158,7 @@ function MonthScreen({ year, month }: { year: number; month: number }) {
     toast.success(`지난달 수동 줄 ${copied}개를 가져왔습니다. B 매출을 채워 주세요.`)
   })
 
-  const patchMonth = (m: IncentiveMonth, patch: { base_salary?: number; special_allowance?: number | null; summary_note?: string }) => run(async () => {
+  const patchMonth = (m: IncentiveMonth, patch: { base_salary?: number; default_rate?: number | null; special_allowance?: number | null; summary_note?: string }) => run(async () => {
     const { month: next } = await call<{ month: IncentiveMonth }>('PATCH', '/api/incentives/months', { id: m.id, ...patch })
     patchLocal((v) => ({ ...v, months: v.months.map((x) => (x.id === next.id ? next : x)) }))
   }, undefined, true)
@@ -408,6 +408,24 @@ function MonthScreen({ year, month }: { year: number; month: number }) {
                     <MoneyCell label="기본급" value={m.base_salary} allowBlank={false} disabled={locked}
                       className="text-base font-semibold" onSave={(v) => patchMonth(m, { base_salary: v ?? 0 })} />
                   </div>
+                  <div className="w-32">
+                    <p className="text-xs text-gray-500">기본 인센티브율</p>
+                    <TextCell
+                      label="기본 인센티브율"
+                      value={(m.default_rate ?? null) === null ? '' : formatRate(m.default_rate)}
+                      disabled={locked}
+                      placeholder={`비우면 설정 ${formatRate(view.config.defaultRate)}`}
+                      className="text-base font-semibold"
+                      display={(m.default_rate ?? null) === null
+                        ? <span className="text-gray-400">설정 {formatRate(view.config.defaultRate)}</span>
+                        : <span>{formatRate(m.default_rate)}</span>}
+                      onSave={async (v) => {
+                        const r = percentInput(v)
+                        if (r === undefined) { toast.error('기본율은 0~100 사이 숫자로 적어 주세요 (비우면 설정의 기본 인센티브율).'); return }
+                        await patchMonth(m, { default_rate: r })
+                      }}
+                    />
+                  </div>
                   <div className="w-36">
                     <p className="text-xs text-gray-500">K 특별수당</p>
                     <MoneyCell label="특별수당" value={m.special_allowance} disabled={locked} placeholder="없음"
@@ -449,7 +467,7 @@ function MonthScreen({ year, month }: { year: number; month: number }) {
 
                 <LineTable
                   lines={lines}
-                  config={view.config}
+                  config={monthConfig(view.config, m)}
                   locked={locked}
                   finance={finance}
                   crm={crmView}

@@ -7,7 +7,7 @@ import { fetchSheetGrid } from '@/lib/google-sheets'
 import { parseCrmGrid } from './crm'
 import { unmappedOwners } from './owners'
 import {
-  DEFAULT_CONFIG, baseSyncId, planSync, settledMap, summarize, syncShort,
+  DEFAULT_CONFIG, baseSyncId, monthConfig, planSync, settledMap, summarize, syncShort,
   type CrmRow, type ExistingLine, type IncentiveConfig, type NewLine,
 } from './engine'
 import type { ContractInfo, CrmView, FinanceEntry, FinanceView, MonthView } from './types'
@@ -305,7 +305,10 @@ async function nextPosition(db: DB, managerId: string, year: number, month: numb
   return (rows?.[0]?.position ?? 0) + 1
 }
 
-/** 새 달 정산표 (Apps Script createMonthSheet_) — I 기본급은 담당자 기본급, 없으면 설정 기본급 */
+/**
+ * 새 달 정산표 (Apps Script createMonthSheet_) — I 기본급은 담당자 기본급, 없으면 설정 기본급.
+ * 담당자 기본율이 있으면 그 달에 남긴다 (없으면 설정의 기본 인센티브율을 따른다).
+ */
 export async function createMonths(db: DB, year: number, month: number): Promise<string[]> {
   // 정산시트에서 정산한 달을 앱에서 다시 만들면 이월 누계와 겹쳐 잔금 · 분납이 두 번 잡힌다
   const until = await sheetUntilOf(db)
@@ -322,6 +325,8 @@ export async function createMonths(db: DB, year: number, month: number): Promise
   if (todo.length) {
     must(await db.from('incentive_months').insert(todo.map((m) => ({
       manager_id: m.id, year, month, base_salary: m.base_salary ?? config.defaultBase,
+      // 029 전에는 칸이 없다 — 기본율을 둔 담당자만 넣는다
+      ...(m.default_rate !== null && m.default_rate !== undefined ? { default_rate: m.default_rate } : {}),
     }))).select('id'))
   }
   return todo.map((m) => m.name)
@@ -421,7 +426,7 @@ export async function closeMonth(db: DB, monthId: string): Promise<IncentiveMont
     db.from('incentive_lines').select('*').eq('manager_id', m.manager_id).eq('year', m.year).eq('month', m.month),
     db.from('incentive_clawbacks').select('*').eq('manager_id', m.manager_id).eq('year', m.year).eq('month', m.month),
   ])
-  const s = summarize(must(lines) ?? [], m, must(claws) ?? [], config)
+  const s = summarize(must(lines) ?? [], m, must(claws) ?? [], monthConfig(config, m))
   if (s.errors) throw new HttpError(400, `인센티브율을 읽을 수 없는 줄이 ${s.errors}개 있습니다. F칸을 고친 뒤 마감해 주세요.`)
   const snapshot = { ...s, lines: (must(lines) ?? []).length, closedAt: new Date().toISOString() } as unknown as Json
   const closed = must(await db.from('incentive_months').update({ status: 'closed', closed_at: new Date().toISOString(), snapshot })
