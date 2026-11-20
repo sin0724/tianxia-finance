@@ -37,8 +37,9 @@ export function Checklist({
   const unmatched = finance?.unmatched ?? []
   const refunds = finance?.refunds ?? []
   const missingSid = crm?.missingSid ?? []
+  const unmapped = crm?.unmapped ?? []
 
-  const total = checks.length + needs.length + errors.length + gone.length + pending.length + unmatched.length + refunds.length + missingSid.length
+  const total = checks.length + needs.length + errors.length + gone.length + pending.length + unmatched.length + refunds.length + missingSid.length + unmapped.length
 
   const jump = (managerId: string, lineId: string, label: React.ReactNode) => (
     <button type="button" className="text-left font-medium text-gray-900 hover:text-blue-600 hover:underline" onClick={() => onFocusLine(managerId, lineId)}>
@@ -106,6 +107,15 @@ export function Checklist({
               {!p.latest && <span className="text-xs text-gray-500"> (가장 최근 달이 아니라 잔금 · 분납 줄은 만들지 않음)</span>}
             </span>
             <Button size="xs" variant="outline" disabled={busy} onClick={onSync}>CRM 동기화</Button>
+          </li>
+        ))}
+      </Section>
+
+      <Section title="CRM 담당자명이 설정에 없어 동기화에서 빠지는 줄" count={unmapped.length} tone="red">
+        {unmapped.map((r) => (
+          <li key={r.row}>
+            결제시트 {r.row}행 · {r.date} · <span className="font-medium">{r.name}</span> · {won(r.amount)}
+            <span className="text-xs text-gray-600"> — 담당자 &lsquo;{r.owner}&rsquo; ({name(r.managerId)} 정산에 넣으려면 설정 → 담당자 매핑의 CRM 담당자명에 추가)</span>
           </li>
         ))}
       </Section>

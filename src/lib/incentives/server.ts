@@ -262,8 +262,20 @@ export async function loadCrmView(db: DB, view: MonthView): Promise<CrmView> {
     }
   }
   const aliases = new Set(view.managers.flatMap((m) => m.crm_names))
-  const missingSid = crm.missingSid.filter((r) => aliases.has(r.owner) && r.date.startsWith(`${view.year}-${pad(view.month)}`))
-  return { bySid, preview, missingSid }
+  const inMonth = (date: string) => date.startsWith(`${view.year}-${pad(view.month)}`)
+  const missingSid = crm.missingSid.filter((r) => aliases.has(r.owner) && inMonth(r.date))
+
+  // 시트처럼 담당자명은 글자 그대로 맞춘다. "이름 1팀"처럼 앞 이름만 같은 값은 가져오지 않고 확인 목록에 띄운다.
+  const head = (s: string) => s.trim().split(/\s+/)[0] ?? ''
+  const byName = new Map<string, string>()
+  for (const m of view.managers) {
+    byName.set(head(m.name), m.id)
+    for (const a of m.crm_names) byName.set(head(a), m.id)
+  }
+  const unmapped: CrmView['unmapped'] = crm.rows
+    .filter((r) => inMonth(r.date) && !aliases.has(r.owner) && byName.has(head(r.owner)))
+    .map((r) => ({ row: r.row, owner: r.owner, managerId: byName.get(head(r.owner))!, date: r.date, name: r.name, amount: r.amount }))
+  return { bySid, preview, missingSid, unmapped }
 }
 
 async function planFor(
