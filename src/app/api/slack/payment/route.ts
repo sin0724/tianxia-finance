@@ -19,6 +19,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { verifySlackRequest, openSlackModal } from '@/lib/slack'
 import { buildPaymentModal, buildRevertModal } from '@/lib/payments/modal'
 import { fetchRecentConfirmedPayments } from '@/lib/payments/revert'
+import { paymentOwnerOptions } from '@/lib/payments/owner-options'
 
 const REVERT_KEYWORDS = /^(취소|되돌리기|되돌림|revert|undo)$/i
 
@@ -59,8 +60,9 @@ export async function POST(request: Request) {
     return new Response('', { status: 200 })
   }
 
-  // 담당자 드롭다운 — 고정된 7개 옵션 (이름 + 팀)
-  const managers = [
+  // 담당자 드롭다운 — 인센티브 정산 설정의 담당자 매핑(Slack 결제 담당자)에서 관리한다.
+  // 아무 담당자에게도 적지 않았거나 읽지 못하면 아래 예전 고정 목록을 쓴다.
+  const managers = await paymentOwnerOptions(admin, [
     '나병훈 0팀',
     '나병훈 1팀',
     '이현우 0팀',
@@ -68,7 +70,7 @@ export async function POST(request: Request) {
     '신현준 0팀',
     '이강산 0팀',
     '김재연 0팀',
-  ]
+  ])
   const today = new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD
 
   const result = await openSlackModal(

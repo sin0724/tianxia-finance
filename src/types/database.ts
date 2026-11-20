@@ -166,9 +166,9 @@ export interface Database {
         Relationships: []
       }
       incentive_managers: {
-        Row: { id: string; name: string; crm_names: string[]; base_salary: number | null; sort_order: number; active: boolean; created_at: string; updated_at: string }
-        Insert: { id?: string; name: string; crm_names: string[]; base_salary?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
-        Update: { id?: string; name?: string; crm_names?: string[]; base_salary?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
+        Row: { id: string; name: string; crm_names: string[]; slack_names: string[]; base_salary: number | null; sort_order: number; active: boolean; created_at: string; updated_at: string }
+        Insert: { id?: string; name: string; crm_names: string[]; slack_names?: string[]; base_salary?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
+        Update: { id?: string; name?: string; crm_names?: string[]; slack_names?: string[]; base_salary?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
         Relationships: []
       }
       incentive_months: {

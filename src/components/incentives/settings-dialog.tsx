@@ -8,7 +8,7 @@ import { CurrencyInput } from '@/components/ui/currency-input'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from '@/lib/toast'
 import type { IncentiveConfig } from '@/lib/incentives/engine'
-import { duplicateCrmNames } from '@/lib/incentives/owners'
+import { duplicateCrmNames, slackOptions } from '@/lib/incentives/owners'
 import type { IncentiveManager } from '@/types/database'
 import { call, errorText } from './cells'
 
@@ -27,6 +27,8 @@ interface ManagerDraft {
   id?: string
   name: string
   crm: string
+  /** Slack /결제 담당자 목록에 보일 이름 — 저장할 때 CRM 담당자명에도 들어간다 */
+  slack: string
   base: string
   sort: string
   active: boolean
@@ -45,7 +47,7 @@ export function SettingsDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="sm:max-w-4xl">
         {/* 열 때마다 저장된 값으로 새로 시작한다 */}
         {open && <SettingsForm config={config} managers={managers} onClose={() => onOpenChange(false)} onSaved={onSaved} />}
       </DialogContent>
@@ -66,13 +68,20 @@ function SettingsForm({ config, managers, onClose, onSaved }: {
   const [paidRate, setPaidRate] = useState(toPct(config.paidRate))
   const [tiers, setTiers] = useState<TierDraft[]>(config.tiers.map((t) => ({ min: String(t.min), rate: String(t.rate) })))
   const [people, setPeople] = useState<ManagerDraft[]>(managers.map((m) => ({
-    id: m.id, name: m.name, crm: m.crm_names.join(', '), base: m.base_salary === null ? '' : String(m.base_salary),
+    id: m.id, name: m.name, crm: m.crm_names.join(', '), slack: (m.slack_names ?? []).join(', '),
+    base: m.base_salary === null ? '' : String(m.base_salary),
     sort: String(m.sort_order), active: m.active,
   })))
   const [saving, setSaving] = useState(false)
 
   const setPerson = (i: number, patch: Partial<ManagerDraft>) => setPeople((ps) => ps.map((p, j) => (j === i ? { ...p, ...patch } : p)))
   const setTier = (i: number, patch: Partial<TierDraft>) => setTiers((ts) => ts.map((t, j) => (j === i ? { ...t, ...patch } : t)))
+  /** 저장될 CRM 담당자명 — 적은 CRM 담당자명 + Slack 결제 담당자 */
+  const crmOf = (p: ManagerDraft) => [...new Set([...splitNames(p.crm), ...splitNames(p.slack)])]
+  const slackPreview = slackOptions(people.map((p, i) => ({
+    name: p.name, active: p.active, slack_names: splitNames(p.slack),
+    sort_order: p.sort.trim() === '' || !Number.isInteger(Number(p.sort)) ? i + 1 : Number(p.sort),
+  })))
 
   async function save() {
     const vatRate = fromPct(vat)
@@ -88,10 +97,10 @@ function SettingsForm({ config, managers, onClose, onSaved }: {
     }
     const peopleRows = people.filter((p) => p.id || p.name.trim())
     for (const p of peopleRows) {
-      if (!p.name.trim() || !splitNames(p.crm).length) { toast.error('담당자 이름과 CRM 담당자명을 적어 주세요.'); return }
+      if (!p.name.trim() || !crmOf(p).length) { toast.error('담당자 이름과 CRM 담당자명(또는 Slack 결제 담당자)을 적어 주세요.'); return }
       if (p.base !== '' && (!Number.isSafeInteger(Number(p.base)) || Number(p.base) < 0)) { toast.error(`${p.name} 기본급을 확인해 주세요.`); return }
     }
-    const dup = duplicateCrmNames(peopleRows.map((p) => ({ name: p.name.trim(), crm_names: splitNames(p.crm) })))
+    const dup = duplicateCrmNames(peopleRows.map((p) => ({ name: p.name.trim(), crm_names: crmOf(p) })))
     if (dup.length) {
       toast.error(`CRM 담당자명은 한 담당자에만 둡니다: ${dup.map((d) => `‘${d.crmName}’ (${d.managers.join(', ')})`).join(' · ')}`)
       return
@@ -104,7 +113,7 @@ function SettingsForm({ config, managers, onClose, onSaved }: {
           vat_rate: vatRate, default_rate: defaultRate, default_base: Number(base), full_statuses: full, paid_rate: paid, tiers: tierRows,
         },
         managers: peopleRows.map((p, i) => ({
-          id: p.id, name: p.name.trim(), crm_names: splitNames(p.crm),
+          id: p.id, name: p.name.trim(), crm_names: crmOf(p), slack_names: splitNames(p.slack),
           base_salary: p.base === '' ? null : Number(p.base),
           sort_order: p.sort.trim() === '' || !Number.isInteger(Number(p.sort)) ? i + 1 : Number(p.sort),
           active: p.active,
@@ -146,12 +155,14 @@ function SettingsForm({ config, managers, onClose, onSaved }: {
 
         <section className="space-y-2">
           <p className="text-sm font-bold text-gray-900">담당자 매핑</p>
-          <div className="grid grid-cols-[1fr_1.4fr_1fr_60px_56px_24px] items-center gap-2 text-xs text-gray-500">
-            <span>정산표 이름</span><span>CRM 담당자명 (쉼표로 여러 개)</span><span>기본급 (비우면 기본값)</span><span>순서</span><span>사용</span><span />
+          <div className="grid grid-cols-[0.9fr_1.5fr_1.3fr_1fr_52px_44px_24px] items-center gap-2 text-xs text-gray-500">
+            <span>정산표 이름</span><span>CRM 담당자명 (쉼표로 여러 개)</span><span>Slack /결제 담당자 (쉼표)</span>
+            <span>기본급 (비우면 기본값)</span><span>순서</span><span>사용</span><span />
             {people.map((p, i) => (
               <div key={p.id ?? `new-${i}`} className="contents">
                 <input className={input} value={p.name} onChange={(e) => setPerson(i, { name: e.target.value })} aria-label="정산표 이름" />
-                <input className={input} value={p.crm} onChange={(e) => setPerson(i, { crm: e.target.value })} aria-label="CRM 담당자명" />
+                <input className={input} value={p.crm} onChange={(e) => setPerson(i, { crm: e.target.value })} aria-label={`${p.name || '새 담당자'} CRM 담당자명`} />
+                <input className={input} value={p.slack} placeholder="예: 이름 0팀" onChange={(e) => setPerson(i, { slack: e.target.value })} aria-label={`${p.name || '새 담당자'} Slack 결제 담당자`} />
                 <CurrencyInput className="h-8 bg-white text-sm" placeholder="기본값" value={p.base} onChange={(v) => setPerson(i, { base: v })} aria-label="담당자 기본급" />
                 <input className={input} value={p.sort} onChange={(e) => setPerson(i, { sort: e.target.value })} aria-label="순서" />
                 <input type="checkbox" className="size-4 justify-self-center" checked={p.active} onChange={(e) => setPerson(i, { active: e.target.checked })} aria-label="사용" />
@@ -163,13 +174,17 @@ function SettingsForm({ config, managers, onClose, onSaved }: {
               </div>
             ))}
           </div>
-          <Button size="xs" variant="outline" onClick={() => setPeople((ps) => [...ps, { name: '', crm: '', base: '', sort: String(ps.length + 1), active: true }])}>
+          <Button size="xs" variant="outline" onClick={() => setPeople((ps) => [...ps, { name: '', crm: '', slack: '', base: '', sort: String(ps.length + 1), active: true }])}>
             <Plus size={12} /> 담당자 추가
           </Button>
+          <p className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+            <span className="font-semibold">Slack /결제 담당자 목록</span>{' '}
+            {slackPreview.length ? slackPreview.join(' · ') : '(아무도 적지 않음 — Slack은 예전 고정 목록을 씁니다)'}
+          </p>
           <p className="text-xs text-gray-400">
-            CRM 담당자명은 결제시트 담당자 칸과 글자까지 같게 적습니다 (예: &lsquo;이름 0팀&rsquo;, &lsquo;이름 1팀&rsquo;). 한 이름은 한 담당자에만 넣습니다.
-            새 담당자를 저장하면 화면 위에 이 달 정산표 만들기가 나옵니다.
-            담당자는 지우지 않고 &lsquo;사용&rsquo;을 끕니다. 끈 담당자는 새 달 정산표와 CRM 동기화에서 빠집니다.
+            새 사람이 오면 담당자를 추가하고 Slack /결제 담당자에 &lsquo;이름 0팀&rsquo;처럼 적으면 됩니다. 저장하면 Slack /결제 목록에 나오고, 그 이름으로 등록한 결제는 이 담당자 정산에 들어갑니다 (CRM 담당자명에도 자동으로 들어감).
+            CRM 담당자명은 결제시트 담당자 칸과 글자까지 같게 적고, 한 이름은 한 담당자에만 넣습니다. 새 담당자를 저장하면 화면 위에 이 달 정산표 만들기가 나옵니다.
+            담당자는 지우지 않고 &lsquo;사용&rsquo;을 끕니다. 끈 담당자는 새 달 정산표 · CRM 동기화 · Slack 목록에서 빠집니다.
           </p>
         </section>
 

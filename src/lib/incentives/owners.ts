@@ -39,6 +39,15 @@ export function personOf(owner: string): string {
   return owner.trim().split(/\s+/)[0] ?? ''
 }
 
+/**
+ * Slack /결제 담당자 목록 — 사용 중인 담당자의 Slack 결제 담당자 이름을 설정 순서대로 (겹치면 한 번).
+ * 여기 적은 이름은 저장할 때 그 담당자의 CRM 담당자명에도 들어가므로, /결제로 등록한 줄은 그 담당자 정산에 들어간다.
+ */
+export function slackOptions(managers: { name: string; sort_order: number; active: boolean; slack_names?: string[] | null }[]): string[] {
+  const ordered = managers.filter((m) => m.active).sort((a, b) => a.sort_order - b.sort_order)
+  return [...new Set(ordered.flatMap((m) => (m.slack_names ?? []).map((s) => s.trim()).filter(Boolean)))]
+}
+
 /** 두 담당자에 함께 들어 있는 CRM 담당자명 — 있으면 같은 CRM 줄이 두 번 정산된다 */
 export function duplicateCrmNames(managers: Pick<OwnerManager, 'name' | 'crm_names'>[]): { crmName: string; managers: string[] }[] {
   const holders = new Map<string, string[]>()

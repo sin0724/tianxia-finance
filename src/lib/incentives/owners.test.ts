@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { duplicateCrmNames, personOf, unmappedOwners, type OwnerManager, type OwnerRow } from './owners'
+import { duplicateCrmNames, personOf, slackOptions, unmappedOwners, type OwnerManager, type OwnerRow } from './owners'
 
 // 예시 이름은 지어낸 것이다
 const A: OwnerManager = { id: 'a', name: '홍길동', crm_names: ['홍길동', '홍길동 0팀'], active: true }
@@ -14,6 +14,17 @@ test('CRM 담당자 값의 사람 이름', () => {
   assert.equal(personOf('  홍길동   1팀 '), '홍길동')
   assert.equal(personOf('김옛이름'), '김옛이름')
   assert.equal(personOf(''), '')
+})
+
+test('Slack /결제 담당자 목록 — 사용 중인 담당자만, 설정 순서대로, 겹치면 한 번', () => {
+  assert.deepEqual(slackOptions([
+    { name: '김영희', sort_order: 2, active: true, slack_names: ['김영희 0팀'] },
+    { name: '홍길동', sort_order: 1, active: true, slack_names: [' 홍길동 0팀 ', '홍길동 1팀', ''] },
+    { name: '박쉼표', sort_order: 0, active: false, slack_names: ['박쉼표 0팀'] },
+    { name: '최새사람', sort_order: 3, active: true, slack_names: ['홍길동 1팀'] },
+    { name: '이없음', sort_order: 4, active: true },
+  ]), ['홍길동 0팀', '홍길동 1팀', '김영희 0팀'])
+  assert.deepEqual(slackOptions([{ name: '홍길동', sort_order: 1, active: true, slack_names: [] }]), [])
 })
 
 test('CRM 담당자명이 두 담당자에 겹치면 찾는다 (한 담당자 안의 중복은 괜찮다)', () => {
