@@ -59,7 +59,7 @@ export async function POST(request: Request) {
     return new Response('', { status: 200 })
   }
 
-  // 담당자 드롭다운 — 고정된 6개 옵션 (이름 + 팀)
+  // 담당자 드롭다운 — 고정된 7개 옵션 (이름 + 팀)
   const managers = [
     '나병훈 0팀',
     '나병훈 1팀',
@@ -67,6 +67,7 @@ export async function POST(request: Request) {
     '이현우 2팀',
     '신현준 0팀',
     '이강산 0팀',
+    '김재연 0팀',
   ]
   const today = new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD
 
