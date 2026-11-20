@@ -27,13 +27,18 @@ import {
   readLeaveSubmission, readCancelSubmission,
 } from '@/lib/leave/modal'
 import {
-  PAYMENT_MODAL_CALLBACK, PAYMENT_REVERT_CALLBACK, PAYMENT_REVERT_BUTTON, FIELD, REVERT_FIELD,
+  PAYMENT_MODAL_CALLBACK, PAYMENT_REVERT_CALLBACK, PAYMENT_REVERT_BUTTON,
+  PAYMENT_EDIT_BUTTON, PAYMENT_EDIT_CALLBACK, FIELD, REVERT_FIELD,
   readSubmission, readRevertSubmission, buildRevertModal, revertButtonBlock,
+  buildPaymentEditModal,
 } from '@/lib/payments/modal'
 import { registerPayment, formatKRW } from '@/lib/payments/register'
 import {
   revertPaymentConfirmation, fetchConfirmedPayment, isRevertStatus, REVERT_STATUS_LABEL,
 } from '@/lib/payments/revert'
+import { canEditPayment, getEditConstraints, editPayment } from '@/lib/payments/edit'
+import { fetchSheetRowBySyncId } from '@/lib/google-sheets'
+import { paymentOwnerOptions } from '@/lib/payments/owner-options'
 
 const admin = createAdminClient()
 
@@ -95,6 +100,7 @@ export async function POST(request: Request) {
     switch (payload.view?.callback_id) {
       case PAYMENT_MODAL_CALLBACK:  return handlePaymentSubmission(payload)
       case PAYMENT_REVERT_CALLBACK: return handleRevertSubmission(payload)
+      case PAYMENT_EDIT_CALLBACK:   return handlePaymentEditSubmission(payload)
       case LEAVE_MODAL_CALLBACK:    return handleLeaveSubmission(payload)
       case LEAVE_CANCEL_CALLBACK:   return handleLeaveCancel(payload)
       case PLAN_MODAL_CALLBACK:     return handlePlanSubmission(payload)
@@ -103,6 +109,7 @@ export async function POST(request: Request) {
   }
   if (payload.type === 'block_actions') {
     if (payload.actions?.[0]?.action_id === PAYMENT_REVERT_BUTTON) return handleRevertButton(payload)
+    if (payload.actions?.[0]?.action_id === PAYMENT_EDIT_BUTTON) return handlePaymentEditButton(payload)
     if (payload.actions?.[0]?.action_id === PLAN_BUTTON) return handlePlanButton(payload)
     return handleLeaveButton(payload)
   }
@@ -375,16 +382,43 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
         result.warning ? `\n⚠️ ${result.warning}` : '',
       ].filter(Boolean).join('\n')
 
-      // 입금 확정(입금완료·추가계약)으로 올린 건에만 "되돌리기" 버튼 — 실수로 체크했을 때 바로 수금 예정으로 돌릴 수 있게.
-      // 미입금·잔금은 웹의 수금 관리 탭에서 "입금 확정"으로 처리하는 반대 방향이라 버튼이 없다.
+      // 모든 등록 메시지에 "수정" 버튼 추가 (입금 확정 건은 "되돌리기"도 함께)
       const isConfirmed = input.status === '입금완료' || input.status === '추가계약'
-      const blocks: SlackBlock[] | undefined =
-        isConfirmed && result.paymentId
-          ? [
-              { type: 'section', text: { type: 'mrkdwn', text } },
-              revertButtonBlock(result.paymentId),
-            ]
-          : undefined
+      
+      // syncId는 registerPayment에서 생성/저장되므로 result에서 가져와야 함
+      // 하지만 현재는 반환하지 않으므로 DB에서 조회
+      const { data: registered } = await admin
+        .from('payments')
+        .select('external_id')
+        .eq('id', result.paymentId ?? '')
+        .maybeSingle()
+      
+      const syncId = registered?.external_id ?? ''
+      
+      const blocks: SlackBlock[] | undefined = syncId
+        ? [
+            { type: 'section', text: { type: 'mrkdwn', text } },
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  action_id: 'payment_edit_open',
+                  text: { type: 'plain_text', text: '✏️ 수정', emoji: true },
+                  value: JSON.stringify({ syncId, registrantUserId: userId }),
+                },
+                ...(isConfirmed && result.paymentId
+                  ? [{
+                      type: 'button',
+                      action_id: 'payment_revert_open',
+                      text: { type: 'plain_text', text: '↩️ 입금 상태 되돌리기', emoji: true },
+                      value: result.paymentId,
+                    }]
+                  : []),
+              ],
+            },
+          ]
+        : undefined
 
       await announce(channelId, userId, text, blocks)
     } catch (e) {
@@ -542,6 +576,266 @@ async function handleLeaveButton(payload: InteractivePayload) {
   if (!result.ok) await replyEphemeral(payload.response_url, `❌ ${result.message}`)
 
   // 성공 시엔 원본 메시지가 이미 결과로 갱신되므로 별도 회신을 하지 않는다
+  return new Response('', { status: 200 })
+}
+
+// ─────────────────────────────────────────────────────────────
+// 결제 수정 버튼 → 수정 모달
+// ─────────────────────────────────────────────────────────────
+async function handlePaymentEditButton(payload: InteractivePayload) {
+  const buttonValue = payload.actions?.[0]?.value ?? ''
+  const triggerId = payload.trigger_id ?? ''
+  const channelId = payload.channel?.id ?? ''
+  const messageTs = payload.message?.ts ?? ''
+  const editorUserId = payload.user?.id ?? ''
+
+  let syncId = ''
+  let registrantUserId = ''
+  try {
+    const parsed = JSON.parse(buttonValue)
+    syncId = parsed.syncId ?? ''
+    registrantUserId = parsed.registrantUserId ?? ''
+  } catch {
+    await replyEphemeral(payload.response_url, '❌ 버튼 정보를 읽을 수 없습니다.')
+    return new Response('', { status: 200 })
+  }
+
+  if (!syncId || !triggerId) {
+    await replyEphemeral(payload.response_url, '❌ 결제 정보를 읽을 수 없습니다.')
+    return new Response('', { status: 200 })
+  }
+
+  // 권한 체크
+  if (!canEditPayment(editorUserId, registrantUserId)) {
+    await replyEphemeral(payload.response_url, '❌ 수정 권한이 없습니다. 등록자 본인만 수정할 수 있습니다.')
+    return new Response('', { status: 200 })
+  }
+
+  // 제약 체크
+  const constraints = await getEditConstraints(admin, syncId)
+
+  // 시트에서 현재 값 읽기 (fallback: DB)
+  let current = await fetchSheetRowBySyncId(syncId)
+  
+  if (!current) {
+    // DB에서 읽기
+    const { data: dbPayment } = await admin
+      .from('payments')
+      .select('payment_date, client_name_raw, amount, manager, memo, status')
+      .eq('external_id', syncId)
+      .maybeSingle()
+    
+    if (!dbPayment) {
+      await replyEphemeral(payload.response_url, '❌ 결제 정보를 찾을 수 없습니다.')
+      return new Response('', { status: 200 })
+    }
+
+    // DB 메모에서 대표자/전화번호 추출
+    const memoMatch = dbPayment.memo?.match(/대표:\s*([^|]+)/) ?? null
+    const phoneMatch = dbPayment.memo?.match(/연락처:\s*([^|]+)/) ?? null
+    const pureMemo = dbPayment.memo
+      ?.replace(/\s*\|\s*대표:[^|]+/, '')
+      .replace(/\s*\|\s*연락처:[^|]+/, '')
+      .trim() || ''
+
+    const toSheetStatus = (s: string): '입금완료' | '잔금 처리 요망' | '미입금' | '추가계약' =>
+      s === 'balance_due' ? '잔금 처리 요망' : s === 'unpaid' ? '미입금' : '입금완료'
+
+    current = {
+      rowIndex: -1,
+      syncId,
+      idCellOccupied: false,
+      date: dbPayment.payment_date,
+      clientName: dbPayment.client_name_raw || '',
+      representative: memoMatch?.[1]?.trim() || '',
+      phone: phoneMatch?.[1]?.trim() || '',
+      manager: dbPayment.manager || '',
+      amount: dbPayment.amount,
+      memo: pureMemo,
+      status: toSheetStatus(dbPayment.status),
+    }
+  }
+
+  // 담당자 목록 가져오기
+  const fallback = [
+    '나병훈 0팀', '나병훈 1팀', '이현우 0팀', '이현우 2팀',
+    '신현준 0팀', '이강산 0팀', '김재연 0팀',
+  ]
+  const managers = await paymentOwnerOptions(admin, fallback)
+
+  const opened = await openSlackModal(
+    triggerId,
+    buildPaymentEditModal({
+      current: {
+        date: current.date,
+        clientName: current.clientName,
+        representative: current.representative,
+        phone: current.phone,
+        manager: current.manager,
+        amount: current.amount,
+        status: current.status,
+        memo: current.memo,
+      },
+      managers,
+      channelId,
+      messageTs,
+      syncId,
+      registrantUserId,
+      canEditAmountDate: constraints.canEditAmountDate,
+    }),
+  )
+
+  if (!opened.ok) {
+    await replyEphemeral(payload.response_url, `❌ 수정 창을 열지 못했습니다 (${opened.error}).`)
+  }
+
+  return new Response('', { status: 200 })
+}
+
+// ─────────────────────────────────────────────────────────────
+// 수정 모달 제출
+// ─────────────────────────────────────────────────────────────
+async function handlePaymentEditSubmission(payload: InteractivePayload) {
+  const values = (payload.view?.state?.values ?? {}) as Parameters<typeof readSubmission>[0]
+  const input = readSubmission(values)
+
+  let meta: {
+    channelId?: string
+    messageTs?: string
+    syncId?: string
+    registrantUserId?: string
+  } = {}
+  try {
+    meta = JSON.parse(payload.view?.private_metadata ?? '{}')
+  } catch { /* */ }
+
+  const syncId = meta.syncId ?? ''
+  const channelId = meta.channelId ?? ''
+  const messageTs = meta.messageTs ?? ''
+  const registrantUserId = meta.registrantUserId ?? ''
+  const editorUserId = payload.user?.id ?? ''
+  const editorName = payload.user?.name ?? payload.user?.username ?? '알 수 없음'
+
+  if (!syncId) {
+    return Response.json({
+      response_action: 'errors',
+      errors: { [FIELD.date]: '결제 정보를 찾을 수 없습니다.' },
+    })
+  }
+
+  // 권한 재확인
+  if (!canEditPayment(editorUserId, registrantUserId)) {
+    return Response.json({
+      response_action: 'errors',
+      errors: { [FIELD.date]: '수정 권한이 없습니다.' },
+    })
+  }
+
+  // 검증
+  const errors: Record<string, string> = {}
+  if (!input.date) errors[FIELD.date] = '날짜를 선택해주세요.'
+  if (!input.clientName) errors[FIELD.client] = '상호명을 입력해주세요.'
+  if (!input.manager) errors[FIELD.manager] = '담당자를 선택해주세요.'
+
+  const amount = parseFloat(input.amountRaw.replace(/[,원\s]/g, ''))
+  if (!Number.isFinite(amount) || amount <= 0) {
+    errors[FIELD.amount] = '금액을 숫자로 입력해주세요.'
+  }
+
+  if (Object.keys(errors).length > 0) {
+    return Response.json({ response_action: 'errors', errors })
+  }
+
+  // 비동기 처리
+  void (async () => {
+    try {
+      const constraints = await getEditConstraints(admin, syncId)
+
+      const result = await editPayment(admin, syncId, {
+        date: input.date,
+        clientName: input.clientName,
+        representative: input.representative,
+        phone: input.phone,
+        manager: input.manager,
+        amount,
+        memo: input.memo,
+        status: input.status,
+      }, constraints)
+
+      if (!result.ok) {
+        await announce(channelId, editorUserId, `❌ 결제 수정 실패 — ${result.message}`)
+        return
+      }
+
+      // 원본 메시지 업데이트
+      const emoji =
+        input.status === '잔금 처리 요망' ? '⚠️' :
+        input.status === '미입금' ? '🔴' :
+        input.status === '추가계약' ? '🔁' : '✅'
+
+      const newText = [
+        `${emoji} *결제 등록 완료*${registrantUserId ? ` — <@${registrantUserId}>` : ''}`,
+        `> 날짜: ${input.date}`,
+        `> 상호명: *${input.clientName}*`,
+        input.representative ? `> 대표자: ${input.representative}` : '',
+        input.phone ? `> 전화번호: ${input.phone}` : '',
+        `> 담당자: ${input.manager}`,
+        `> 금액: *${formatKRW(amount)}* (부가세 포함)`,
+        `> 상태: ${input.status}`,
+        input.memo ? `> 특이사항: ${input.memo}` : '',
+        result.sheetRow ? `> 시트 ${result.sheetRow}행에 기재됨` : '',
+      ].filter(Boolean).join('\n')
+
+      // 수정 이력 추가
+      const changesSummary = result.changes && result.changes.length > 0
+        ? result.changes.map((c) => `${c.field} ${c.from} → ${c.to}`).join(', ')
+        : ''
+
+      const now = new Date()
+      const kstDate = new Date(now.getTime() + 9 * 3600_000)
+      const timestamp = `${kstDate.getMonth() + 1}/${kstDate.getDate()} ${kstDate.getHours()}:${String(kstDate.getMinutes()).padStart(2, '0')}`
+
+      const historyLine = changesSummary
+        ? `✏️ 수정됨: ${changesSummary} (@${editorName}, ${timestamp})`
+        : `✏️ 수정됨 (@${editorName}, ${timestamp})`
+
+      const fullText = `${newText}\n${historyLine}`
+
+      // 메시지 블록 재구성 (버튼 유지)
+      const blocks: SlackBlock[] = [
+        { type: 'section', text: { type: 'mrkdwn', text: fullText } },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              action_id: 'payment_edit_open',
+              text: { type: 'plain_text', text: '✏️ 수정', emoji: true },
+              value: JSON.stringify({ syncId, registrantUserId }),
+            },
+          ],
+        },
+      ]
+
+      if (channelId && messageTs) {
+        await updateSlackMessage(channelId, messageTs, fullText, blocks)
+      }
+
+      // 성공 알림 (메시지 업데이트가 안 됐을 경우 대비)
+      if (!channelId || !messageTs) {
+        await announce(channelId, editorUserId, `✅ 결제가 수정되었습니다.\n${changesSummary}`)
+      }
+
+      console.log(`[slack/payment/edit] syncId=${syncId} editor=${editorName} changes=${changesSummary}`)
+    } catch (e) {
+      console.error('[slack] 결제 수정 처리 실패:', e)
+      await announce(
+        channelId, editorUserId,
+        `❌ 결제 수정 중 오류가 발생했습니다: ${e instanceof Error ? e.message : '알 수 없는 오류'}`,
+      )
+    }
+  })()
+
   return new Response('', { status: 200 })
 }
 

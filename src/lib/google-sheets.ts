@@ -294,6 +294,111 @@ export async function updateSheetStatusBySyncId(
   return { rowIndex }
 }
 
+/**
+ * 동기화 ID(M열)로 행을 찾아 전체 결제 정보 읽기 — 수정 모달 pre-fill 용.
+ */
+export async function fetchSheetRowBySyncId(syncId: string): Promise<SheetRow | null> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(true)
+
+  // M열에서 ID 찾기
+  const idRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!${SYNC_ID_COLUMN}2:${SYNC_ID_COLUMN}`,
+  })
+  const ids = idRes.data.values ?? []
+  const offset = ids.findIndex((r) => String(r?.[0] ?? '').trim() === syncId)
+  if (offset < 0) return null
+
+  const rowIndex = offset + 2
+
+  // 해당 행의 B~M 읽기
+  const rowRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!B${rowIndex}:${SYNC_ID_COLUMN}${rowIndex}`,
+  })
+  const row = rowRes.data.values?.[0] ?? []
+
+  const rawDate = String(row[0] ?? '').trim()
+  const rawAmount = String(row[5] ?? '').trim().replace(/,/g, '').replace(/[^\d.-]/g, '')
+  const amount = parseFloat(rawAmount)
+
+  if (!rawDate || isNaN(amount) || amount <= 0) return null
+
+  const date = parseDate(rawDate)
+  if (!date) return null
+
+  const status = normalizeStatus(String(row[7] ?? '').trim())
+  const rawIdCell = String(row[11] ?? '').trim()
+  const isValidId = /^tx_/.test(rawIdCell)
+
+  return {
+    rowIndex,
+    syncId: isValidId ? rawIdCell : '',
+    idCellOccupied: !!rawIdCell && !isValidId,
+    date,
+    clientName: String(row[1] ?? '').trim(),
+    representative: String(row[2] ?? '').trim(),
+    phone: String(row[3] ?? '').trim(),
+    manager: String(row[4] ?? '').trim(),
+    amount,
+    memo: String(row[6] ?? '').trim(),
+    status,
+  }
+}
+
+/**
+ * 동기화 ID(M열)로 행을 찾아 B~I 컬럼 전체 업데이트 — 결제 수정용.
+ * 전화번호는 텍스트('010-xxx)로 강제하여 앞자리 0이 사라지지 않게 한다.
+ */
+export async function updateSheetRowBySyncId(
+  syncId: string,
+  row: {
+    date: string
+    clientName: string
+    representative: string
+    phone: string
+    manager: string
+    amount: number
+    memo: string
+    status: PaymentStatus
+  },
+): Promise<{ rowIndex: number } | null> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(false)
+
+  // M열에서 ID 찾기
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!${SYNC_ID_COLUMN}2:${SYNC_ID_COLUMN}`,
+  })
+  const ids = res.data.values ?? []
+  const offset = ids.findIndex((r) => String(r?.[0] ?? '').trim() === syncId)
+  if (offset < 0) return null
+
+  const rowIndex = offset + 2
+
+  // B~I 업데이트 (USER_ENTERED 로 날짜/금액은 숫자화, 전화번호는 '로 시작하면 텍스트)
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!B${rowIndex}:I${rowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: {
+      values: [[
+        row.date,
+        row.clientName,
+        row.representative,
+        // 전화번호 앞에 ' 붙여서 텍스트로 저장 (앞자리 0 보존)
+        row.phone ? `'${row.phone}` : '',
+        row.manager,
+        row.amount,
+        row.memo,
+        row.status,
+      ]],
+    },
+  })
+
+  return { rowIndex }
+}
+
 /** I열 드롭다운 값을 입금 상태로 정규화 */
 function normalizeStatus(raw: string): PaymentStatus {
   if (/미입금/.test(raw)) return '미입금'
