@@ -35,7 +35,7 @@ const statusOption = (s: PaymentStatus) => ({ text: plain(s), value: s })
  * 담당자 목록이 비어 있으면 static_select 를 만들 수 없으므로 자유 입력으로 대체한다.
  * (직원이 한 명도 등록되지 않은 초기 상태에서도 결제를 못 넣는 일은 없어야 한다)
  */
-function managerBlock(managers: string[]): SlackBlock {
+function managerBlockForCreate(managers: string[]): SlackBlock {
   if (managers.length === 0) {
     return {
       type: 'input',
@@ -111,7 +111,7 @@ export function buildPaymentModal(params: {
         placeholder: plain('예) 010-1234-5678'),
       },
     },
-    managerBlock(managers),
+    managerBlockForCreate(managers),
     {
       type: 'input',
       block_id: FIELD.amount,
@@ -167,11 +167,14 @@ export function buildPaymentModal(params: {
 export const PAYMENT_REVERT_CALLBACK = 'payment_revert'
 /** 등록 완료 메시지에 붙는 버튼의 action_id — block_actions 분기 기준 */
 export const PAYMENT_REVERT_BUTTON = 'payment_revert_open'
+export const PAYMENT_EDIT_BUTTON = 'payment_edit_open'
 
 export const REVERT_FIELD = {
   target: 'revert_target',
   status: 'revert_status',
 } as const
+
+export const PAYMENT_EDIT_CALLBACK = 'payment_edit'
 
 const REVERT_OPTIONS: { value: RevertStatus; label: string }[] = [
   { value: 'unpaid', label: '🔴 미입금' },
@@ -189,7 +192,39 @@ function paymentOptionText(p: RevertedPayment): string {
   return withManager.length > 75 ? `${withManager.slice(0, 72)}…` : withManager
 }
 
-/** 등록 완료 메시지 아래에 붙는 "되돌리기" 버튼 블록 */
+/** 등록 완료 메시지 아래에 붙는 버튼 블록 (수정 + 되돌리기) */
+export function paymentActionButtons(params: {
+  syncId: string
+  paymentId?: string
+  registrantUserId: string
+}): SlackBlock {
+  const { syncId, paymentId, registrantUserId } = params
+  const elements: unknown[] = [
+    {
+      type: 'button',
+      action_id: PAYMENT_EDIT_BUTTON,
+      text: plain('✏️ 수정'),
+      value: JSON.stringify({ syncId, registrantUserId }),
+    },
+  ]
+  
+  // 입금 확정 건에만 되돌리기 버튼 추가
+  if (paymentId) {
+    elements.push({
+      type: 'button',
+      action_id: PAYMENT_REVERT_BUTTON,
+      text: plain('↩️ 입금 상태 되돌리기'),
+      value: paymentId,
+    })
+  }
+  
+  return {
+    type: 'actions',
+    elements,
+  }
+}
+
+/** 레거시: 되돌리기 버튼만 (기존 되돌리기 모달에서 사용) */
 export function revertButtonBlock(paymentId: string): SlackBlock {
   return {
     type: 'actions',
@@ -326,5 +361,166 @@ export function readSubmission(values: Record<string, Record<string, {
     amountRaw: (get(FIELD.amount).value ?? '').trim(),
     status: (get(FIELD.status).selected_option?.value ?? '입금완료') as PaymentStatus,
     memo: (get(FIELD.memo).value ?? '').trim(),
+  }
+}
+
+/**
+ * 수정 모달 — 기존 값으로 미리 채운다.
+ * channelId/ts/syncId/registrantUserId 는 제출 처리에 필요.
+ */
+export function buildPaymentEditModal(params: {
+  current: {
+    date: string
+    clientName: string
+    representative: string
+    phone: string
+    manager: string
+    amount: number
+    status: PaymentStatus
+    memo: string
+  }
+  managers: string[]
+  channelId: string
+  messageTs: string
+  syncId: string
+  registrantUserId: string
+  canEditAmountDate: boolean
+}): Record<string, unknown> {
+  const { current, managers, channelId, messageTs, syncId, registrantUserId, canEditAmountDate } = params
+
+  const blocks: SlackBlock[] = [
+    {
+      type: 'input',
+      block_id: FIELD.date,
+      label: plain('날짜'),
+      optional: !canEditAmountDate,
+      hint: canEditAmountDate ? undefined : plain('입금 확정 건은 날짜를 수정할 수 없습니다'),
+      element: {
+        type: 'datepicker',
+        action_id: ACTION,
+        initial_date: current.date,
+        ...(canEditAmountDate ? {} : { disabled: true }),
+      },
+    },
+    {
+      type: 'input',
+      block_id: FIELD.client,
+      label: plain('상호명'),
+      element: {
+        type: 'plain_text_input',
+        action_id: ACTION,
+        initial_value: current.clientName,
+        placeholder: plain('예) ABC마케팅'),
+      },
+    },
+    {
+      type: 'input',
+      block_id: FIELD.representative,
+      optional: true,
+      label: plain('대표자'),
+      element: {
+        type: 'plain_text_input',
+        action_id: ACTION,
+        initial_value: current.representative,
+        placeholder: plain('예) 홍길동'),
+      },
+    },
+    {
+      type: 'input',
+      block_id: FIELD.phone,
+      optional: true,
+      label: plain('전화번호'),
+      element: {
+        type: 'plain_text_input',
+        action_id: ACTION,
+        initial_value: current.phone,
+        placeholder: plain('예) 010-1234-5678'),
+      },
+    },
+    managerBlock(managers, current.manager),
+    {
+      type: 'input',
+      block_id: FIELD.amount,
+      label: plain('금액 (부가세 포함)'),
+      optional: !canEditAmountDate,
+      hint: canEditAmountDate ? undefined : plain('입금 확정 건은 금액을 수정할 수 없습니다'),
+      element: {
+        type: 'number_input',
+        action_id: ACTION,
+        is_decimal_allowed: false,
+        min_value: '1',
+        initial_value: String(current.amount),
+        ...(canEditAmountDate ? {} : { disabled: true }),
+      },
+    },
+    {
+      type: 'input',
+      block_id: FIELD.status,
+      label: plain('입금상태'),
+      element: {
+        type: 'static_select',
+        action_id: ACTION,
+        initial_option: statusOption(current.status),
+        options: STATUS_OPTIONS.map(statusOption),
+      },
+    },
+    {
+      type: 'input',
+      block_id: FIELD.memo,
+      optional: true,
+      label: plain('특이사항'),
+      element: {
+        type: 'plain_text_input',
+        action_id: ACTION,
+        multiline: true,
+        initial_value: current.memo,
+        placeholder: plain('예) 계약금'),
+      },
+    },
+  ]
+
+  return {
+    type: 'modal',
+    callback_id: PAYMENT_EDIT_CALLBACK,
+    title: plain('결제 수정'),
+    submit: plain('수정'),
+    close: plain('취소'),
+    private_metadata: JSON.stringify({ channelId, messageTs, syncId, registrantUserId }),
+    blocks,
+  }
+}
+
+function managerBlock(managers: string[], initialValue?: string): SlackBlock {
+  if (managers.length === 0) {
+    return {
+      type: 'input',
+      block_id: FIELD.manager,
+      label: plain('담당자'),
+      element: {
+        type: 'plain_text_input',
+        action_id: ACTION,
+        initial_value: initialValue ?? '',
+        placeholder: plain('예) 김팀장'),
+      },
+    }
+  }
+
+  const initialOption = initialValue
+    ? managers.find((m) => m === initialValue)
+      ? { text: plain(initialValue), value: initialValue }
+      : undefined
+    : undefined
+
+  return {
+    type: 'input',
+    block_id: FIELD.manager,
+    label: plain('담당자'),
+    element: {
+      type: 'static_select',
+      action_id: ACTION,
+      placeholder: plain('선택'),
+      options: managers.map((m) => ({ text: plain(m), value: m })),
+      ...(initialOption ? { initial_option: initialOption } : {}),
+    },
   }
 }
