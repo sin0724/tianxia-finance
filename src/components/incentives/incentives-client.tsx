@@ -191,6 +191,21 @@ function MonthScreen({ year, month }: { year: number; month: number }) {
     reloadCrm()
   }
 
+  /** 설정에 없는 CRM 담당자 값을 담당자에 연결 (새 담당자면 만들고, 이 달 정산표를 갖춘 뒤 동기화) */
+  async function assignOwner(body: { owner: string; managerId?: string; newName?: string }) {
+    setBusy('sync')
+    const res = await run(() => call<{ manager: string; created: string[]; messages: string[]; syncError: string | null }>(
+      'POST', '/api/incentives/owners', { year, month, ...body },
+    ))
+    if (res) {
+      setSyncLog(res.messages)
+      if (res.syncError) toast.error(`연결했지만 CRM을 읽지 못했습니다: ${res.syncError}`)
+      else toast.success(`‘${body.owner}’를 ${res.manager} 정산에 넣고 CRM에서 가져왔습니다.`)
+    }
+    setBusy(null)
+    reloadCrm()
+  }
+
   async function createSheets() {
     setBusy('create')
     const res = await run(() => call<{ created: string[]; messages: string[]; syncError: string | null }>('POST', '/api/incentives/months', { year, month }))
@@ -363,6 +378,7 @@ function MonthScreen({ year, month }: { year: number; month: number }) {
           crmLoading={crmLoading}
           onFocusLine={focusLine}
           onSync={sync}
+          onAssignOwner={assignOwner}
           busy={busy !== null}
         />
       )}

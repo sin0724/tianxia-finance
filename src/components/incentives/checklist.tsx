@@ -1,17 +1,22 @@
 'use client'
 
+import { useState } from 'react'
 import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { baseSyncId, calcLine, needsPaidInput } from '@/lib/incentives/engine'
+import type { UnmappedOwner } from '@/lib/incentives/owners'
 import type { CrmView, FinanceView, MonthView } from '@/lib/incentives/types'
-import { won } from './cells'
+import type { IncentiveManager } from '@/types/database'
+import { ConfirmButton, won } from './cells'
+
+export type AssignOwner = (body: { owner: string; managerId?: string; newName?: string }) => void
 
 /**
  * 이 달 정산 전에 확인할 것 — 컴퓨터 사용으로 하던 확인 작업을 한곳에 모은다.
  * [M월 확인] 메모, D칸 입력, F칸 오류, CRM에서 아직 안 가져온 줄, 재무관리 입금 · 환불.
  */
 export function Checklist({
-  view, finance, crm, crmError, crmLoading, onFocusLine, onSync, busy,
+  view, finance, crm, crmError, crmLoading, onFocusLine, onSync, onAssignOwner, busy,
 }: {
   view: MonthView
   finance: FinanceView | null
@@ -20,6 +25,7 @@ export function Checklist({
   crmLoading: boolean
   onFocusLine: (managerId: string, lineId: string) => void
   onSync: () => void
+  onAssignOwner: AssignOwner
   busy: boolean
 }) {
   const name = (id: string) => view.managers.find((m) => m.id === id)?.name ?? ''
@@ -111,13 +117,15 @@ export function Checklist({
         ))}
       </Section>
 
-      <Section title="CRM 담당자명이 설정에 없어 동기화에서 빠지는 줄" count={unmapped.length} tone="red">
-        {unmapped.map((r) => (
-          <li key={r.row}>
-            결제시트 {r.row}행 · {r.date} · <span className="font-medium">{r.name}</span> · {won(r.amount)}
-            <span className="text-xs text-gray-600"> — 담당자 &lsquo;{r.owner}&rsquo; ({name(r.managerId)} 정산에 넣으려면 설정 → 담당자 매핑의 CRM 담당자명에 추가)</span>
-          </li>
+      <Section title="CRM 담당자명이 설정에 없어 정산에서 빠지는 줄" count={unmapped.length} tone="red">
+        {unmapped.map((u) => (
+          <OwnerItem key={u.owner} item={u} managers={view.managers.filter((m) => m.active)} busy={busy} onAssign={onAssignOwner} />
         ))}
+        {unmapped.length > 0 && (
+          <li className="text-xs text-gray-500">
+            연결하면 그 담당자의 CRM 담당자명에 이 값이 들어가고, 이 달 정산표가 없으면 만든 뒤 CRM에서 가져옵니다. 다음 달부터는 자동으로 들어갑니다.
+          </li>
+        )}
       </Section>
 
       <Section title="CRM에 동기화ID가 없어 가져오지 못한 줄" count={missingSid.length}>
@@ -163,6 +171,61 @@ export function Checklist({
         ))}
       </Section>
     </div>
+  )
+}
+
+/** 설정에 없는 CRM 담당자 값 하나 — 기존 담당자에 연결하거나 새 담당자로 추가 */
+function OwnerItem({ item, managers, busy, onAssign }: {
+  item: UnmappedOwner
+  managers: IncentiveManager[]
+  busy: boolean
+  onAssign: AssignOwner
+}) {
+  const [target, setTarget] = useState(item.suggestId ?? '')
+  const button = 'rounded-lg border border-gray-200 bg-white px-2 py-0.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50'
+  const targetName = managers.find((m) => m.id === target)?.name
+  return (
+    <li className="space-y-1">
+      <p>
+        <span className="font-medium">&lsquo;{item.owner}&rsquo;</span> · {item.rows.length}건 · {won(item.total)}
+        <span className="text-xs text-gray-500">
+          {' '}— {item.rows.slice(0, 3).map((r) => `${r.row}행 ${r.name}`).join(', ')}{item.rows.length > 3 ? ` 외 ${item.rows.length - 3}건` : ''}
+        </span>
+      </p>
+      {item.inactiveName ? (
+        <p className="text-xs text-gray-600">쉬는 담당자 {item.inactiveName}의 CRM 담당자명입니다. 설정에서 {item.inactiveName}의 &lsquo;사용&rsquo;을 켜면 정산됩니다.</p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className="h-7 rounded-lg border border-gray-200 bg-white px-2 text-xs outline-none focus:border-blue-300"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            aria-label={`${item.owner} 연결할 담당자`}
+          >
+            <option value="">담당자 고르기</option>
+            {managers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          <ConfirmButton
+            className={button}
+            disabled={busy || !target}
+            confirmText={`${targetName ?? ''}에 연결하고 가져오기`}
+            onConfirm={() => onAssign({ owner: item.owner, managerId: target })}
+          >
+            연결
+          </ConfirmButton>
+          {item.newName && (
+            <ConfirmButton
+              className={button}
+              disabled={busy}
+              confirmText={`새 담당자 ${item.newName} 만들고 가져오기`}
+              onConfirm={() => onAssign({ owner: item.owner, newName: item.newName! })}
+            >
+              새 담당자 &lsquo;{item.newName}&rsquo;로 추가
+            </ConfirmButton>
+          )}
+        </div>
+      )}
+    </li>
   )
 }
 

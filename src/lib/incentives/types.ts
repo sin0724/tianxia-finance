@@ -1,6 +1,7 @@
 /** 인센티브 정산 API가 화면에 돌려주는 모양 */
 import type { IncentiveClawback, IncentiveLine, IncentiveManager, IncentiveMonth } from '@/types/database'
 import type { IncentiveConfig, LineKind } from './engine'
+import type { UnmappedOwner } from './owners'
 
 /** 계약(동기화ID) 하나의 정산 누계 — 모든 달 + 앱으로 옮기기 전 정산시트 */
 export interface ContractInfo {
@@ -67,8 +68,8 @@ export interface CrmView {
     latest: boolean
   }>
   missingSid: { row: number; date: string; name: string; owner: string; amount: number }[]
-  /** 이 달 CRM 줄 중 담당자 값이 설정의 CRM 담당자명에 없어 동기화에서 빠지는 줄 — 이름이 담당자와 같은 것만 */
-  unmapped: { row: number; owner: string; managerId: string; date: string; name: string; amount: number }[]
+  /** 이 달 CRM 줄 중 담당자 값이 사용 중인 담당자의 CRM 담당자명에 없어 동기화에서 빠지는 줄 (담당자 값별) */
+  unmapped: UnmappedOwner[]
 }
 
 export interface ViewResponse {

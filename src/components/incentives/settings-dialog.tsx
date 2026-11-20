@@ -8,6 +8,7 @@ import { CurrencyInput } from '@/components/ui/currency-input'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from '@/lib/toast'
 import type { IncentiveConfig } from '@/lib/incentives/engine'
+import { duplicateCrmNames } from '@/lib/incentives/owners'
 import type { IncentiveManager } from '@/types/database'
 import { call, errorText } from './cells'
 
@@ -90,6 +91,11 @@ function SettingsForm({ config, managers, onClose, onSaved }: {
       if (!p.name.trim() || !splitNames(p.crm).length) { toast.error('담당자 이름과 CRM 담당자명을 적어 주세요.'); return }
       if (p.base !== '' && (!Number.isSafeInteger(Number(p.base)) || Number(p.base) < 0)) { toast.error(`${p.name} 기본급을 확인해 주세요.`); return }
     }
+    const dup = duplicateCrmNames(peopleRows.map((p) => ({ name: p.name.trim(), crm_names: splitNames(p.crm) })))
+    if (dup.length) {
+      toast.error(`CRM 담당자명은 한 담당자에만 둡니다: ${dup.map((d) => `‘${d.crmName}’ (${d.managers.join(', ')})`).join(' · ')}`)
+      return
+    }
 
     setSaving(true)
     try {
@@ -160,7 +166,11 @@ function SettingsForm({ config, managers, onClose, onSaved }: {
           <Button size="xs" variant="outline" onClick={() => setPeople((ps) => [...ps, { name: '', crm: '', base: '', sort: String(ps.length + 1), active: true }])}>
             <Plus size={12} /> 담당자 추가
           </Button>
-          <p className="text-xs text-gray-400">담당자는 지우지 않고 &lsquo;사용&rsquo;을 끕니다. 끈 담당자는 새 달 정산표와 CRM 동기화에서 빠집니다.</p>
+          <p className="text-xs text-gray-400">
+            CRM 담당자명은 결제시트 담당자 칸과 글자까지 같게 적습니다 (예: &lsquo;이름 0팀&rsquo;, &lsquo;이름 1팀&rsquo;). 한 이름은 한 담당자에만 넣습니다.
+            새 담당자를 저장하면 화면 위에 이 달 정산표 만들기가 나옵니다.
+            담당자는 지우지 않고 &lsquo;사용&rsquo;을 끕니다. 끈 담당자는 새 달 정산표와 CRM 동기화에서 빠집니다.
+          </p>
         </section>
 
         <section className="space-y-2">

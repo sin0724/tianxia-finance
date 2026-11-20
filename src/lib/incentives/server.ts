@@ -5,6 +5,7 @@ import type {
 } from '@/types/database'
 import { fetchSheetGrid } from '@/lib/google-sheets'
 import { parseCrmGrid } from './crm'
+import { unmappedOwners } from './owners'
 import {
   DEFAULT_CONFIG, baseSyncId, planSync, settledMap, summarize, syncShort,
   type CrmRow, type ExistingLine, type IncentiveConfig, type NewLine,
@@ -265,16 +266,8 @@ export async function loadCrmView(db: DB, view: MonthView): Promise<CrmView> {
   const inMonth = (date: string) => date.startsWith(`${view.year}-${pad(view.month)}`)
   const missingSid = crm.missingSid.filter((r) => aliases.has(r.owner) && inMonth(r.date))
 
-  // 시트처럼 담당자명은 글자 그대로 맞춘다. "이름 1팀"처럼 앞 이름만 같은 값은 가져오지 않고 확인 목록에 띄운다.
-  const head = (s: string) => s.trim().split(/\s+/)[0] ?? ''
-  const byName = new Map<string, string>()
-  for (const m of view.managers) {
-    byName.set(head(m.name), m.id)
-    for (const a of m.crm_names) byName.set(head(a), m.id)
-  }
-  const unmapped: CrmView['unmapped'] = crm.rows
-    .filter((r) => inMonth(r.date) && !aliases.has(r.owner) && byName.has(head(r.owner)))
-    .map((r) => ({ row: r.row, owner: r.owner, managerId: byName.get(head(r.owner))!, date: r.date, name: r.name, amount: r.amount }))
+  // 시트처럼 담당자명은 글자 그대로 맞춘다. 설정에 없는 값(새 사람 · 새 팀 표기)은 가져오지 않고 확인 목록에 띄운다.
+  const unmapped = unmappedOwners([...crm.rows, ...crm.missingSid], view.managers, view.year, view.month)
   return { bySid, preview, missingSid, unmapped }
 }
 
@@ -371,6 +364,52 @@ export async function syncMonth(db: DB, year: number, month: number): Promise<st
     out.push(`${m.name} ${month}월 : ${syncShort(plan.stats)}`)
   }
   return out
+}
+
+/**
+ * 설정에 없는 CRM 담당자 값을 기존 담당자의 CRM 담당자명에 붙이거나 새 담당자로 만든다.
+ * 그다음 이 달 정산표가 없는 담당자 것을 만들고 (정산시트에서 정산한 달은 빼고) CRM 동기화를 한다.
+ */
+export async function assignOwner(
+  db: DB, args: { year: number; month: number; owner: string; managerId?: string; newName?: string },
+): Promise<{ manager: string; created: string[]; messages: string[]; syncError: string | null }> {
+  const owner = args.owner.trim()
+  const managers = must(await db.from('incentive_managers').select('*').order('sort_order').order('name')) ?? []
+  const holder = managers.find((m) => m.crm_names.includes(owner))
+  if (holder) {
+    throw new HttpError(409, holder.active
+      ? `‘${owner}’는 이미 ${holder.name}의 CRM 담당자명입니다.`
+      : `‘${owner}’는 쉬는 담당자 ${holder.name}의 CRM 담당자명입니다. 설정에서 ${holder.name}의 ‘사용’을 켜 주세요.`)
+  }
+
+  let saved: IncentiveManager | null
+  if (args.managerId) {
+    const m = managers.find((x) => x.id === args.managerId)
+    if (!m) throw new HttpError(404, '담당자를 찾을 수 없습니다.')
+    if (!m.active) throw new HttpError(409, `${m.name}은(는) 쉬는 담당자입니다. 설정에서 ‘사용’을 켠 뒤 연결해 주세요.`)
+    saved = must(await db.from('incentive_managers').update({ crm_names: [...m.crm_names, owner] }).eq('id', m.id).select('*').single())
+  } else {
+    const name = (args.newName ?? '').trim()
+    if (!name) throw new HttpError(400, '새 담당자 이름을 적어 주세요.')
+    if (managers.some((m) => m.name === name)) throw new HttpError(409, `같은 이름의 담당자가 있습니다: ${name}. 그 담당자에 연결해 주세요.`)
+    const sort = managers.reduce((mx, m) => Math.max(mx, m.sort_order), 0) + 1
+    saved = must(await db.from('incentive_managers')
+      .insert({ name, crm_names: [owner], base_salary: null, sort_order: sort, active: true }).select('*').single())
+  }
+  if (!saved) throw new Error('담당자를 저장하지 못했습니다.')
+
+  let created: string[] = []
+  try {
+    created = await createMonths(db, args.year, args.month)
+  } catch (e) {
+    // 정산시트에서 정산한 달이면 정산표는 만들지 않고 연결만 한다
+    if (!(e instanceof HttpError && e.status === 400)) throw e
+  }
+  try {
+    return { manager: saved.name, created, messages: await syncMonth(db, args.year, args.month), syncError: null }
+  } catch (e) {
+    return { manager: saved.name, created, messages: [], syncError: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 /** 마감 — 그때의 H~O를 남겨 둔다. E가 오류인 줄이 있으면 마감하지 않는다 */
