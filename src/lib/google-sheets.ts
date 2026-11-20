@@ -95,6 +95,22 @@ export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[
 }
 
 /**
+ * 결제시트 전체를 서식 없는 원래 값으로 읽는다 (1행 머리글 포함, 읽기 전용).
+ * 날짜 칸은 일련번호(1899-12-30부터 일수), 숫자 칸은 숫자로 온다 —
+ * 인센티브 정산시트의 Apps Script가 읽던 값과 같은 형태라 정산 계산에 그대로 쓴다.
+ */
+export async function fetchSheetGrid(): Promise<unknown[][]> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(true)
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!A1:Z`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+    dateTimeRenderOption: 'SERIAL_NUMBER',
+  })
+  return (response.data.values ?? []) as unknown[][]
+}
+
+/**
  * 동기화 ID를 시트 M열에 기록 (write-back).
  * 이후에는 상호명·금액·메모를 수정해도 같은 행으로 인식되어 중복 집계가 발생하지 않는다.
  * 서비스 계정에 시트 편집 권한이 필요하다. M열은 시트에서 숨김 처리해도 무방하다.

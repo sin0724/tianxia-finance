@@ -159,9 +159,49 @@ export interface Database {
         Update: { holiday_date?: string; name?: string; created_at?: string }
         Relationships: []
       }
+      incentive_settings: {
+        Row: { id: number; vat_rate: number; default_rate: number; default_base: number; full_statuses: string[]; paid_rate: number; tiers: Json; updated_at: string }
+        Insert: { id?: number; vat_rate?: number; default_rate?: number; default_base?: number; full_statuses?: string[]; paid_rate?: number; tiers?: Json; updated_at?: string }
+        Update: { id?: number; vat_rate?: number; default_rate?: number; default_base?: number; full_statuses?: string[]; paid_rate?: number; tiers?: Json; updated_at?: string }
+        Relationships: []
+      }
+      incentive_managers: {
+        Row: { id: string; name: string; crm_names: string[]; base_salary: number | null; sort_order: number; active: boolean; created_at: string; updated_at: string }
+        Insert: { id?: string; name: string; crm_names: string[]; base_salary?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
+        Update: { id?: string; name?: string; crm_names?: string[]; base_salary?: number | null; sort_order?: number; active?: boolean; created_at?: string; updated_at?: string }
+        Relationships: []
+      }
+      incentive_months: {
+        Row: { id: string; manager_id: string; year: number; month: number; base_salary: number; special_allowance: number | null; summary_note: string; status: 'open' | 'closed'; closed_at: string | null; snapshot: Json | null; created_at: string; updated_at: string }
+        Insert: { id?: string; manager_id: string; year: number; month: number; base_salary: number; special_allowance?: number | null; summary_note?: string; status?: 'open' | 'closed'; closed_at?: string | null; snapshot?: Json | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; manager_id?: string; year?: number; month?: number; base_salary?: number; special_allowance?: number | null; summary_note?: string; status?: 'open' | 'closed'; closed_at?: string | null; snapshot?: Json | null; created_at?: string; updated_at?: string }
+        Relationships: []
+      }
+      incentive_lines: {
+        Row: { id: string; manager_id: string; year: number; month: number; position: number; client_name: string; sales: number | null; paid: number | null; rate: string | null; note: string; sync_id: string | null; crm_date: string | null; kind: 'contract' | 'balance' | 'installment' | 'manual'; fill: 'red' | 'yellow' | 'green' | null; created_at: string; updated_at: string }
+        Insert: { id?: string; manager_id: string; year: number; month: number; position: number; client_name?: string; sales?: number | null; paid?: number | null; rate?: string | null; note?: string; sync_id?: string | null; crm_date?: string | null; kind?: 'contract' | 'balance' | 'installment' | 'manual'; fill?: 'red' | 'yellow' | 'green' | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; manager_id?: string; year?: number; month?: number; position?: number; client_name?: string; sales?: number | null; paid?: number | null; rate?: string | null; note?: string; sync_id?: string | null; crm_date?: string | null; kind?: 'contract' | 'balance' | 'installment' | 'manual'; fill?: 'red' | 'yellow' | 'green' | null; created_at?: string; updated_at?: string }
+        Relationships: []
+      }
+      incentive_clawbacks: {
+        Row: { id: string; manager_id: string; year: number; month: number; client_name: string; direct_amount: number | null; contract_amount: number | null; progress: number | null; memo: string; registered_on: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; manager_id: string; year: number; month: number; client_name: string; direct_amount?: number | null; contract_amount?: number | null; progress?: number | null; memo?: string; registered_on?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; manager_id?: string; year?: number; month?: number; client_name?: string; direct_amount?: number | null; contract_amount?: number | null; progress?: number | null; memo?: string; registered_on?: string | null; created_at?: string; updated_at?: string }
+        Relationships: []
+      }
+      incentive_carryovers: {
+        Row: { id: string; manager_id: string; base_sync_id: string; origin_year: number; origin_month: number; client_name: string; sales: number | null; origin_note: string; origin_fill: 'red' | 'yellow' | 'green' | null; settled: number; paid_count: number; source: string; created_at: string; updated_at: string }
+        Insert: { id?: string; manager_id: string; base_sync_id: string; origin_year: number; origin_month: number; client_name?: string; sales?: number | null; origin_note?: string; origin_fill?: 'red' | 'yellow' | 'green' | null; settled?: number; paid_count?: number; source?: string; created_at?: string; updated_at?: string }
+        Update: { id?: string; manager_id?: string; base_sync_id?: string; origin_year?: number; origin_month?: number; client_name?: string; sales?: number | null; origin_note?: string; origin_fill?: 'red' | 'yellow' | 'green' | null; settled?: number; paid_count?: number; source?: string; created_at?: string; updated_at?: string }
+        Relationships: []
+      }
     }
     Views: { [_ in never]: never }
     Functions: {
+      is_app_admin: {
+        Args: Record<PropertyKey, never>
+        Returns: boolean
+      }
       confirm_pending_payment: {
         Args: { p_payment_id: string; p_amount: number; p_payment_date: string; p_project_id?: string | null }
         Returns: Json
@@ -201,5 +241,11 @@ export type ClassificationRule = Database['public']['Tables']['classification_ru
 export type CompanyHoliday = Database['public']['Tables']['company_holidays']['Row']
 export type LeaveAbsence = Database['public']['Tables']['leave_absences']['Row']
 export type LeavePromotion = Database['public']['Tables']['leave_promotions']['Row']
+export type IncentiveSettingsRow = Database['public']['Tables']['incentive_settings']['Row']
+export type IncentiveManager = Database['public']['Tables']['incentive_managers']['Row']
+export type IncentiveMonth = Database['public']['Tables']['incentive_months']['Row']
+export type IncentiveLine = Database['public']['Tables']['incentive_lines']['Row']
+export type IncentiveClawback = Database['public']['Tables']['incentive_clawbacks']['Row']
+export type IncentiveCarryover = Database['public']['Tables']['incentive_carryovers']['Row']
 export type PaymentStatus = Payment['status']
 export type LeaveStatus = LeaveRequest['status']

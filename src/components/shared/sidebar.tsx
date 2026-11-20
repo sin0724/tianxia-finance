@@ -22,6 +22,7 @@ import {
   Settings,
   LogOut,
   X,
+  Calculator,
 } from 'lucide-react'
 
 type NavItem = {
@@ -29,6 +30,8 @@ type NavItem = {
   label: string
   icon: typeof LayoutDashboard
   badge?: 'pendingLeave'
+  /** 관리자에게만 보인다 */
+  adminOnly?: boolean
 }
 
 const navGroups: { title: string | null; items: NavItem[] }[] = [
@@ -54,6 +57,7 @@ const navGroups: { title: string | null; items: NavItem[] }[] = [
       { href: '/cashflow',  label: '현금 흐름', icon: Wallet },
       { href: '/payments',  label: '결제 내역', icon: CreditCard },
       { href: '/payroll',   label: '급여 관리', icon: FileSpreadsheet },
+      { href: '/incentives', label: '인센티브 정산', icon: Calculator, adminOnly: true },
     ],
   },
   {
@@ -86,6 +90,17 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const pathname = usePathname()
   const router = useRouter()
   const [pendingLeaveCount, setPendingLeaveCount] = useState(0)
+  const [isAdmin, setIsAdmin] = useState(false)
+
+  // 관리자 전용 메뉴는 관리자에게만 보인다. 메뉴를 가리는 것일 뿐이고,
+  // 페이지 · API · DB(RLS)가 각각 관리자를 다시 확인한다.
+  useEffect(() => {
+    let alive = true
+    createClient().rpc('is_app_admin').then(({ data, error }) => {
+      if (alive) setIsAdmin(!error && data === true)
+    })
+    return () => { alive = false }
+  }, [])
 
   // 승인 대기 배지 갱신 — 페이지 이동·창 포커스 시
   useEffect(() => {
@@ -157,7 +172,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
               </p>
             )}
             <div className="space-y-0.5">
-              {group.items.map(({ href, label, icon: Icon, badge }) => {
+              {group.items.filter((item) => isAdmin || !item.adminOnly).map(({ href, label, icon: Icon, badge }) => {
                 const active = pathname === href
                 return (
                   <Link
