@@ -8,6 +8,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { fetchSheetRowBySyncId, updateSheetRowBySyncId, type PaymentStatus } from '@/lib/google-sheets'
 import { buildPaymentMemo } from './register'
+import { toDbStatus, toSheetStatus } from './status'
 
 type Admin = SupabaseClient<Database>
 
@@ -160,9 +161,6 @@ export async function editPayment(
       .replace(/\s*\|\s*연락처:[^|]+/, '')
       .trim() || ''
 
-    const toSheetStatus = (s: string): PaymentStatus =>
-      s === 'balance_due' ? '잔금 처리 요망' : s === 'unpaid' ? '미입금' : '입금완료'
-
     currentSheet = {
       rowIndex: -1, // DB에서 읽은 경우 시트 행 번호 없음
       syncId,
@@ -229,9 +227,6 @@ export async function editPayment(
   }
 
   // ── 4) DB 업데이트 ─────────────────────────────────────────
-  const toDbStatus = (s: PaymentStatus): 'confirmed' | 'balance_due' | 'unpaid' =>
-    s === '잔금 처리 요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
-
   const paymentType = status === '잔금 처리 요망' ? '잔금' : status === '미입금' ? '기타' : null
 
   const { error: updateErr } = await admin

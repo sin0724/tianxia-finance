@@ -14,6 +14,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { appendSheetRow, makeSyncId, type PaymentStatus } from '@/lib/google-sheets'
+import { findOrCreateClient, findOrCreateProject } from '@/lib/payments/project-match'
+import { toDbStatus } from '@/lib/payments/status'
 
 type Admin = SupabaseClient<Database>
 
@@ -54,115 +56,8 @@ export type RegisterResult = {
   paymentId?: string
 }
 
-const toDbStatus = (s: PaymentStatus): 'confirmed' | 'balance_due' | 'unpaid' =>
-  s === '잔금 처리 요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
-
-/**
- * 클라이언트 조회 또는 생성.
- *
- * clients.manager 에는 우리 쪽 영업 담당자가 아니라 **거래처 대표자**가 들어간다.
- * sync-sheets 가 그렇게 넣고 있어 기준을 맞춘 것이다 (우리 담당자는 payments.manager 에 남는다).
- */
-async function findOrCreateClient(
-  admin: Admin,
-  name: string,
-  representative: string,
-  phone: string,
-): Promise<string | null> {
-  const { data: existing } = await admin
-    .from('clients')
-    .select('id')
-    .ilike('name', name)
-    .limit(1)
-    .maybeSingle()
-
-  if (existing) return existing.id
-
-  const { data: created } = await admin
-    .from('clients')
-    .insert({ name, manager: representative || null, contact: phone || null })
-    .select('id')
-    .single()
-
-  return created?.id ?? null
-}
-
-/**
- * 프로젝트 조회 또는 생성 — sync-sheets 와 같은 기준을 따른다.
- * 잔여가 남은 프로젝트(진행중 우선 → 완료의 잔금)에만 합치고, 완납된 곳엔 붙이지 않는다.
- * '추가계약' 상태이거나 메모에 재계약·추가계약 표기가 있으면 무조건 새 프로젝트로 분리한다.
- */
-async function findOrCreateProject(
-  admin: Admin,
-  params: { clientId: string; clientName: string; amount: number; date: string; status: PaymentStatus; memo: string },
-): Promise<{ id: string; isNew: boolean } | null> {
-  const { clientId, clientName, amount, date, status, memo } = params
-
-  const { data: projs } = await admin
-    .from('projects')
-    .select('id, status, total_amount')
-    .eq('client_id', clientId)
-    .neq('status', 'cancelled')
-    .order('created_at', { ascending: false })
-
-  const candidates = projs ?? []
-
-  const memoRenewal = /재\s*계약|추가\s*계약/.test(memo)
-  const forceNew = status === '추가계약' || memoRenewal
-
-  if (!forceNew && candidates.length > 0) {
-    const { data: pays } = await admin
-      .from('payments')
-      .select('project_id, amount')
-      .in('project_id', candidates.map((p) => p.id))
-
-    const paidByProject: Record<string, number> = {}
-    for (const pay of pays ?? []) {
-      if (pay.project_id) paidByProject[pay.project_id] = (paidByProject[pay.project_id] ?? 0) + pay.amount
-    }
-
-    const target =
-      candidates.find((p) => p.status === 'ongoing' && (paidByProject[p.id] ?? 0) < p.total_amount) ??
-      candidates.find((p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount)
-
-    if (target) {
-      // 누적 결제가 계약금액을 넘으면 총액을 올려둔다 (분할 납부·추가 결제 반영)
-      const newPaidTotal = (paidByProject[target.id] ?? 0) + amount
-      if (newPaidTotal > target.total_amount) {
-        await admin.from('projects').update({ total_amount: newPaidTotal }).eq('id', target.id)
-      }
-      return { id: target.id, isNew: false }
-    }
-  }
-
-  const priorCount = candidates.length
-  const isRenewal = priorCount > 0
-  const tag = /재\s*계약/.test(memo) ? '재계약' : '추가계약'
-  const projectName = forceNew && isRenewal
-    ? `${clientName} (${tag} ${priorCount}차)`
-    : isRenewal
-      ? `${clientName} (재계약 ${priorCount}차)`
-      : clientName
-
-  const { data: created } = await admin
-    .from('projects')
-    .insert({
-      client_id: clientId,
-      name: projectName,
-      total_amount: amount,
-      contract_date: date,
-      status: 'ongoing',
-      memo: forceNew ? '추가/재계약 (자동 생성)' : isRenewal ? '재계약 (자동 생성)' : null,
-    })
-    .select('id')
-    .single()
-
-  return created ? { id: created.id, isNew: true } : null
-}
-
-export function formatKRW(n: number): string {
-  return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(n)
-}
+// 기존 import 경로(@/lib/payments/register)를 유지하기 위한 재노출 — 구현은 settlement 한 곳
+export { formatKRW } from '@/lib/calculations/settlement'
 
 /** 결제 한 건을 시트와 DB 양쪽에 등록한다 */
 export async function registerPayment(admin: Admin, input: PaymentInput): Promise<RegisterResult> {
@@ -186,12 +81,15 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
   }
 
   // ── 2) 클라이언트 / 프로젝트 연결 ────────────────────────────────
-  const clientId = await findOrCreateClient(admin, clientName, representative, phone)
-  if (!clientId) {
+  // clients.manager 에는 거래처 대표자가 들어간다 (우리 담당자는 payments.manager) — project-match.ts 참고
+  const client = await findOrCreateClient(admin, { name: clientName, representative, phone })
+  if ('error' in client) {
     return { ok: false, message: '클라이언트 저장에 실패했습니다. 관리자에게 문의해주세요.', warning }
   }
+  const clientId = client.id
 
-  const project = await findOrCreateProject(admin, { clientId, clientName, amount, date, status, memo })
+  const projectResult = await findOrCreateProject(admin, { clientId, clientName, amount, date, status, memo })
+  const project = 'error' in projectResult ? null : projectResult
 
   // ── 3) 결제 저장 ────────────────────────────────────────────────
   const paymentType = status === '잔금 처리 요망' ? '잔금' : status === '미입금' ? '기타' : null

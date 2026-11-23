@@ -510,19 +510,3 @@ function parseDate(raw: string): string | null {
   }
   return null
 }
-
-/**
- * (레거시) 내용 기반 external_id — A열 ID가 없는 기존 데이터와의 매칭에만 사용.
- * 새 행에는 makeSyncId()로 생성한 불변 ID를 쓴다.
- */
-export function makeLegacyExternalId(row: SheetRow): string {
-  const normalize = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '-')
-  const key = [
-    row.date,
-    normalize(row.clientName),
-    String(row.amount),
-    normalize(row.memo),
-    normalize(row.manager),
-  ].join('_')
-  return `sheet_${key}`
-}
