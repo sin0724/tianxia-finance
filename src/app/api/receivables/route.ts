@@ -1,8 +1,6 @@
-import { createClient } from '@supabase/supabase-js'
-import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
 import { getReceivables, groupReceivablesByManager } from '@/lib/payments/receivables'
-import type { Database } from '@/types/database'
+import { isCronOrSessionAuthorized } from '@/lib/auth/cron-or-session'
+import { createAdminClient } from '@/lib/supabase/admin'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -15,30 +13,11 @@ export const runtime = 'nodejs'
  * 쿼리: ?manager=나병훈 — 담당자 이름(팀 접미사 없이) 하나로 거르기.
  */
 export async function GET(request: Request) {
-  const authHeader = request.headers.get('authorization')
-  const cronSecret = process.env.CRON_SECRET
-  const hasCronAuth = !!cronSecret && authHeader === `Bearer ${cronSecret}`
-
-  let hasSessionAuth = false
-  if (!hasCronAuth) {
-    const cookieStore = await cookies()
-    const sessionClient = createServerClient<Database>(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { cookies: { getAll: () => cookieStore.getAll() } }
-    )
-    const { data: { user } } = await sessionClient.auth.getUser()
-    hasSessionAuth = !!user
-  }
-
-  if (!hasCronAuth && !hasSessionAuth) {
+  if (!(await isCronOrSessionAuthorized(request)).ok) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const db = createClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  )
+  const db = createAdminClient()
 
   let rows
   try {

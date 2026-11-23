@@ -14,7 +14,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
-import { updateSheetStatusBySyncId, type PaymentStatus as SheetStatus } from '@/lib/google-sheets'
+import { updateSheetStatusBySyncId } from '@/lib/google-sheets'
+import { toSheetStatus } from '@/lib/payments/status'
 
 type Admin = SupabaseClient<Database>
 
@@ -25,10 +26,6 @@ export const REVERT_STATUS_LABEL: Record<RevertStatus, string> = {
   unpaid: '미입금',
   balance_due: '잔금 처리 요망',
 }
-
-/** DB 상태 → 시트 I열 드롭다운 값 (register.ts 의 toDbStatus 와 반대 방향) */
-const toSheetStatus = (s: RevertStatus): SheetStatus =>
-  s === 'balance_due' ? '잔금 처리 요망' : '미입금'
 
 export function isRevertStatus(v: unknown): v is RevertStatus {
   return v === 'unpaid' || v === 'balance_due'

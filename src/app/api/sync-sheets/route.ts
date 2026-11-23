@@ -1,44 +1,22 @@
-import { createClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { findSimilar } from '@/lib/utils/levenshtein'
 import { runSheetSyncLocked, isSyncFailure, isSyncSkipped } from '@/lib/sheets-sync'
+import { isCronOrSessionAuthorized } from '@/lib/auth/cron-or-session'
+import { createAdminClient } from '@/lib/supabase/admin'
 import type { Database } from '@/types/database'
-
-const supabase = createClient<Database>(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-)
 
 /**
  * 결제시트 → DB 동기화. 동기화 본체는 src/lib/sheets-sync.ts 에 있고,
  * 앱이 15분마다 자동으로도 돌린다 (src/instrumentation.ts). 여기서는 인증만 처리한다.
  */
 export async function POST(request: Request) {
-  const authHeader = request.headers.get('authorization')
-  const cronSecret = process.env.CRON_SECRET
-
-  // Cron 시크릿으로 인증
-  const hasCronAuth = cronSecret && authHeader === `Bearer ${cronSecret}`
-
-  // 또는 로그인된 Supabase 세션으로 인증
-  let hasSessionAuth = false
-  if (!hasCronAuth) {
-    const cookieStore = await cookies()
-    const sessionClient = createServerClient<Database>(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { cookies: { getAll: () => cookieStore.getAll() } }
-    )
-    const { data: { user } } = await sessionClient.auth.getUser()
-    hasSessionAuth = !!user
-  }
-
-  if (!hasCronAuth && !hasSessionAuth) {
+  const auth = await isCronOrSessionAuthorized(request)
+  if (!auth.ok) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const trigger = hasCronAuth ? 'cron' : 'manual'
+  const trigger = auth.via === 'cron' ? 'cron' : 'manual'
   let fromDate: string | undefined
   try {
     const body = await request.json()
@@ -74,7 +52,7 @@ export async function GET(request: Request) {
     return Response.json({ error: 'q 파라미터 필요' }, { status: 400 })
   }
 
-  const { data: clients } = await supabase.from('clients').select('id, name')
+  const { data: clients } = await createAdminClient().from('clients').select('id, name')
   const suggestions = findSimilar(
     query,
     (clients ?? []).map((c) => ({ id: c.id, name: c.name })),
