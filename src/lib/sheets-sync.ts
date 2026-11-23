@@ -7,7 +7,7 @@ import {
   fetchSheetRows, writeBackSyncIds, makeSyncId, makeLegacyExternalId, readStatusNote, appendStatusNote,
   type SheetRow,
 } from '@/lib/google-sheets'
-import { findDepositInNote, formatDepositNoteLine } from '@/lib/payments/deposit-note'
+import { findDepositInNote, formatDepositNoteLine, removeAccountedLines } from '@/lib/payments/deposit-note'
 import { buildPaymentMemo } from '@/lib/payments/register'
 import { computeRemaining, pendingTotal } from '@/lib/payments/remaining'
 import { getReceivablesSummary } from '@/lib/payments/receivables'
@@ -260,6 +260,16 @@ async function runSheetSyncBody(opts: { trigger: SyncTrigger; fromDate?: string 
             } catch (e) {
               errors.push({ row: row.rowIndex, reason: `I열 메모 읽기 실패 — 잔여분 입금일을 오늘로 둡니다: ${e instanceof Error ? e.message : e}` })
             }
+          }
+          // 이미 확정된 같은 그룹 입금이 차지한 줄은 매칭용 사본에서 뺀다 — 50:50 계약에서 앞선 입금 줄을
+          // 잔여분의 입금일로 잘못 쓰지 않게. 줄인 메모는 매칭에만 쓰고 시트에는 쓰지 않는다
+          // (appendStatusNote 는 시트의 실제 메모를 직접 읽는다).
+          if (note != null) {
+            const alreadyConfirmed = [
+              ...(foundNow?.status === 'confirmed' ? [foundNow] : []),
+              ...splits.filter((s) => s.status === 'confirmed'),
+            ].map((p) => ({ amount: p.amount, paymentDate: p.payment_date }))
+            note = removeAccountedLines(note, alreadyConfirmed)
           }
           const syncDate = todayKst()
           for (const s of toConfirm) {

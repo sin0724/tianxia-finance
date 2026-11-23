@@ -74,3 +74,44 @@ export function findDepositInNote(
   }
   return null
 }
+
+/**
+ * 이미 확정된 입금이 차지한 메모 줄을 (매칭용 사본에서) 지운다.
+ * 확정 입금 하나당 월/일과 금액이 정확히 같은 줄 하나만 지운다 (뒤쪽 줄부터).
+ *
+ * 50:50 계약처럼 앞서 확정한 입금과 잔여분 금액이 같으면, 지우지 않을 경우
+ * findDepositInNote 가 예전 입금 줄을 잔여분의 입금일로 잘못 쓰고 새 줄도 덧붙이지 않는다.
+ * 돌려준 메모는 매칭에만 쓴다 — 시트에 다시 쓰면 안 된다.
+ */
+export function removeAccountedLines(
+  note: string,
+  confirmed: { amount: number; paymentDate: string /* YYYY-MM-DD */ }[],
+): string {
+  if (!note || confirmed.length === 0) return note
+  const lines = note.split('\n')
+  const parsed = lines.map((l) => {
+    const m = DEPOSIT_LINE_RE.exec(l.trim())
+    if (!m) return null
+    const digits = m[3].replace(/,/g, '')
+    if (!digits) return null
+    return { month: Number(m[1]), day: Number(m[2]), amount: Number(digits) }
+  })
+  const removed = new Set<number>()
+  for (const c of confirmed) {
+    const d = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(c.paymentDate)
+    if (!d) continue
+    const month = Number(d[2])
+    const day = Number(d[3])
+    const amount = Math.round(c.amount)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const p = parsed[i]
+      if (!p || removed.has(i)) continue
+      if (p.month === month && p.day === day && p.amount === amount) {
+        removed.add(i)
+        break
+      }
+    }
+  }
+  if (removed.size === 0) return note
+  return lines.filter((_, i) => !removed.has(i)).join('\n')
+}
