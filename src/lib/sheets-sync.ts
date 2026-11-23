@@ -7,7 +7,7 @@ import {
   fetchSheetRows, writeBackSyncIds, makeSyncId, makeLegacyExternalId, type SheetRow,
 } from '@/lib/google-sheets'
 import { buildPaymentMemo } from '@/lib/payments/register'
-import { computeRemaining } from '@/lib/payments/remaining'
+import { computeRemaining, pendingTotal } from '@/lib/payments/remaining'
 import { getReceivablesSummary } from '@/lib/payments/receivables'
 import type { Database } from '@/types/database'
 
@@ -39,12 +39,6 @@ const toDbStatus = (s: SheetRow['status']): 'confirmed' | 'balance_due' | 'unpai
  */
 const SPLIT_SEP = '#'
 const makeSplitId = (syncId: string) => `${syncId}${SPLIT_SEP}${crypto.randomUUID().slice(0, 8)}`
-
-/**
- * 잔액 재계산 반영 여부 — REMAINDER_RECOMPUTE=apply 일 때만 잔여분 금액을 고친다.
- * 그 외(미설정 포함)는 바뀔 내용을 `[sheet-sync] (dry-run)` 로그로만 남긴다.
- */
-const REMAINDER_APPLY = process.env.REMAINDER_RECOMPUTE === 'apply'
 
 /** 시트를 읽는 하한 — 이 이전 행은 앱 도입 전 데이터라 읽지 않는다 */
 const SHEET_FLOOR_DATE = '2026-04-01'
@@ -182,7 +176,7 @@ async function runSheetSyncBody(opts: { trigger: SyncTrigger; fromDate?: string 
         const found = byExternalId.get(row.syncId)
         const splits = splitsBySyncId.get(row.syncId) ?? []
         let changedAny = false
-        // 아래에서 DB 를 고친 뒤의 상태 — 잔액 재계산에 쓴다
+        // 아래에서 DB 를 고친 뒤의 상태 — 잔액 점검(읽기 전용 로그)에 쓴다
         let foundNow: ExistingPayment | undefined = found
         const confirmedSplitIds = new Set<string>()
 
@@ -260,42 +254,18 @@ async function runSheetSyncBody(opts: { trigger: SyncTrigger; fromDate?: string 
           }
         }
 
-        // 잔액 재계산 — 잔여분 금액을 "시트 금액 − 확정 입금 합계"로 맞춘다.
+        // 잔액 점검 (읽기 전용) — 저장된 수금 예정 금액과 "시트 금액 − 확정 입금 합계"가 다르면 로그만 남긴다.
+        // 여러 달 계약은 예전 입금이 그룹 밖에 기록돼 있어 계산값이 틀릴 수 있으므로 절대 고치지 않는다.
         // 원래 건이 확정됐거나 잔여분이 있는 그룹만 (아니면 위에서 시트 금액을 그대로 반영한다)
         if (foundNow?.status === 'confirmed' || splits.length > 0) {
           const group = [
             ...(foundNow ? [foundNow] : []),
             ...splits.map((s) => (confirmedSplitIds.has(s.id) ? { ...s, status: 'confirmed' as const } : s)),
           ]
-          const pendingItems = group.filter((p) => p.status !== 'confirmed')
-          const computed = computeRemaining(row.amount, group)
-          const tag = `${row.syncId} ${row.clientName}`
-
-          if (pendingItems.length === 1 && computed > 0) {
-            const target = pendingItems[0]
-            if (Math.abs(target.amount - computed) > 1) {
-              if (REMAINDER_APPLY) {
-                const { error } = await supabase.from('payments').update({ amount: computed }).eq('id', target.id)
-                if (error) {
-                  errors.push({ row: row.rowIndex, reason: `잔여분 금액 수정 실패: ${error.message}` })
-                } else {
-                  console.log(`[sheet-sync] remainder ${tag} ${target.amount} -> ${computed}`)
-                  changedAny = true
-                }
-              } else {
-                console.log(`[sheet-sync] (dry-run) remainder ${tag} ${target.amount} -> ${computed}`)
-              }
-            }
-          } else if (pendingItems.length > 0) {
-            const reason = pendingItems.length > 1
-              ? `잔액 확인 필요: 수금 예정 ${pendingItems.length}건 (계산 잔액 ${computed})`
-              : `잔액 확인 필요: 확정 합계가 시트 금액 이상인데 수금 예정 건이 남아 있음 (계산 잔액 ${computed})`
-            if (REMAINDER_APPLY) {
-              console.warn(`[sheet-sync] remainder ${tag} ${reason}`)
-              errors.push({ row: row.rowIndex, reason })
-            } else {
-              console.warn(`[sheet-sync] (dry-run) remainder ${tag} ${reason}`)
-            }
+          const stored = pendingTotal(group)
+          const sheetMinusConfirmed = computeRemaining(row.amount, group)
+          if (Math.abs(stored - sheetMinusConfirmed) > 1) {
+            console.log(`[sheet-sync] check remainder ${row.syncId} ${row.clientName} stored=${stored} sheetMinusConfirmed=${sheetMinusConfirmed}`)
           }
         }
 
