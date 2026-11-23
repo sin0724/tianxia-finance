@@ -11,6 +11,7 @@ import { matchPayments } from './match'
 import { checkBalanceChain, type ParsedBankTx, type ParsedCardTx } from './parse'
 import { settleMonth, type SettleResult } from './settle'
 import { outsourcedKey, type OutsourcedEntry } from '@/lib/payroll/outsourced'
+import { recordDepositOnSheet } from '@/lib/payments/confirm'
 
 type DB = SupabaseClient<Database>
 
@@ -129,17 +130,20 @@ export async function importCard(db: DB, rows: ParsedCardTx[], filename: string)
 // 결제 자동 매칭 — 매출 입금·환불 중 아직 결제와 연결 안 된 것
 //   · 확정 결제와 맞으면 연결만
 //   · 수금 예정(잔금 처리 요망·미입금) 결제와 맞으면 입금일로 확정 처리 (시트 동기화는 확정 건을 덮어쓰지 않는다)
+//     → 수금 관리의 입금 확정과 똑같이 시트 I열 메모·입금상태도 고친다. 시트가 실패해도 업로드는 계속한다.
 // ─────────────────────────────────────────────────────────────
-export async function autoMatchPayments(db: DB) {
+export async function autoMatchPayments(
+  db: DB,
+): Promise<{ matchedPayments: number; confirmedPending: number; sheetWarnings: string[] }> {
   const { data: bank } = await db.from('bank_transactions')
     .select('id, tx_date, counterparty, memo, deposit, withdrawal, category')
     .in('category', ['revenue', 'refund']).is('payment_id', null).eq('cancelled', false)
-  if (!bank?.length) return { matchedPayments: 0, confirmedPending: 0 }
+  if (!bank?.length) return { matchedPayments: 0, confirmedPending: 0, sheetWarnings: [] }
 
   const minDate = bank.map((b) => b.tx_date).sort()[0]
   const from = new Date(Date.parse(minDate) - 60 * 86_400_000).toISOString().slice(0, 10)
   const { data: pays } = await db.from('payments')
-    .select('id, payment_date, amount, status, client_name_raw, memo, project_id, excluded, projects(name)')
+    .select('id, external_id, payment_date, amount, status, client_name_raw, memo, project_id, excluded, projects(name)')
     .gte('payment_date', from)
   const { data: linkedRows } = await db.from('bank_transactions').select('payment_id').not('payment_id', 'is', null)
   const linked = new Set((linkedRows ?? []).map((r) => r.payment_id as string))
@@ -149,6 +153,7 @@ export async function autoMatchPayments(db: DB) {
   }))
   const results = matchPayments(bank, payments, linked)
   let confirmedPending = 0
+  const sheetWarnings: string[] = []
   for (const m of results) {
     const p = payments.find((x) => x.id === m.paymentId)!
     const b = bank.find((x) => x.id === m.bankId)!
@@ -158,10 +163,14 @@ export async function autoMatchPayments(db: DB) {
       })
       if (error) continue
       confirmedPending++
+      const { warning } = await recordDepositOnSheet(db, {
+        externalId: p.external_id, paymentDate: b.tx_date, amount: p.amount,
+      })
+      if (warning) sheetWarnings.push(`${p.client_name_raw ?? p.project_name ?? '결제'}: ${warning}`)
     }
     await db.from('bank_transactions').update({ payment_id: p.id }).eq('id', b.id)
   }
-  return { matchedPayments: results.length, confirmedPending }
+  return { matchedPayments: results.length, confirmedPending, sheetWarnings }
 }
 
 // ─────────────────────────────────────────────────────────────

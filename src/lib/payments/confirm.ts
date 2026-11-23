@@ -64,29 +64,48 @@ export async function confirmPayment(
     ? '입금 확정. 잔여분은 수금 관리에 남습니다.'
     : '입금 확정 처리되었습니다. 입금액에 반영됩니다.'
 
-  // ── 시트: I열 메모에 입금 줄 + 잔액에 따라 I열 상태 ───────────────
-  const base = baseSyncId(payment.external_id)
-  if (!base) return { ok: true, message, remainder }
+  const { warning } = await recordDepositOnSheet(admin, {
+    externalId: payment.external_id, paymentDate, amount,
+  })
+  return { ok: true, message, warning, remainder }
+}
 
-  const FIX_HINT = `시트 I열 메모에 "${formatDepositNoteLine(paymentDate, amount)}" 줄과 입금상태를 직접 확인해주세요.`
-  let warning: string | undefined
+/**
+ * 입금 확정을 시트에 반영 — I열 메모에 입금 줄을 덧붙이고, 앱에 남은 수금 예정 금액으로 I열 상태를 정한다.
+ * 수금 관리의 입금 확정과 통장 업로드 자동 매칭이 함께 쓴다. DB 확정(RPC)이 끝난 뒤에 부른다.
+ * 절대 throw 하지 않는다 — 실패하면 사람이 시트를 고칠 수 있게 경고 문구를 돌려준다.
+ * 시트 동기화 ID(tx_…)가 없는 결제는 아무 것도 하지 않는다.
+ */
+export async function recordDepositOnSheet(
+  admin: Admin,
+  params: { externalId: string | null; paymentDate: string; amount: number },
+): Promise<{ warning?: string }> {
+  const { externalId, paymentDate, amount } = params
+  const base = baseSyncId(externalId)
+  if (!base) return {}
+
+  let noteLine: string
   try {
-    const rowIndex = await findRowIndexBySyncId(base)
-    if (rowIndex == null) {
-      warning = `시트에서 이 건의 행을 찾지 못했습니다. ${FIX_HINT}`
-    } else {
-      await appendStatusNote(rowIndex, formatDepositNoteLine(paymentDate, amount))
-
-      // 입금상태는 앱에 남은 수금 예정 금액으로 정한다 (보통 RPC 잔여분과 같다)
-      const group = await loadSyncGroup(admin, base)
-      const remainingPending = pendingTotal(group)
-      await updateSheetStatusByRowIndex(rowIndex, remainingPending <= 1 ? '입금완료' : '잔금 처리 요망')
-    }
+    noteLine = formatDepositNoteLine(paymentDate, amount)
   } catch (e) {
-    warning = `시트 수정에 실패했습니다 (${errMsg(e)}). ${FIX_HINT}`
+    return { warning: `시트 메모 줄을 만들지 못했습니다 (${errMsg(e)}). 시트 I열 메모와 입금상태를 직접 확인해주세요.` }
   }
 
-  return { ok: true, message, warning, remainder }
+  const FIX_HINT = `시트 I열 메모에 "${noteLine}" 줄과 입금상태를 직접 확인해주세요.`
+  try {
+    const rowIndex = await findRowIndexBySyncId(base)
+    if (rowIndex == null) return { warning: `시트에서 이 건의 행을 찾지 못했습니다. ${FIX_HINT}` }
+
+    await appendStatusNote(rowIndex, noteLine)
+
+    // 입금상태는 앱에 남은 수금 예정 금액으로 정한다 (보통 RPC 잔여분과 같다)
+    const group = await loadSyncGroup(admin, base)
+    const remainingPending = pendingTotal(group)
+    await updateSheetStatusByRowIndex(rowIndex, remainingPending <= 1 ? '입금완료' : '잔금 처리 요망')
+    return {}
+  } catch (e) {
+    return { warning: `시트 수정에 실패했습니다 (${errMsg(e)}). ${FIX_HINT}` }
+  }
 }
 
 // ── 확정 입금 수정 (입금 내역 → 수정) ─────────────────────────────

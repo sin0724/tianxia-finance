@@ -377,7 +377,8 @@ export async function getSheetTabId(): Promise<number> {
   return id
 }
 
-async function readStatusNote(rowIndex: number): Promise<string> {
+/** I열(입금상태) 셀 메모 전체 — 메모가 없으면 빈 문자열 */
+export async function readStatusNote(rowIndex: number): Promise<string> {
   const { sheets, sheetId, sheetName } = getSheetsClient(true)
   const res = await sheets.spreadsheets.get({
     spreadsheetId: sheetId,

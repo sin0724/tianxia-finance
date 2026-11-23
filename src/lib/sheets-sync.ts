@@ -4,8 +4,10 @@
  */
 import { createClient } from '@supabase/supabase-js'
 import {
-  fetchSheetRows, writeBackSyncIds, makeSyncId, makeLegacyExternalId, type SheetRow,
+  fetchSheetRows, writeBackSyncIds, makeSyncId, makeLegacyExternalId, readStatusNote, appendStatusNote,
+  type SheetRow,
 } from '@/lib/google-sheets'
+import { findDepositInNote, formatDepositNoteLine, removeAccountedLines } from '@/lib/payments/deposit-note'
 import { buildPaymentMemo } from '@/lib/payments/register'
 import { computeRemaining, pendingTotal } from '@/lib/payments/remaining'
 import { getReceivablesSummary } from '@/lib/payments/receivables'
@@ -43,7 +45,10 @@ const makeSplitId = (syncId: string) => `${syncId}${SPLIT_SEP}${crypto.randomUUI
 /** 시트를 읽는 하한 — 이 이전 행은 앱 도입 전 데이터라 읽지 않는다 */
 const SHEET_FLOOR_DATE = '2026-04-01'
 
-/** 시트가 '입금완료'로 바뀐 잔여분의 입금일 — 시트에는 입금일이 따로 없으므로 동기화한 날(KST)로 둔다 */
+/**
+ * 시트가 '입금완료'로 바뀐 잔여분의 입금일 기본값 — 동기화한 날(KST).
+ * I열 메모에 그 금액의 입금 줄("M/D 입금완료 N원")이 있으면 그 날짜를 쓴다.
+ */
 const todayKst = () => new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10)
 
 /**
@@ -244,13 +249,52 @@ async function runSheetSyncBody(opts: { trigger: SyncTrigger; fromDate?: string 
         // ID는 있는데 DB에 없음 → 앱에서 삭제된 건. 재생성하지 않는다.
 
         // 시트가 입금완료면 남은 잔여분도 확정 — 원래 건이 이미 확정돼 있어 위에서는 아무 일도 일어나지 않던 경우
+        // 입금일은 I열 메모의 입금 줄에서 찾고, 메모에 그 입금 줄이 없으면 덧붙여 메모가 입금 기록 전체가 되게 한다.
         if (dbStatus === 'confirmed') {
-          for (const s of splits) {
-            if (s.status === 'confirmed') continue
+          const toConfirm = splits.filter((s) => s.status !== 'confirmed')
+          // 메모는 이 행에 확정할 잔여분이 있을 때만 한 번 읽는다 (드문 경로). null = 읽기 실패
+          let note: string | null = null
+          if (toConfirm.length > 0) {
+            try {
+              note = await readStatusNote(row.rowIndex)
+            } catch (e) {
+              errors.push({ row: row.rowIndex, reason: `I열 메모 읽기 실패 — 잔여분 입금일을 오늘로 둡니다: ${e instanceof Error ? e.message : e}` })
+            }
+          }
+          // 이미 확정된 같은 그룹 입금이 차지한 줄은 매칭용 사본에서 뺀다 — 50:50 계약에서 앞선 입금 줄을
+          // 잔여분의 입금일로 잘못 쓰지 않게. 줄인 메모는 매칭에만 쓰고 시트에는 쓰지 않는다
+          // (appendStatusNote 는 시트의 실제 메모를 직접 읽는다).
+          if (note != null) {
+            const alreadyConfirmed = [
+              ...(foundNow?.status === 'confirmed' ? [foundNow] : []),
+              ...splits.filter((s) => s.status === 'confirmed'),
+            ].map((p) => ({ amount: p.amount, paymentDate: p.payment_date }))
+            note = removeAccountedLines(note, alreadyConfirmed)
+          }
+          const syncDate = todayKst()
+          for (const s of toConfirm) {
+            const found = note != null ? findDepositInNote(note, s.amount, syncDate) : null
+            if (found && note != null) {
+              // 같은 금액의 잔여분이 또 있으면 다른 줄을 찾도록 쓴 줄은 (이 실행 안에서만) 지운다
+              const lines = note.split('\n')
+              lines.splice(found.lineIndex, 1)
+              note = lines.join('\n')
+            }
+            const paymentDate = found?.date ?? syncDate
             const { error } = await supabase.from('payments')
-              .update({ status: 'confirmed', payment_date: todayKst() }).eq('id', s.id)
-            if (error) errors.push({ row: row.rowIndex, reason: `잔여분 확정 실패: ${error.message}` })
-            else { changedAny = true; confirmedSplitIds.add(s.id) }
+              .update({ status: 'confirmed', payment_date: paymentDate }).eq('id', s.id)
+            if (error) { errors.push({ row: row.rowIndex, reason: `잔여분 확정 실패: ${error.message}` }); continue }
+            changedAny = true
+            confirmedSplitIds.add(s.id)
+
+            // 메모를 읽지 못했으면 줄이 이미 있는지 몰라 덧붙이지 않는다 (중복 방지)
+            if (!found && note != null) {
+              try {
+                await appendStatusNote(row.rowIndex, formatDepositNoteLine(paymentDate, s.amount))
+              } catch (e) {
+                errors.push({ row: row.rowIndex, reason: `I열 메모 입금 줄 기록 실패: ${e instanceof Error ? e.message : e}` })
+              }
+            }
           }
         }
 

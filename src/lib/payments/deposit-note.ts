@@ -37,3 +37,81 @@ export function replaceNoteLine(
   }
   return { note: appendNoteLine(existing, newLine), result: 'appended' }
 }
+
+/**
+ * 메모 줄 "M/D 입금완료 1,980,000원" 을 읽는다. 숫자 뒤가 "원"이거나 줄 끝일 때만 인정한다
+ * ("8250만원" 같은 손글씨 형식은 금액을 확신할 수 없어 무시한다).
+ */
+const DEPOSIT_LINE_RE = /^(\d{1,2})\/(\d{1,2})\s*입금완료\s*([\d,]+)(?:\s*원|\s*$)/
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/**
+ * 메모에서 amount 와 금액이 같은 입금 줄 중 마지막 줄을 찾아 그 입금일(YYYY-MM-DD)을 돌려준다.
+ * 메모에는 연도가 없으므로 refDate(동기화한 날)의 연도를 쓰고, 그 날짜가 refDate 보다 뒤면 전년도로 본다.
+ * 찾지 못하면 null. lineIndex 는 메모를 '\n' 으로 나눈 줄 번호.
+ */
+export function findDepositInNote(
+  note: string,
+  amount: number,
+  refDate: string /* YYYY-MM-DD */,
+): { date: string; lineIndex: number } | null {
+  const ref = /^(\d{4})-(\d{2})-(\d{2})/.exec(refDate)
+  if (!note || !ref) return null
+  const refYear = Number(ref[1])
+  const lines = note.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = DEPOSIT_LINE_RE.exec(lines[i].trim())
+    if (!m) continue
+    const digits = m[3].replace(/,/g, '')
+    if (!digits || Number(digits) !== Math.round(amount)) continue
+    const month = Number(m[1])
+    const day = Number(m[2])
+    if (month < 1 || month > 12 || day < 1) continue
+    const year = `${pad2(month)}-${pad2(day)}` > refDate.slice(5, 10) ? refYear - 1 : refYear
+    if (day > new Date(year, month, 0).getDate()) continue
+    return { date: `${year}-${pad2(month)}-${pad2(day)}`, lineIndex: i }
+  }
+  return null
+}
+
+/**
+ * 이미 확정된 입금이 차지한 메모 줄을 (매칭용 사본에서) 지운다.
+ * 확정 입금 하나당 월/일과 금액이 정확히 같은 줄 하나만 지운다 (뒤쪽 줄부터).
+ *
+ * 50:50 계약처럼 앞서 확정한 입금과 잔여분 금액이 같으면, 지우지 않을 경우
+ * findDepositInNote 가 예전 입금 줄을 잔여분의 입금일로 잘못 쓰고 새 줄도 덧붙이지 않는다.
+ * 돌려준 메모는 매칭에만 쓴다 — 시트에 다시 쓰면 안 된다.
+ */
+export function removeAccountedLines(
+  note: string,
+  confirmed: { amount: number; paymentDate: string /* YYYY-MM-DD */ }[],
+): string {
+  if (!note || confirmed.length === 0) return note
+  const lines = note.split('\n')
+  const parsed = lines.map((l) => {
+    const m = DEPOSIT_LINE_RE.exec(l.trim())
+    if (!m) return null
+    const digits = m[3].replace(/,/g, '')
+    if (!digits) return null
+    return { month: Number(m[1]), day: Number(m[2]), amount: Number(digits) }
+  })
+  const removed = new Set<number>()
+  for (const c of confirmed) {
+    const d = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(c.paymentDate)
+    if (!d) continue
+    const month = Number(d[2])
+    const day = Number(d[3])
+    const amount = Math.round(c.amount)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const p = parsed[i]
+      if (!p || removed.has(i)) continue
+      if (p.month === month && p.day === day && p.amount === amount) {
+        removed.add(i)
+        break
+      }
+    }
+  }
+  if (removed.size === 0) return note
+  return lines.filter((_, i) => !removed.has(i)).join('\n')
+}

@@ -122,6 +122,7 @@ export default function ClosingPage() {
       }
       toast.success(`${kind === 'bank' ? '통장' : '카드'} ${json.period?.start ?? ''} ~ ${json.period?.end ?? ''}: ${parts.filter(Boolean).join(' · ')}`)
       for (const w of json.joinBreaks ?? []) toast.warning(w)
+      for (const w of json.sheetWarnings ?? []) toast.warning(w)
       if (json.balanceBreaks) toast.warning(`파일 안에서 잔액이 ${json.balanceBreaks}곳 끊깁니다. 원본 파일을 확인해 주세요.`)
       await load()
     } finally {
