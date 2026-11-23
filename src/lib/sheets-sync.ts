@@ -1,0 +1,502 @@
+/**
+ * 결제시트(Google Sheets) → Supabase payments 동기화 본체.
+ * POST /api/sync-sheets(수동·Bearer 호출)와 instrumentation 스케줄러(15분 자동)가 함께 쓴다.
+ */
+import { createClient } from '@supabase/supabase-js'
+import {
+  fetchSheetRows, writeBackSyncIds, makeSyncId, makeLegacyExternalId, type SheetRow,
+} from '@/lib/google-sheets'
+import { buildPaymentMemo } from '@/lib/payments/register'
+import type { Database } from '@/types/database'
+
+const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+)
+
+type ExistingPayment = {
+  id: string
+  external_id: string | null
+  payment_date: string
+  client_name_raw: string | null
+  amount: number
+  memo: string | null
+  manager: string | null
+  status: 'confirmed' | 'balance_due' | 'unpaid'
+  source: string
+  project_id: string | null
+}
+
+const toDbStatus = (s: SheetRow['status']): 'confirmed' | 'balance_due' | 'unpaid' =>
+  s === '잔금 처리 요망' ? 'balance_due' : s === '미입금' ? 'unpaid' : 'confirmed'
+
+/**
+ * 시트 행 하나가 DB 결제 여러 건으로 나뉜 경우의 잔여분 ID — `{시트 동기화 ID}#{접미사}`.
+ * 수금 관리에서 일부만 입금 확정하면 원래 건(시트 ID 보유)은 확정되고 차액이 새 건으로 남는데,
+ * 이 잔여분이 시트 행과 이어져 있어야 시트를 '입금완료'로 바꿨을 때 함께 확정할 수 있다.
+ */
+const SPLIT_SEP = '#'
+const makeSplitId = (syncId: string) => `${syncId}${SPLIT_SEP}${crypto.randomUUID().slice(0, 8)}`
+
+/** 시트를 읽는 하한 — 이 이전 행은 앱 도입 전 데이터라 읽지 않는다 */
+const SHEET_FLOOR_DATE = '2026-04-01'
+
+/** 시트가 '입금완료'로 바뀐 잔여분의 입금일 — 시트에는 입금일이 따로 없으므로 동기화한 날(KST)로 둔다 */
+const todayKst = () => new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10)
+
+/**
+ * 시트 행 → DB 메모 (상태 태그 없이 순수 메모만).
+ * `/결제` 모달 등록도 같은 함수를 쓴다 — 형식이 갈라지면 동기화가 매번 "변경됨"으로 오인한다.
+ */
+const buildMemo = (row: SheetRow): string | null =>
+  buildPaymentMemo(row.memo, row.representative, row.phone)
+export type SyncTrigger = 'cron' | 'manual'
+
+export type SyncSuccess = {
+  synced: number
+  updated: number
+  skipped: number
+  unmatched: number
+  pending: number
+  created: number
+  errors?: { row: number; reason: string }[]
+  writeBackError?: string
+  total?: number
+  timestamp?: string
+}
+
+export type SyncFailure = { error: string }
+
+export type SyncResult = SyncSuccess | SyncFailure
+
+export const isSyncFailure = (r: SyncResult): r is SyncFailure => 'error' in r && typeof r.error === 'string'
+
+/**
+ * 시트 동기화 1회 실행. 실패해도 throw 하지 않고 `{ error }` 를 돌려준다 (sync_logs 에도 기록).
+ * fromDate 를 주지 않으면 SHEET_FLOOR_DATE 부터 읽는다.
+ */
+export async function runSheetSync(opts: { trigger: SyncTrigger; fromDate?: string }): Promise<SyncResult> {
+  const trigger = opts.trigger
+  let fromDate = SHEET_FLOOR_DATE
+  if (opts.fromDate) fromDate = opts.fromDate
+
+  try {
+    // fromDate 는 "새 행을 가져올 범위"일 뿐이다. 이미 동기화된 행(M열 ID 보유)의 상태 변경은
+    // 날짜와 무관하게 반영해야 한다 — 9월 미입금 건을 10월에 '입금완료'로 바꾸는 게 흔한 흐름인데
+    // 대시보드 기본값(이번 달 1일)으로 동기화하면 그 행을 아예 읽지 않아 반영되지 않았다.
+    const rows = await fetchSheetRows(fromDate < SHEET_FLOOR_DATE ? fromDate : SHEET_FLOOR_DATE)
+    if (rows.length === 0) {
+      await logSync({ trigger, fromDate })
+      return { synced: 0, updated: 0, skipped: 0, unmatched: 0, pending: 0, created: 0 }
+    }
+
+    const { data: existingRaw } = await supabase
+      .from('payments')
+      .select('id, external_id, payment_date, client_name_raw, amount, memo, manager, status, source, project_id')
+    const existing = (existingRaw ?? []) as ExistingPayment[]
+
+    // M열 동기화 ID 기준 매칭 (신규 방식 — 내용이 바뀌어도 같은 행으로 인식)
+    const byExternalId = new Map<string, ExistingPayment>()
+    // 부분 입금으로 갈라진 잔여분 — 시트 ID별로 묶는다
+    const splitsBySyncId = new Map<string, ExistingPayment[]>()
+    for (const p of existing) {
+      if (!p.external_id) continue
+      byExternalId.set(p.external_id, p)
+      const sep = p.external_id.indexOf(SPLIT_SEP)
+      if (sep > 0) {
+        const base = p.external_id.slice(0, sep)
+        splitsBySyncId.set(base, [...(splitsBySyncId.get(base) ?? []), p])
+      }
+    }
+    // 시트와 연결이 끊긴 수금 예정 건 (예전 부분 입금의 잔여분·손으로 추가한 잔금) — 프로젝트별
+    const orphansByProject = new Map<string, ExistingPayment[]>()
+    for (const p of existing) {
+      if (p.external_id || p.status === 'confirmed' || !p.project_id) continue
+      orphansByProject.set(p.project_id, [...(orphansByProject.get(p.project_id) ?? []), p])
+    }
+
+    // ── 레거시 매칭용 (A열 ID가 아직 없는 기존 데이터) ──────────────
+    const normName = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '-')
+    const normMemo = (s: string | null) => (s ?? '').toLowerCase().replace(/\s+/g, '')
+    const legacyList = existing.filter((p) => p.external_id?.startsWith('sheet_'))
+    // 날짜+상호명+금액+메모 soft 매칭 — 메모 포함으로 같은 날 동일 금액의 추가·재계약 구분 유지
+    const softDupMap = new Map<string, ExistingPayment>()
+    for (const p of existing) {
+      if (!p.client_name_raw) continue
+      const key = `${p.payment_date}|${normName(p.client_name_raw)}|${p.amount}|${normMemo(p.memo)}`
+      if (!softDupMap.has(key)) softDupMap.set(key, p)
+    }
+    // 수기 입력(external_id 없는) 항목 — 메모가 달라도 날짜+상호명+금액이 같으면 같은 건으로 인식
+    const manualDupMap = new Map<string, ExistingPayment>()
+    for (const p of existing) {
+      if (p.external_id || !p.client_name_raw) continue
+      const key = `${p.payment_date}|${normName(p.client_name_raw)}|${p.amount}`
+      if (!manualDupMap.has(key)) manualDupMap.set(key, p)
+    }
+
+    // 클라이언트 목록 (매칭·자동생성용) — 동기화 중 생성된 항목도 누적
+    const { data: clients } = await supabase.from('clients').select('id, name')
+    const clientList: { id: string; name: string }[] = (clients ?? []).map((c) => ({ id: c.id, name: c.name }))
+
+    let synced = 0
+    let updated = 0       // 시트 수정이 기존 건에 반영됨
+    let skipped = 0       // 변경 없음
+    let unmatched = 0     // 클라이언트명 없어서 미매칭
+    let pending = 0       // 잔금/미입금
+    let created = 0       // 자동 생성된 프로젝트 수
+    const errors: { row: number; reason: string }[] = []
+    const writeBacks: { rowIndex: number; syncId: string }[] = []
+
+    for (const row of rows) {
+      const dbStatus = toDbStatus(row.status)
+      const dbMemo = buildMemo(row)
+      // 범위 밖 행은 상태 변경만 반영하고 "변동 없음" 집계에는 넣지 않는다 (토스트 숫자가 부풀지 않게)
+      const inWindow = row.date >= fromDate
+
+      // ── 1) M열 동기화 ID로 기존 건 매칭 ─────────────────────────
+      if (row.syncId) {
+        const found = byExternalId.get(row.syncId)
+        const splits = splitsBySyncId.get(row.syncId) ?? []
+        let changedAny = false
+
+        // 부분 입금으로 확정분이 시트 금액보다 작은데 잔여분이 시트와 끊겨 있으면 다시 잇는다.
+        // (예전 confirm_pending_payment 는 잔여분에 ID를 남기지 않았고, 잔금을 손으로 추가한 경우도 있다)
+        if (found?.project_id) {
+          const orphans = orphansByProject.get(found.project_id) ?? []
+          const covered = found.amount + splits.reduce((s, p) => s + p.amount, 0)
+          const orphanSum = orphans.reduce((s, p) => s + p.amount, 0)
+          if (orphans.length > 0 && covered < row.amount && covered + orphanSum <= row.amount + 1) {
+            for (const o of orphans) {
+              const splitId = makeSplitId(row.syncId)
+              const { error } = await supabase.from('payments')
+                .update({ external_id: splitId }).eq('id', o.id).is('external_id', null)
+              if (error) { errors.push({ row: row.rowIndex, reason: `잔여분 연결 실패: ${error.message}` }); continue }
+              const linked = { ...o, external_id: splitId }
+              byExternalId.set(splitId, linked)
+              splits.push(linked)
+            }
+            orphansByProject.delete(found.project_id)
+          }
+        }
+
+        if (found) {
+          if (found.status !== 'confirmed') {
+            // 미확정(수금 예정) 건 — 시트가 원본이므로 수정 사항을 그대로 반영.
+            // 단 잔여분으로 갈라진 건은 시트 금액이 여러 건의 합계라 금액·날짜를 덮어쓰지 않는다.
+            const syncAmount = splits.length === 0
+            const changed =
+              found.client_name_raw !== (row.clientName || null) ||
+              (syncAmount && found.amount !== row.amount) ||
+              (syncAmount && found.payment_date !== row.date) ||
+              found.manager !== (row.manager || null) ||
+              found.memo !== dbMemo ||
+              found.status !== dbStatus
+            if (changed) {
+              const { error } = await supabase.from('payments').update({
+                client_name_raw: row.clientName || null,
+                ...(syncAmount ? { amount: row.amount, payment_date: row.date } : {}),
+                manager: row.manager || null,
+                memo: dbMemo,
+                status: dbStatus,
+              }).eq('id', found.id)
+              if (error) errors.push({ row: row.rowIndex, reason: `업데이트 실패: ${error.message}` })
+              else changedAny = true
+            }
+          } else {
+            // 확정 건 — 금액·날짜는 앱에서 확정한 값을 유지하고 표시 필드만 반영
+            const changed =
+              found.client_name_raw !== (row.clientName || null) ||
+              found.manager !== (row.manager || null)
+            if (changed) {
+              const { error } = await supabase.from('payments').update({
+                client_name_raw: row.clientName || null,
+                manager: row.manager || null,
+              }).eq('id', found.id)
+              if (error) errors.push({ row: row.rowIndex, reason: `업데이트 실패: ${error.message}` })
+              else changedAny = true
+            }
+          }
+        }
+        // ID는 있는데 DB에 없음 → 앱에서 삭제된 건. 재생성하지 않는다.
+
+        // 시트가 입금완료면 남은 잔여분도 확정 — 원래 건이 이미 확정돼 있어 위에서는 아무 일도 일어나지 않던 경우
+        if (dbStatus === 'confirmed') {
+          for (const s of splits) {
+            if (s.status === 'confirmed') continue
+            const { error } = await supabase.from('payments')
+              .update({ status: 'confirmed', payment_date: todayKst() }).eq('id', s.id)
+            if (error) errors.push({ row: row.rowIndex, reason: `잔여분 확정 실패: ${error.message}` })
+            else changedAny = true
+          }
+        }
+
+        if (changedAny) updated++
+        else if (inWindow) skipped++
+        continue
+      }
+
+      // 범위 밖의 ID 없는 행은 새로 가져오지 않는다
+      if (!inWindow) continue
+
+      // ── 2) A열 ID가 없는 행 — 레거시 방식으로 기존 건 탐색 ───────
+      const legacyId = makeLegacyExternalId(row)
+      const baseKeyNoMemo = row.clientName
+        ? `sheet_${row.date}_${normName(row.clientName)}_${row.amount}`
+        : null
+      const baseKeyWithMemo = baseKeyNoMemo ? `${baseKeyNoMemo}_${normName(row.memo)}` : null
+      const legacyMatch =
+        byExternalId.get(legacyId) ??
+        (baseKeyNoMemo
+          ? legacyList.find((p) =>
+              p.external_id === baseKeyNoMemo ||
+              p.external_id === baseKeyWithMemo ||
+              (baseKeyWithMemo && p.external_id!.startsWith(`${baseKeyWithMemo}_`)))
+          : undefined) ??
+        (row.clientName
+          ? softDupMap.get(`${row.date}|${normName(row.clientName)}|${row.amount}|${normMemo(buildMemo(row))}`)
+          : undefined) ??
+        (row.clientName
+          ? manualDupMap.get(`${row.date}|${normName(row.clientName)}|${row.amount}`)
+          : undefined)
+
+      const newSyncId = makeSyncId()
+
+      if (legacyMatch) {
+        // 기존 건에 새 동기화 ID를 부여하고 시트에도 기록 — 다음부터는 내용이 바뀌어도 중복되지 않는다
+        // (ID 셀에 다른 내용이 있으면 기록하지 않고 매번 레거시 매칭으로 처리)
+        if (!row.idCellOccupied) {
+          const { error } = await supabase.from('payments')
+            .update({ external_id: newSyncId }).eq('id', legacyMatch.id)
+          if (!error) {
+            byExternalId.set(newSyncId, { ...legacyMatch, external_id: newSyncId })
+            writeBacks.push({ rowIndex: row.rowIndex, syncId: newSyncId })
+          }
+        }
+        skipped++
+        continue
+      }
+
+      // ── 3) 신규 행 — 결제 생성 ──────────────────────────────────
+      const isPending = dbStatus !== 'confirmed'
+
+      let projectId: string | null = null
+      let matched = false
+
+      if (row.clientName) {
+        // 클라이언트 찾기 (없으면 자동 생성)
+        let clientId: string | null = null
+        const exactClient = clientList.find(
+          (c) => c.name.toLowerCase() === row.clientName.toLowerCase()
+        )
+
+        if (exactClient) {
+          clientId = exactClient.id
+        } else {
+          const { data: newClient, error: clientErr } = await supabase
+            .from('clients')
+            .insert({
+              name: row.clientName,
+              manager: row.representative || null,
+              contact: row.phone || null,
+            })
+            .select('id')
+            .single()
+          if (clientErr) {
+            errors.push({ row: row.rowIndex, reason: `클라이언트 생성 실패: ${clientErr.message}` })
+          } else if (newClient) {
+            clientId = newClient.id
+            clientList.push({ id: newClient.id, name: row.clientName })
+          }
+        }
+
+        // 프로젝트 찾기 / 생성
+        //    연결 우선순위: 잔여 결제가 남은 진행중 → 잔여 있는 완료(잔금)
+        //    완납된 프로젝트엔 합치지 않는다 — 같은 클라이언트라도 별개 계약으로 보고 새로 생성
+        if (clientId) {
+          const { data: clientProjects } = await supabase
+            .from('projects')
+            .select('id, status, total_amount')
+            .eq('client_id', clientId)
+            .neq('status', 'cancelled')
+            .order('created_at', { ascending: false })
+
+          const projs = clientProjects ?? []
+
+          const paidByProject: Record<string, number> = {}
+          if (projs.length > 0) {
+            const { data: projPays } = await supabase
+              .from('payments')
+              .select('project_id, amount')
+              .in('project_id', projs.map((p) => p.id))
+            for (const pay of projPays ?? []) {
+              if (pay.project_id) {
+                paidByProject[pay.project_id] = (paidByProject[pay.project_id] ?? 0) + pay.amount
+              }
+            }
+          }
+
+          const ongoing = projs.filter((p) => p.status === 'ongoing')
+          const ongoingWithBalance = ongoing.filter((p) => (paidByProject[p.id] ?? 0) < p.total_amount)
+          const completedWithBalance = projs.filter(
+            (p) => p.status === 'completed' && (paidByProject[p.id] ?? 0) < p.total_amount
+          )
+
+          // '추가계약' 상태이거나 특이사항에 재계약·추가계약 표기가 있으면 새 프로젝트로 분리
+          const memoRenewal = /재\s*계약|추가\s*계약/.test(row.memo)
+          const forceNewProject = row.status === '추가계약' || memoRenewal
+          const target = forceNewProject
+            ? null
+            : (ongoingWithBalance[0] ?? completedWithBalance[0] ?? null)
+
+          if (target) {
+            projectId = target.id
+            matched = true
+            // 누적 결제가 기존 계약금액을 넘으면 총액 상향 (분할 납부·추가 결제 반영)
+            const newPaidTotal = (paidByProject[target.id] ?? 0) + row.amount
+            if (newPaidTotal > target.total_amount) {
+              await supabase.from('projects').update({ total_amount: newPaidTotal }).eq('id', target.id)
+            }
+          } else {
+            const priorCount = projs.length
+            const isRenewal = priorCount > 0
+            const forceTag = /재\s*계약/.test(row.memo) ? '재계약' : '추가계약'
+            const projectName = forceNewProject && isRenewal
+              ? `${row.clientName} (${forceTag} ${priorCount}차)`
+              : isRenewal
+                ? `${row.clientName} (재계약 ${priorCount}차)`
+                : row.clientName
+
+            const { data: newProject, error: projErr } = await supabase
+              .from('projects')
+              .insert({
+                client_id: clientId,
+                name: projectName,
+                total_amount: row.amount,
+                contract_date: row.date,
+                status: 'ongoing',
+                memo: forceNewProject ? '추가/재계약 (자동 생성)' : isRenewal ? '재계약 (자동 생성)' : null,
+              })
+              .select('id')
+              .single()
+            if (projErr) {
+              errors.push({ row: row.rowIndex, reason: `프로젝트 생성 실패: ${projErr.message}` })
+            } else if (newProject) {
+              projectId = newProject.id
+              matched = true
+              created++
+            }
+          }
+        }
+      }
+
+      if (!matched) unmatched++
+      if (isPending) pending++
+
+      const paymentType =
+        row.status === '잔금 처리 요망' ? '잔금' :
+        row.status === '미입금' ? '기타' : null
+
+      const { error: insertErr } = await supabase.from('payments').insert({
+        project_id: projectId,
+        amount: row.amount,
+        payment_date: row.date,
+        payment_type: paymentType,
+        manager: row.manager || null,
+        memo: dbMemo,
+        source: 'slack',
+        external_id: newSyncId,
+        client_name_raw: row.clientName || null,
+        matched,
+        status: dbStatus,
+      })
+
+      if (insertErr) {
+        errors.push({ row: row.rowIndex, reason: `결제 저장 실패: ${insertErr.message}` })
+      } else {
+        synced++
+        if (!row.idCellOccupied) writeBacks.push({ rowIndex: row.rowIndex, syncId: newSyncId })
+        if (row.clientName) {
+          softDupMap.set(`${row.date}|${normName(row.clientName)}|${row.amount}|${normMemo(dbMemo)}`, {
+            id: '', external_id: newSyncId, payment_date: row.date,
+            client_name_raw: row.clientName, amount: row.amount,
+            memo: dbMemo, manager: row.manager || null, status: dbStatus, source: 'slack', project_id: projectId,
+          })
+        }
+      }
+    }
+
+    // 시트 A열에 동기화 ID 기록 — 실패해도 동기화 자체는 성공 처리 (다음 실행에서 레거시 매칭으로 복구됨)
+    let writeBackError: string | null = null
+    try {
+      await writeBackSyncIds(writeBacks)
+    } catch (e) {
+      writeBackError = e instanceof Error ? e.message : '시트 ID 기록 실패'
+    }
+
+    await logSync({ trigger, fromDate, synced, updated, skipped, created, pending, unmatched })
+
+    return {
+      synced,
+      updated,
+      skipped,
+      unmatched,
+      pending,
+      created,
+      errors: errors.length > 0 ? errors : undefined,
+      writeBackError: writeBackError ?? undefined,
+      total: rows.length,
+      timestamp: new Date().toISOString(),
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '알 수 없는 오류'
+    await logSync({ trigger, fromDate, error: message })
+    return { error: message }
+  }
+}
+
+async function logSync(log: {
+  trigger: string; fromDate: string
+  synced?: number; updated?: number; skipped?: number
+  created?: number; pending?: number; unmatched?: number; error?: string
+}) {
+  try {
+    await supabase.from('sync_logs').insert({
+      trigger: log.trigger,
+      from_date: log.fromDate,
+      synced: log.synced ?? 0,
+      updated: log.updated ?? 0,
+      skipped: log.skipped ?? 0,
+      created_projects: log.created ?? 0,
+      pending: log.pending ?? 0,
+      unmatched: log.unmatched ?? 0,
+      error: log.error ?? null,
+    })
+  } catch { /* 로그 실패는 무시 */ }
+}
+
+// ── 중복 실행 잠금 ──────────────────────────────────────────────
+// instrumentation 과 라우트 핸들러는 서로 다른 번들로 빌드돼 이 모듈이 두 번 로드될 수 있다.
+// 그래서 실행 중 플래그를 모듈 변수가 아니라 globalThis 에 둔다 — 어느 쪽에서 불러도 같은 잠금을 본다.
+const LOCK_KEY = Symbol.for('tianxia.sheetSync.running')
+type LockHolder = { [LOCK_KEY]?: boolean }
+const lockHolder = globalThis as LockHolder
+
+export const isSheetSyncRunning = () => lockHolder[LOCK_KEY] === true
+
+export type SyncSkipped = { skipped: 'already running' }
+
+export const isSyncSkipped = (r: SyncResult | SyncSkipped): r is SyncSkipped =>
+  typeof (r as SyncSkipped).skipped === 'string'
+
+/** 다른 동기화가 진행 중이면 실행하지 않고 `{ skipped: 'already running' }` 을 돌려준다 */
+export async function runSheetSyncLocked(
+  opts: { trigger: SyncTrigger; fromDate?: string },
+): Promise<SyncResult | SyncSkipped> {
+  if (isSheetSyncRunning()) return { skipped: 'already running' }
+  lockHolder[LOCK_KEY] = true
+  try {
+    return await runSheetSync(opts)
+  } finally {
+    lockHolder[LOCK_KEY] = false
+  }
+}

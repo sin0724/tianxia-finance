@@ -126,7 +126,8 @@ export default function SettingsPage() {
             M열은 시트에서 숨김 처리해도 됩니다. (서비스 계정에 시트 <strong>편집</strong> 권한 필요)
           </p>
           <p className="text-xs text-gray-400">
-            Cron 자동 동기화: <code className="bg-gray-100 px-1 rounded">POST /api/sync-sheets</code> (Authorization: Bearer CRON_SECRET)
+            자동 동기화: 앱이 <strong>15분마다</strong> 자동으로 동기화합니다 (주기는 <code className="bg-gray-100 px-1 rounded">SHEET_SYNC_INTERVAL_MIN</code> 환경변수, 분 단위·최소 5분, <code className="bg-gray-100 px-1 rounded">0</code> 이면 끔).
+            필요하면 <code className="bg-gray-100 px-1 rounded">POST /api/sync-sheets</code> (Authorization: Bearer CRON_SECRET) 로 직접 호출할 수도 있습니다.
           </p>
           <Button
             variant="outline"

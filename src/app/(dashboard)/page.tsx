@@ -14,7 +14,7 @@ import {
 } from 'recharts'
 import type { MonthlySettlement } from '@/types/database'
 import Link from 'next/link'
-import { Bell, RefreshCw, X, Calendar, ChevronDown, TrendingUp, TrendingDown } from 'lucide-react'
+import { Bell, RefreshCw, X, ChevronDown, TrendingUp, TrendingDown } from 'lucide-react'
 import { toast } from '@/lib/toast'
 import { useMonth } from '@/components/shared/month-context'
 import { MonthNavigator } from '@/components/shared/month-navigator'
@@ -76,11 +76,6 @@ export default function DashboardPage() {
   // ── 동기화 ────────────────────────────────────────────────
   const [syncing, setSyncing]             = useState(false)
   const [lastSync, setLastSync]           = useState<{ runAt: string; synced: number; updated: number } | null>(null)
-  const [syncFrom, setSyncFrom]           = useState(() => {
-    const d = new Date()
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
-  })
-  const [showSyncOptions, setShowSyncOptions] = useState(false)
 
   // 다시 안보기 목록 — app_prefs에 저장되어 PC·모바일 간 공유된다
   useEffect(() => {
@@ -259,13 +254,9 @@ export default function DashboardPage() {
 
   async function handleSync() {
     setSyncing(true)
-    setShowSyncOptions(false)
     try {
-      const res = await fetch('/api/sync-sheets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fromDate: syncFrom }),
-      })
+      // 시작 날짜는 서버 기본값을 쓴다 — 이미 가져온 행은 어차피 날짜와 무관하게 반영된다
+      const res = await fetch('/api/sync-sheets', { method: 'POST' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
       const parts = [`${data.synced}건 추가`]
@@ -334,59 +325,22 @@ export default function DashboardPage() {
         </div>
 
         {/* 동기화 */}
-        <div className="flex items-center gap-2 relative self-start sm:self-auto">
+        <div className="flex items-center gap-2 self-start sm:self-auto">
           {lastSync && (
             <span className="text-xs text-gray-400">
               마지막 동기화: {formatSyncTime(lastSync.runAt)}
             </span>
           )}
-          <div className="relative">
-            <div className="flex items-center border rounded-md overflow-hidden">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleSync}
-                disabled={syncing}
-                className="rounded-none border-0"
-              >
-                <RefreshCw size={14} className={`mr-1 ${syncing ? 'animate-spin' : ''}`} />
-                {syncing ? '동기화 중...' : 'Sheets 동기화'}
-              </Button>
-              <button
-                onClick={() => setShowSyncOptions(!showSyncOptions)}
-                className="px-2 py-1.5 border-l text-gray-500 hover:bg-gray-50 text-xs"
-                title="동기화 시작 날짜 설정"
-              >
-                <Calendar size={14} />
-              </button>
-            </div>
-            {showSyncOptions && (
-              <div className="absolute right-0 top-full mt-1 z-10 bg-white border rounded-lg shadow-lg p-3 w-64">
-                <p className="text-xs text-gray-500 mb-2">이 날짜 이후의 새 행을 가져옵니다. 이미 가져온 행의 입금상태 변경은 날짜와 관계없이 반영됩니다.</p>
-                <input
-                  type="date"
-                  className="w-full border rounded-md px-2 py-1.5 text-sm"
-                  value={syncFrom}
-                  onChange={(e) => setSyncFrom(e.target.value)}
-                />
-                <div className="flex gap-1 mt-2">
-                  {[
-                    { label: '1월~', date: `${selYear}-01-01` },
-                    { label: '3월~', date: `${selYear}-03-01` },
-                    { label: '이번달~', date: `${selYear}-${String(selMonth).padStart(2,'0')}-01` },
-                  ].map(({ label, date }) => (
-                    <button
-                      key={label}
-                      onClick={() => setSyncFrom(date)}
-                      className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+          <span className="text-xs text-gray-400">15분마다 자동 동기화</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSync}
+            disabled={syncing}
+          >
+            <RefreshCw size={14} className={`mr-1 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? '동기화 중...' : 'Sheets 동기화'}
+          </Button>
         </div>
       </div>
 
