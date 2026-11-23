@@ -5,7 +5,9 @@
  * 서로 어긋났다. 이제 앱에서 확정하면 시트 메모 줄과 I열 상태를 서버가 함께 고친다.
  * 시트 작업이 실패해도 DB 처리는 그대로 두고 경고만 돌려준다 (revert.ts 와 같은 방식).
  *
- * 잔액은 "시트 금액(G) − 확정 입금 합계"로 매번 다시 계산한다 (lib/payments/remaining.ts).
+ * 잔액의 기준은 앱의 수금 예정(미확정) 금액이다 — 시트 금액(G)으로 다시 계산하지 않는다.
+ * 여러 달 계약은 예전 입금이 그룹 밖에 기록돼 있어 "G − 확정 합계"가 실제보다 크게 나오기 때문이다
+ * (lib/payments/remaining.ts). 확정 금액을 고치면 그 차액만큼만 수금 예정 금액을 조정한다.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -15,7 +17,7 @@ import {
   updateSheetStatusByRowIndex,
 } from '@/lib/google-sheets'
 import { formatDepositNoteLine } from '@/lib/payments/deposit-note'
-import { baseSyncId, computeRemaining, isInSyncGroup } from '@/lib/payments/remaining'
+import { adjustPendingByDelta, baseSyncId, isInSyncGroup, pendingTotal } from '@/lib/payments/remaining'
 
 type Admin = SupabaseClient<Database>
 type PaymentRow = Database['public']['Tables']['payments']['Row']
@@ -75,14 +77,10 @@ export async function confirmPayment(
     } else {
       await appendStatusNote(rowIndex, formatDepositNoteLine(paymentDate, amount))
 
-      const sheetRow = await fetchSheetRowByIndex(rowIndex)
-      if (!sheetRow) {
-        warning = `시트 금액(G열)을 읽지 못해 입금상태를 바꾸지 않았습니다. ${FIX_HINT}`
-      } else {
-        const group = await loadSyncGroup(admin, base)
-        const remaining = computeRemaining(sheetRow.amount, group)
-        await updateSheetStatusByRowIndex(rowIndex, remaining <= 1 ? '입금완료' : '잔금 처리 요망')
-      }
+      // 입금상태는 앱에 남은 수금 예정 금액으로 정한다 (보통 RPC 잔여분과 같다)
+      const group = await loadSyncGroup(admin, base)
+      const remainingPending = pendingTotal(group)
+      await updateSheetStatusByRowIndex(rowIndex, remainingPending <= 1 ? '입금완료' : '잔금 처리 요망')
     }
   } catch (e) {
     warning = `시트 수정에 실패했습니다 (${errMsg(e)}). ${FIX_HINT}`
@@ -145,27 +143,35 @@ export async function updateConfirmedPayment(
         warnings.push('시트 메모에서 예전 입금 줄을 찾지 못해 새 줄을 덧붙였습니다. 시트 I열 메모를 확인해주세요.')
       }
 
-      // 2) 잔여분 금액 다시 계산
+      // 2) 확정 금액이 바뀐 만큼 수금 예정 금액 조정 (시트 G열로 다시 계산하지 않는다)
+      const group = await loadSyncGroup(admin, base)
+      if (amountChanged) {
+        const delta = values.amount - Number(before.amount)
+        const pending = group.filter((p) => p.status !== 'confirmed')
+        if (pending.length === 1) {
+          const adjusted = adjustPendingByDelta(Number(pending[0].amount), delta)
+          if (adjusted.ok) {
+            const { error: upErr } = await admin.from('payments')
+              .update({ amount: adjusted.amount }).eq('id', pending[0].id)
+            if (upErr) warnings.push(`잔여분 금액 수정 실패: ${upErr.message}`)
+            else pending[0].amount = adjusted.amount
+          } else {
+            warnings.push(`바뀐 금액(${delta.toLocaleString('ko-KR')}원)이 남은 수금 예정(${Number(pending[0].amount).toLocaleString('ko-KR')}원) 이상이라 잔액을 바꾸지 않았습니다. 수금 관리를 확인해주세요.`)
+          }
+        } else if (pending.length === 0) {
+          if (delta < 0) warnings.push('잔여분이 없어 잔액을 늘리지 않았습니다. 수금 관리를 확인해주세요.')
+        } else {
+          warnings.push(`이 건의 수금 예정이 ${pending.length}건이라 잔액을 자동으로 맞추지 않았습니다. 수금 관리를 확인해주세요.`)
+        }
+      }
+
+      // 3) 남은 수금 예정 금액에 따라 I열 상태 — 지금 값과 다를 때만
+      const nextStatus = pendingTotal(group) <= 1 ? '입금완료' : '잔금 처리 요망'
       const sheetRow = await fetchSheetRowByIndex(rowIndex)
       if (!sheetRow) {
-        warnings.push('시트 금액(G열)을 읽지 못해 잔액을 다시 계산하지 못했습니다.')
-      } else {
-        const group = await loadSyncGroup(admin, base)
-        const pending = group.filter((p) => p.status !== 'confirmed')
-        const remaining = computeRemaining(sheetRow.amount, group)
-        if (pending.length === 1) {
-          if (remaining > 0) {
-            if (Math.abs(Number(pending[0].amount) - remaining) > 0.01) {
-              const { error: upErr } = await admin.from('payments')
-                .update({ amount: remaining }).eq('id', pending[0].id)
-              if (upErr) warnings.push(`잔여분 금액 수정 실패: ${upErr.message}`)
-            }
-          } else {
-            warnings.push(`확정 입금 합계가 시트 금액 이상입니다 (잔액 ${remaining.toLocaleString('ko-KR')}원). 남은 수금 예정 건을 직접 확인해주세요.`)
-          }
-        } else if (pending.length > 1) {
-          warnings.push(`이 건의 수금 예정이 ${pending.length}건이라 잔액(${remaining.toLocaleString('ko-KR')}원)을 자동으로 맞추지 않았습니다. 직접 확인해주세요.`)
-        }
+        warnings.push(`시트 행을 읽지 못해 입금상태를 확인하지 못했습니다. I열이 "${nextStatus}"인지 확인해주세요.`)
+      } else if (sheetRow.status !== nextStatus) {
+        await updateSheetStatusByRowIndex(rowIndex, nextStatus)
       }
     }
   } catch (e) {
