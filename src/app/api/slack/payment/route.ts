@@ -69,7 +69,7 @@ export async function POST(request: Request) {
     '이현우 2팀',
     '신현준 0팀',
     '이강산 0팀',
-    '김재연 0팀',
+    '한채아 0팀',
   ])
   const today = new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD
 
