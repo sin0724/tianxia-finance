@@ -360,17 +360,7 @@ export default function PaymentsPage() {
     }
   }
 
-  // ─── 수금 예정 추가/수정 ──────────────────────────────
-  function openAddPending() {
-    setPendingEditing(null)
-    setPendingForm({
-      client_name_raw: '', amount: '',
-      payment_date: new Date().toISOString().split('T')[0],
-      payment_type: '', status: 'unpaid', manager: '', project_id: '', memo: '',
-    })
-    setPendingOpen(true)
-  }
-
+  // ─── 수금 예정 수정 (새 수금 예정은 Slack /결제로만 — 시트에 없는 건이 생기지 않게) ──
   function openEditPending(p: PaymentWithRelations) {
     setPendingEditing(p)
     setPendingForm({
@@ -387,6 +377,7 @@ export default function PaymentsPage() {
   }
 
   async function handleSavePending() {
+    if (!pendingEditing) return
     const amount = parseFloat(pendingForm.amount)
     if (!pendingForm.client_name_raw.trim() || !pendingForm.payment_date || isNaN(amount)) {
       toast.error('상호명, 날짜, 금액은 필수입니다.')
@@ -403,15 +394,9 @@ export default function PaymentsPage() {
       matched: !!pendingForm.project_id,
       status: pendingForm.status,
     }
-    if (pendingEditing) {
-      const { error } = await supabase.from('payments').update(payload).eq('id', pendingEditing.id)
-      if (error) { toast.error(error.message); return }
-      toast.success('수정되었습니다.')
-    } else {
-      const { error } = await supabase.from('payments').insert({ ...payload, source: 'manual' as const })
-      if (error) { toast.error(error.message); return }
-      toast.success('수금 예정건이 추가되었습니다.')
-    }
+    const { error } = await supabase.from('payments').update(payload).eq('id', pendingEditing.id)
+    if (error) { toast.error(error.message); return }
+    toast.success('수정되었습니다.')
     setPendingOpen(false)
     setPendingEditing(null)
     load()
@@ -746,9 +731,7 @@ export default function PaymentsPage() {
             <div className="text-sm text-gray-600">
               수금 예정 <strong className="text-orange-600">{formatKRW(pendingTotal)}</strong> ({pendingList.length}건)
             </div>
-            <Button size="sm" onClick={openAddPending}>
-              <Plus size={14} className="mr-1" />수금 예정 추가
-            </Button>
+            <div className="text-xs text-gray-400">수금 예정은 Slack /결제로 등록합니다</div>
           </div>
 
           {pendingList.length === 0 ? (
@@ -1038,7 +1021,7 @@ export default function PaymentsPage() {
       {/* ══════════ 수금 예정 추가/수정 다이얼로그 ══════════ */}
       <Dialog open={pendingOpen} onOpenChange={(v) => { setPendingOpen(v); if (!v) setPendingEditing(null) }}>
         <DialogContent className="w-[calc(100%-1rem)] max-w-md max-h-[90dvh] overflow-y-auto">
-          <DialogHeader><DialogTitle>{pendingEditing ? '수금 예정 수정' : '수금 예정 추가'}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>수금 예정 수정</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
             <div className="space-y-1">
               <Label>상호명 *</Label>
@@ -1114,7 +1097,7 @@ export default function PaymentsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setPendingOpen(false); setPendingEditing(null) }}>취소</Button>
-            <Button onClick={handleSavePending}>{pendingEditing ? '저장' : '추가'}</Button>
+            <Button onClick={handleSavePending}>저장</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { appendNoteLine, formatDepositNoteLine, replaceNoteLine } from './deposit-note'
+import { appendNoteLine, findDepositInNote, formatDepositNoteLine, replaceNoteLine } from './deposit-note'
 
 test('formatDepositNoteLine: 월·일 앞자리 0 없이, 금액은 천 단위 쉼표', () => {
   assert.equal(formatDepositNoteLine('2026-11-20', 1980000), '11/20 입금완료 1,980,000원')
@@ -40,4 +40,41 @@ test('replaceNoteLine: 줄의 일부만 같으면 바꾸지 않고 덧붙인다'
 
 test('replaceNoteLine: 빈 메모면 덧붙인다', () => {
   assert.deepEqual(replaceNoteLine('', 'a', 'b'), { note: 'b', result: 'appended' })
+})
+
+test('findDepositInNote: 앱이 쓰는 형식의 줄에서 입금일을 찾는다', () => {
+  assert.deepEqual(findDepositInNote('11/20 입금완료 1,980,000원', 1980000, '2026-11-23'), { date: '2026-11-20', lineIndex: 0 })
+})
+
+test('findDepositInNote: 금액이 같은 줄 중 마지막 줄', () => {
+  const note = '선금 받음\n11/3 입금완료 500,000원\n11/10 입금완료 1,000,000원\n11/20 입금완료 500,000원'
+  assert.deepEqual(findDepositInNote(note, 500000, '2026-11-23'), { date: '2026-11-20', lineIndex: 3 })
+  assert.deepEqual(findDepositInNote(note, 1000000, '2026-11-23'), { date: '2026-11-10', lineIndex: 2 })
+})
+
+test('findDepositInNote: 앞뒤 공백·\r, 쉼표 없는 금액, 원 생략', () => {
+  assert.equal(findDepositInNote('  11/5입금완료 1980000원 \r', 1980000, '2026-11-23')?.date, '2026-11-05')
+  assert.equal(findDepositInNote('11/5 입금완료 1,980,000', 1980000, '2026-11-23')?.date, '2026-11-05')
+})
+
+test('findDepositInNote: 만원 단위 손글씨 형식은 인정하지 않는다', () => {
+  assert.equal(findDepositInNote('11/5 입금완료 8250만원', 82500000, '2026-11-23'), null)
+  assert.equal(findDepositInNote('11/5 입금완료 8250만원', 8250, '2026-11-23'), null)
+})
+
+test('findDepositInNote: 금액이 다르거나 형식이 다르면 null', () => {
+  assert.equal(findDepositInNote('11/20 입금완료 1,980,000원', 1000000, '2026-11-23'), null)
+  assert.equal(findDepositInNote('입금완료 1,980,000원', 1980000, '2026-11-23'), null)
+  assert.equal(findDepositInNote('', 1980000, '2026-11-23'), null)
+  assert.equal(findDepositInNote('13/1 입금완료 1,000원', 1000, '2026-11-23'), null)
+})
+
+test('findDepositInNote: 동기화 날짜보다 뒤인 날짜는 전년도', () => {
+  assert.equal(findDepositInNote('12/28 입금완료 300,000원', 300000, '2027-01-03')?.date, '2026-12-28')
+  assert.equal(findDepositInNote('1/3 입금완료 300,000원', 300000, '2027-01-03')?.date, '2027-01-03')
+})
+
+test('findDepositInNote: 2/29 는 그 해에 있을 때만', () => {
+  assert.equal(findDepositInNote('2/29 입금완료 1,000원', 1000, '2029-01-10')?.date, '2028-02-29')
+  assert.equal(findDepositInNote('2/29 입금완료 1,000원', 1000, '2027-03-01'), null)
 })
