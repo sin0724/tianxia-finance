@@ -1,5 +1,6 @@
 import { google } from 'googleapis'
 import type { sheets_v4 } from 'googleapis'
+import { appendNoteLine, replaceNoteLine } from '@/lib/payments/deposit-note'
 
 export type PaymentStatus = '입금완료' | '잔금 처리 요망' | '미입금' | '추가계약'
 
@@ -20,6 +21,8 @@ export type SheetRow = {
 /** 동기화 ID를 기록하는 열 — A(체크박스)·J(계산서)·K(메모)는 팀이 사용 중이라 여유를 두고 M열 사용 */
 const SYNC_ID_COLUMN = 'M'
 const SYNC_ID_HEADER = '동기화ID (수정금지)'
+/** 입금상태 열 — 값은 드롭다운, 셀 메모에는 입금 기록 줄 */
+const STATUS_COLUMN = 'I'
 
 function getSheetsClient(readonly: boolean): { sheets: sheets_v4.Sheets; sheetId: string; sheetName: string } {
   const credentialsRaw = process.env.GOOGLE_SHEETS_CREDENTIALS
@@ -263,6 +266,32 @@ export async function ensureDropdowns(fromRow: number, toRow: number): Promise<v
 }
 
 /**
+ * 동기화 ID(M열)로 시트 행 번호(1-based)를 찾는다. 없으면 null.
+ * 부분 입금 잔여분(`{ID}#xxxx`)이 아니라 M열에 실제로 적힌 앞부분 ID 를 넘겨야 한다.
+ */
+export async function findRowIndexBySyncId(syncId: string): Promise<number | null> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(true)
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!${SYNC_ID_COLUMN}2:${SYNC_ID_COLUMN}`,
+  })
+  const ids = res.data.values ?? []
+  const offset = ids.findIndex((r) => String(r?.[0] ?? '').trim() === syncId)
+  return offset < 0 ? null : offset + 2
+}
+
+/** 시트 행의 I열(입금상태)만 바꾼다 — 다른 열은 건드리지 않는다 */
+export async function updateSheetStatusByRowIndex(rowIndex: number, status: PaymentStatus): Promise<void> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(false)
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${sheetName}!${STATUS_COLUMN}${rowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[status]] },
+  })
+}
+
+/**
  * 동기화 ID(M열)로 행을 찾아 I열(입금상태)만 바꾼다 — 입금 확정을 되돌릴 때 쓴다.
  *
  * 시트가 팀의 원장이라 DB만 고쳐서는 안 된다. 시트에 '입금완료'가 남아 있으면
@@ -273,45 +302,16 @@ export async function updateSheetStatusBySyncId(
   syncId: string,
   status: PaymentStatus,
 ): Promise<{ rowIndex: number } | null> {
-  const { sheets, sheetId, sheetName } = getSheetsClient(false)
-
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: `${sheetName}!${SYNC_ID_COLUMN}2:${SYNC_ID_COLUMN}`,
-  })
-  const ids = res.data.values ?? []
-  const offset = ids.findIndex((r) => String(r?.[0] ?? '').trim() === syncId)
-  if (offset < 0) return null
-
-  const rowIndex = offset + 2
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${sheetName}!I${rowIndex}`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[status]] },
-  })
-
+  const rowIndex = await findRowIndexBySyncId(syncId)
+  if (rowIndex == null) return null
+  await updateSheetStatusByRowIndex(rowIndex, status)
   return { rowIndex }
 }
 
-/**
- * 동기화 ID(M열)로 행을 찾아 전체 결제 정보 읽기 — 수정 모달 pre-fill 용.
- */
-export async function fetchSheetRowBySyncId(syncId: string): Promise<SheetRow | null> {
+/** 행 번호로 B~M 을 읽어 SheetRow 로 — 날짜·금액이 없으면 null */
+export async function fetchSheetRowByIndex(rowIndex: number): Promise<SheetRow | null> {
   const { sheets, sheetId, sheetName } = getSheetsClient(true)
 
-  // M열에서 ID 찾기
-  const idRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: `${sheetName}!${SYNC_ID_COLUMN}2:${SYNC_ID_COLUMN}`,
-  })
-  const ids = idRes.data.values ?? []
-  const offset = ids.findIndex((r) => String(r?.[0] ?? '').trim() === syncId)
-  if (offset < 0) return null
-
-  const rowIndex = offset + 2
-
-  // 해당 행의 B~M 읽기
   const rowRes = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: `${sheetName}!B${rowIndex}:${SYNC_ID_COLUMN}${rowIndex}`,
@@ -347,6 +347,87 @@ export async function fetchSheetRowBySyncId(syncId: string): Promise<SheetRow | 
 }
 
 /**
+ * 동기화 ID(M열)로 행을 찾아 전체 결제 정보 읽기 — 수정 모달 pre-fill 용.
+ */
+export async function fetchSheetRowBySyncId(syncId: string): Promise<SheetRow | null> {
+  const rowIndex = await findRowIndexBySyncId(syncId)
+  if (rowIndex == null) return null
+  return fetchSheetRowByIndex(rowIndex)
+}
+
+// ── I열 셀 메모 (입금 기록) ──────────────────────────────────────
+// 입금 확정 때마다 "M/D 입금완료 N원" 한 줄을 I열 셀 메모에 남긴다 (형식: lib/payments/deposit-note.ts).
+// 메모는 값이 아니라 셀 속성이라 values API 로는 못 다루고 spreadsheets.get/batchUpdate 를 쓴다.
+
+/** 설정된 탭의 숫자 sheetId(gid) — updateCells 에 필요. 탭이 바뀌지 않으니 한 번만 읽는다 */
+let cachedTabId: { name: string; id: number } | null = null
+
+export async function getSheetTabId(): Promise<number> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(true)
+  if (cachedTabId && cachedTabId.name === sheetName) return cachedTabId.id
+
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId: sheetId,
+    fields: 'sheets.properties(sheetId,title)',
+  })
+  const tab = res.data.sheets?.find((s) => s.properties?.title === sheetName)
+  const id = tab?.properties?.sheetId
+  if (id == null) throw new Error(`시트 탭을 찾을 수 없습니다: ${sheetName}`)
+  cachedTabId = { name: sheetName, id }
+  return id
+}
+
+async function readStatusNote(rowIndex: number): Promise<string> {
+  const { sheets, sheetId, sheetName } = getSheetsClient(true)
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId: sheetId,
+    ranges: [`${sheetName}!${STATUS_COLUMN}${rowIndex}`],
+    includeGridData: true,
+    fields: 'sheets.data.rowData.values.note',
+  })
+  return res.data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0]?.note ?? ''
+}
+
+async function writeStatusNote(rowIndex: number, note: string): Promise<void> {
+  const { sheets, sheetId } = getSheetsClient(false)
+  const tabId = await getSheetTabId()
+  const colIndex = STATUS_COLUMN.charCodeAt(0) - 'A'.charCodeAt(0)
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: sheetId,
+    requestBody: {
+      requests: [{
+        updateCells: {
+          start: { sheetId: tabId, rowIndex: rowIndex - 1, columnIndex: colIndex },
+          rows: [{ values: [{ note }] }],
+          fields: 'note',
+        },
+      }],
+    },
+  })
+}
+
+/** I열 셀 메모 끝에 한 줄 덧붙인다 — 기존 메모는 그대로 둔다 */
+export async function appendStatusNote(rowIndex: number, line: string): Promise<void> {
+  const existing = await readStatusNote(rowIndex)
+  await writeStatusNote(rowIndex, appendNoteLine(existing, line))
+}
+
+/**
+ * I열 셀 메모에서 oldLine 과 똑같은 줄을 newLine 으로 바꾼다. 그런 줄이 없으면 newLine 을 덧붙인다.
+ * 입금 내역에서 확정 금액·날짜를 고쳤을 때 쓴다.
+ */
+export async function replaceStatusNoteLine(
+  rowIndex: number,
+  oldLine: string,
+  newLine: string,
+): Promise<'replaced' | 'appended'> {
+  const existing = await readStatusNote(rowIndex)
+  const { note, result } = replaceNoteLine(existing, oldLine, newLine)
+  await writeStatusNote(rowIndex, note)
+  return result
+}
+
+/**
  * 동기화 ID(M열)로 행을 찾아 B~I 컬럼 전체 업데이트 — 결제 수정용.
  * 전화번호는 텍스트('010-xxx)로 강제하여 앞자리 0이 사라지지 않게 한다.
  */
@@ -363,18 +444,9 @@ export async function updateSheetRowBySyncId(
     status: PaymentStatus
   },
 ): Promise<{ rowIndex: number } | null> {
+  const rowIndex = await findRowIndexBySyncId(syncId)
+  if (rowIndex == null) return null
   const { sheets, sheetId, sheetName } = getSheetsClient(false)
-
-  // M열에서 ID 찾기
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: `${sheetName}!${SYNC_ID_COLUMN}2:${SYNC_ID_COLUMN}`,
-  })
-  const ids = res.data.values ?? []
-  const offset = ids.findIndex((r) => String(r?.[0] ?? '').trim() === syncId)
-  if (offset < 0) return null
-
-  const rowIndex = offset + 2
 
   // B~I 업데이트 (USER_ENTERED 로 날짜/금액은 숫자화, 전화번호는 '로 시작하면 텍스트)
   await sheets.spreadsheets.values.update({

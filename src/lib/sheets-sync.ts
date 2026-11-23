@@ -7,6 +7,8 @@ import {
   fetchSheetRows, writeBackSyncIds, makeSyncId, makeLegacyExternalId, type SheetRow,
 } from '@/lib/google-sheets'
 import { buildPaymentMemo } from '@/lib/payments/register'
+import { computeRemaining } from '@/lib/payments/remaining'
+import { getReceivablesSummary } from '@/lib/payments/receivables'
 import type { Database } from '@/types/database'
 
 const supabase = createClient<Database>(
@@ -37,6 +39,12 @@ const toDbStatus = (s: SheetRow['status']): 'confirmed' | 'balance_due' | 'unpai
  */
 const SPLIT_SEP = '#'
 const makeSplitId = (syncId: string) => `${syncId}${SPLIT_SEP}${crypto.randomUUID().slice(0, 8)}`
+
+/**
+ * 잔액 재계산 반영 여부 — REMAINDER_RECOMPUTE=apply 일 때만 잔여분 금액을 고친다.
+ * 그 외(미설정 포함)는 바뀔 내용을 `[sheet-sync] (dry-run)` 로그로만 남긴다.
+ */
+const REMAINDER_APPLY = process.env.REMAINDER_RECOMPUTE === 'apply'
 
 /** 시트를 읽는 하한 — 이 이전 행은 앱 도입 전 데이터라 읽지 않는다 */
 const SHEET_FLOOR_DATE = '2026-04-01'
@@ -76,6 +84,22 @@ export const isSyncFailure = (r: SyncResult): r is SyncFailure => 'error' in r &
  * fromDate 를 주지 않으면 SHEET_FLOOR_DATE 부터 읽는다.
  */
 export async function runSheetSync(opts: { trigger: SyncTrigger; fromDate?: string }): Promise<SyncResult> {
+  const result = await runSheetSyncBody(opts)
+  await logReceivables()
+  return result
+}
+
+/** 동기화가 끝날 때마다 수금 관리 탭 기준 미수금 건수·합계를 한 줄 남긴다 */
+async function logReceivables() {
+  try {
+    const { count, total } = await getReceivablesSummary(supabase)
+    console.log(`[sheet-sync] receivables count=${count} total=${total}`)
+  } catch (e) {
+    console.warn(`[sheet-sync] receivables 집계 실패: ${e instanceof Error ? e.message : e}`)
+  }
+}
+
+async function runSheetSyncBody(opts: { trigger: SyncTrigger; fromDate?: string }): Promise<SyncResult> {
   const trigger = opts.trigger
   let fromDate = SHEET_FLOOR_DATE
   if (opts.fromDate) fromDate = opts.fromDate
@@ -158,6 +182,9 @@ export async function runSheetSync(opts: { trigger: SyncTrigger; fromDate?: stri
         const found = byExternalId.get(row.syncId)
         const splits = splitsBySyncId.get(row.syncId) ?? []
         let changedAny = false
+        // 아래에서 DB 를 고친 뒤의 상태 — 잔액 재계산에 쓴다
+        let foundNow: ExistingPayment | undefined = found
+        const confirmedSplitIds = new Set<string>()
 
         // 부분 입금으로 확정분이 시트 금액보다 작은데 잔여분이 시트와 끊겨 있으면 다시 잇는다.
         // (예전 confirm_pending_payment 는 잔여분에 ID를 남기지 않았고, 잔금을 손으로 추가한 경우도 있다)
@@ -200,7 +227,10 @@ export async function runSheetSync(opts: { trigger: SyncTrigger; fromDate?: stri
                 status: dbStatus,
               }).eq('id', found.id)
               if (error) errors.push({ row: row.rowIndex, reason: `업데이트 실패: ${error.message}` })
-              else changedAny = true
+              else {
+                changedAny = true
+                foundNow = { ...found, status: dbStatus, ...(syncAmount ? { amount: row.amount } : {}) }
+              }
             }
           } else {
             // 확정 건 — 금액·날짜는 앱에서 확정한 값을 유지하고 표시 필드만 반영
@@ -226,7 +256,46 @@ export async function runSheetSync(opts: { trigger: SyncTrigger; fromDate?: stri
             const { error } = await supabase.from('payments')
               .update({ status: 'confirmed', payment_date: todayKst() }).eq('id', s.id)
             if (error) errors.push({ row: row.rowIndex, reason: `잔여분 확정 실패: ${error.message}` })
-            else changedAny = true
+            else { changedAny = true; confirmedSplitIds.add(s.id) }
+          }
+        }
+
+        // 잔액 재계산 — 잔여분 금액을 "시트 금액 − 확정 입금 합계"로 맞춘다.
+        // 원래 건이 확정됐거나 잔여분이 있는 그룹만 (아니면 위에서 시트 금액을 그대로 반영한다)
+        if (foundNow?.status === 'confirmed' || splits.length > 0) {
+          const group = [
+            ...(foundNow ? [foundNow] : []),
+            ...splits.map((s) => (confirmedSplitIds.has(s.id) ? { ...s, status: 'confirmed' as const } : s)),
+          ]
+          const pendingItems = group.filter((p) => p.status !== 'confirmed')
+          const computed = computeRemaining(row.amount, group)
+          const tag = `${row.syncId} ${row.clientName}`
+
+          if (pendingItems.length === 1 && computed > 0) {
+            const target = pendingItems[0]
+            if (Math.abs(target.amount - computed) > 1) {
+              if (REMAINDER_APPLY) {
+                const { error } = await supabase.from('payments').update({ amount: computed }).eq('id', target.id)
+                if (error) {
+                  errors.push({ row: row.rowIndex, reason: `잔여분 금액 수정 실패: ${error.message}` })
+                } else {
+                  console.log(`[sheet-sync] remainder ${tag} ${target.amount} -> ${computed}`)
+                  changedAny = true
+                }
+              } else {
+                console.log(`[sheet-sync] (dry-run) remainder ${tag} ${target.amount} -> ${computed}`)
+              }
+            }
+          } else if (pendingItems.length > 0) {
+            const reason = pendingItems.length > 1
+              ? `잔액 확인 필요: 수금 예정 ${pendingItems.length}건 (계산 잔액 ${computed})`
+              : `잔액 확인 필요: 확정 합계가 시트 금액 이상인데 수금 예정 건이 남아 있음 (계산 잔액 ${computed})`
+            if (REMAINDER_APPLY) {
+              console.warn(`[sheet-sync] remainder ${tag} ${reason}`)
+              errors.push({ row: row.rowIndex, reason })
+            } else {
+              console.warn(`[sheet-sync] (dry-run) remainder ${tag} ${reason}`)
+            }
           }
         }
 

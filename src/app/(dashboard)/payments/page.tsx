@@ -190,18 +190,25 @@ export default function PaymentsPage() {
     const amount = Number(values.amount)
 
     if (editing) {
-      const { error } = await supabase.from('payments').update({
-        project_id: values.project_id || null,
-        amount,
-        payment_date: values.payment_date,
-        payment_type: (values.payment_type || null) as Payment['payment_type'],
-        manager: values.manager || null,
-        memo: values.memo || null,
-        matched: !!values.project_id,
-        client_name_raw: values.client_name.trim() || null,
-      }).eq('id', editing.id)
-      if (error) { toast.error(error.message); return }
-      toast.success('수정되었습니다.')
+      // 확정 입금의 금액·입금일이 바뀌면 시트 I열 메모와 잔여분 금액도 고쳐야 해서 서버 라우트를 거친다
+      const res = await fetch('/api/payments/update-confirmed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editing.id,
+          project_id: values.project_id || null,
+          amount,
+          payment_date: values.payment_date,
+          payment_type: (values.payment_type || null) as Payment['payment_type'],
+          manager: values.manager || null,
+          memo: values.memo || null,
+          client_name_raw: values.client_name.trim() || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { toast.error(data.error ?? '수정에 실패했습니다.'); return }
+      toast.success(data.message ?? '수정되었습니다.')
+      if (data.warning) toast.warning(data.warning, { duration: 10000 })
     } else {
       // 클라이언트·프로젝트 자동 생성 포함 — DB 함수로 원자적으로 처리
       const { data, error } = await supabase.rpc('add_payment_with_auto_project', {
@@ -282,7 +289,7 @@ export default function PaymentsPage() {
     load()
   }
 
-  // ─── 입금 확정 (수금 관리 탭) — DB 함수로 원자 처리 ────
+  // ─── 입금 확정 (수금 관리 탭) — 서버에서 DB 함수 + 시트 메모·상태 ────
   function openConfirm(p: PaymentWithRelations) {
     setConfirmTarget(p)
     setConfirmAmount(String(p.amount))
@@ -296,20 +303,27 @@ export default function PaymentsPage() {
     const amount = parseFloat(confirmAmount)
     if (isNaN(amount) || amount <= 0) { toast.error('금액을 확인해주세요.'); return }
 
-    const { data, error } = await supabase.rpc('confirm_pending_payment', {
-      p_payment_id: confirmTarget.id,
-      p_amount: amount,
-      p_payment_date: confirmDate || new Date().toISOString().split('T')[0],
-      p_project_id: confirmProjectId || null,
+    // 시트 I열 메모("M/D 입금완료 N원")·입금상태도 함께 고쳐야 해서 서버 라우트를 거친다
+    const res = await fetch('/api/payments/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: confirmTarget.id,
+        amount,
+        paymentDate: confirmDate || new Date().toISOString().split('T')[0],
+        projectId: confirmProjectId || null,
+      }),
     })
-    if (error) { toast.error('처리 실패: ' + error.message); return }
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { toast.error(data.error ?? '처리 실패'); return }
 
-    const remainder = (data as { remainder?: number } | null)?.remainder ?? 0
+    const remainder = Number(data.remainder ?? 0)
     if (remainder > 0.01) {
       toast.success(`입금 ${formatKRW(amount)} 확정. 잔여 ${formatKRW(remainder)}은 수금 관리에 남습니다.`)
     } else {
       toast.success('입금 확정 처리되었습니다. 입금액에 반영됩니다.')
     }
+    if (data.warning) toast.warning(data.warning, { duration: 10000 })
 
     setConfirmOpen(false)
     setConfirmTarget(null)
