@@ -93,8 +93,6 @@ export function buildLeaveEventBody(req: LeaveCalendarRequest) {
       `직원: ${req.employeeName}`,
       `종류: ${detailLabel}`,
       `차감: ${req.days}일`,
-      '',
-      '※ 티엔샤 재무관리에서 자동 생성된 일정입니다. 여기서 수정해도 시스템에 반영되지 않습니다.',
     ].filter((line) => line !== null).join('\n'),
     start: { date: req.startDate },
     end: { date: exclusiveEnd(req.endDate) },

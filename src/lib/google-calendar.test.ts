@@ -27,9 +27,11 @@ test('buildLeaveEventBody: 연차(단일/기간)는 [연차] 이름, 종일·opa
   assert.deepEqual(single.start, { date: '2026-11-27' })
   assert.deepEqual(single.end, { date: '2026-11-28' })
   assert.equal(single.transparency, 'opaque')
-  assert.match(single.description, /직원: 오량유/)
+  assert.equal(single.description, '직원: 오량유\n종류: 연차\n차감: 1일')
   assert.equal(single.description.includes('사유'), false)
   assert.equal(single.description.includes('개인 사유'), false)
+  assert.equal(single.description.includes('자동 생성된 일정'), false)
+  assert.equal(single.description.includes('반영되지 않습니다'), false)
 
   const multi = buildLeaveEventBody({
     employeeName: '사가의',
