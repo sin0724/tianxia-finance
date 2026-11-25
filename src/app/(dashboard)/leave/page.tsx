@@ -105,11 +105,21 @@ export default function LeavePage() {
       })
       const data = await res.json()
       if (!res.ok) { toast.error(data.error ?? '처리에 실패했습니다.'); return }
-      toast.success(
-        action === 'approve' ? '연차를 승인했습니다.'
-        : action === 'reject' ? '연차를 반려했습니다.'
-        : '연차를 취소했습니다. 캘린더 일정도 함께 삭제됩니다.',
-      )
+      if (action === 'approve') {
+        if (data.calendarStatus === 'created') {
+          toast.success('연차를 승인했고 캘린더에 등록했습니다.')
+        } else {
+          toast.warning('연차를 승인했으나 캘린더 등록에 실패해 알림을 보냈습니다.')
+        }
+      } else if (action === 'reject') {
+        toast.success('연차를 반려했습니다.')
+      } else {
+        toast.success(
+          data.calendarStatus === 'failed'
+            ? '연차를 취소했으나 캘린더 일정 삭제에 실패해 알림을 보냈습니다.'
+            : '연차를 취소했습니다. 캘린더 일정도 함께 삭제됩니다.',
+        )
+      }
       await load()
     } catch {
       toast.error('서버와 통신하지 못했습니다.')

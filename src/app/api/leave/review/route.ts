@@ -35,7 +35,12 @@ export async function POST(request: Request) {
   })
 
   if (!result.ok) return Response.json({ error: result.message }, { status: 409 })
-  return Response.json({ ok: true, message: result.message })
+  return Response.json({
+    ok: true,
+    message: result.message,
+    calendarStatus: result.calendarStatus,
+    calendarReason: result.calendarReason,
+  })
 }
 
 export const dynamic = 'force-dynamic'

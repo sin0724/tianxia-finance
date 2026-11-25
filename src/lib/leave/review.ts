@@ -13,24 +13,52 @@ import { LEAVE_TYPE_LABEL } from './policy'
 
 type Admin = SupabaseClient<Database>
 
+const DEFAULT_ADMIN_SLACK_ID = 'U0AHE6BR86P' // 신현준 대표님
+
 export type ReviewAction = 'approve' | 'reject' | 'cancel'
 
+export type CalendarStatus = 'created' | 'deleted' | 'failed' | 'skipped' | 'none'
+
 export type ReviewResult =
-  | { ok: true; message: string }
+  | { ok: true; message: string; calendarStatus: CalendarStatus; calendarReason?: string }
   | { ok: false; message: string }
+
+export type ReviewDeps = {
+  createLeaveEvent?: typeof createLeaveEvent
+  deleteLeaveEvent?: typeof deleteLeaveEvent
+  dmSlackUser?: typeof dmSlackUser
+  updateSlackMessage?: typeof updateSlackMessage
+  getLeaveBalance?: typeof getLeaveBalance
+  failureNotifyUserIds?: string[]
+}
+
+/** 캘린더 등록/삭제 실패 시 알림을 받을 관리자(대표님) Slack 사용자 ID 목록 */
+export function getCalendarFailureNotifyUserIds(override?: string[]): string[] {
+  if (override) return [...new Set(override.filter(Boolean))]
+  const raw = process.env.SLACK_LEAVE_ADMIN_NOTIFY ?? process.env.SLACK_LEAVE_APPROVERS ?? ''
+  const parsed = raw.split(',').map((s) => s.trim()).filter(Boolean)
+  if (parsed.length === 0) return [DEFAULT_ADMIN_SLACK_ID]
+  return [...new Set([...parsed, DEFAULT_ADMIN_SLACK_ID])]
+}
 
 /**
  * 신청 한 건을 처리한다.
  *
- * - approve → 캘린더 이벤트 생성
+ * - approve → 캘린더 이벤트 생성 (실패해도 승인은 진행하고 대표님께 알림)
  * - reject/cancel → 이미 캘린더에 올라가 있으면 삭제
  * 이미 처리된 건(pending 이 아닌 건)은 거부한다. Slack 버튼을 두 번 눌러도 안전하도록.
  */
 export async function reviewLeaveRequest(
   admin: Admin,
   params: { id: string; action: ReviewAction; reviewer: string; memo?: string | null },
+  deps?: ReviewDeps,
 ): Promise<ReviewResult> {
   const { id, action, reviewer, memo } = params
+  const createEvent = deps?.createLeaveEvent ?? createLeaveEvent
+  const deleteEvent = deps?.deleteLeaveEvent ?? deleteLeaveEvent
+  const sendDm = deps?.dmSlackUser ?? dmSlackUser
+  const updateMsg = deps?.updateSlackMessage ?? updateSlackMessage
+  const fetchBalance = deps?.getLeaveBalance ?? getLeaveBalance
 
   const { data: req, error } = await admin
     .from('leave_requests')
@@ -61,10 +89,14 @@ export async function reviewLeaveRequest(
 
   const nextStatus = action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'cancelled'
 
-  // 캘린더 반영 — 실패해도 승인 자체는 진행한다 (google-calendar.ts 가 예외를 삼킨다)
+  // 캘린더 반영 — 실패해도 승인/취소 자체는 진행한다
   let calendarEventId: string | null = req.calendar_event_id
+  let calendarStatus: CalendarStatus = 'none'
+  let calendarReason: string | undefined
+  let calendarNote: string | null = null
+
   if (action === 'approve') {
-    calendarEventId = await createLeaveEvent({
+    const calRes = await createEvent({
       employeeName,
       leaveType: req.leave_type,
       startDate: req.start_date,
@@ -72,9 +104,38 @@ export async function reviewLeaveRequest(
       days: Number(req.days),
       reason: req.reason,
     })
+    if (calRes.status === 'created') {
+      calendarEventId = calRes.eventId
+      calendarStatus = 'created'
+      calendarNote = '📅 캘린더 등록됨'
+    } else if (calRes.status === 'failed') {
+      calendarEventId = null
+      calendarStatus = 'failed'
+      calendarReason = calRes.reason
+      calendarNote = '⚠️ 캘린더 등록 실패'
+    } else {
+      calendarEventId = null
+      calendarStatus = 'skipped'
+      calendarReason = calRes.reason
+      calendarNote = '⚠️ 캘린더 미연동'
+    }
   } else if (req.calendar_event_id) {
-    await deleteLeaveEvent(req.calendar_event_id)
-    calendarEventId = null
+    const delRes = await deleteEvent(req.calendar_event_id)
+    if (delRes.status === 'deleted') {
+      calendarEventId = null
+      calendarStatus = 'deleted'
+      calendarNote = '📅 캘린더 일정 삭제됨'
+    } else if (delRes.status === 'failed') {
+      calendarEventId = req.calendar_event_id
+      calendarStatus = 'failed'
+      calendarReason = delRes.reason
+      calendarNote = '⚠️ 캘린더 일정 삭제 실패'
+    } else {
+      calendarEventId = req.calendar_event_id
+      calendarStatus = 'skipped'
+      calendarReason = delRes.reason
+      calendarNote = '⚠️ 캘린더 미연동(삭제 보류)'
+    }
   }
 
   const { data: updated, error: updateErr } = await admin
@@ -92,13 +153,13 @@ export async function reviewLeaveRequest(
 
   if (updateErr) {
     // 방금 만든 캘린더 이벤트가 떠도는 것을 막는다
-    if (action === 'approve' && calendarEventId) await deleteLeaveEvent(calendarEventId)
+    if (action === 'approve' && calendarEventId) await deleteEvent(calendarEventId)
     return { ok: false, message: `저장 실패: ${updateErr.message}` }
   }
 
   if (!updated || updated.length === 0) {
     // Slack 버튼과 웹 화면에서 동시에 눌린 경우 — 먼저 처리한 쪽이 이긴다
-    if (action === 'approve' && calendarEventId) await deleteLeaveEvent(calendarEventId)
+    if (action === 'approve' && calendarEventId) await deleteEvent(calendarEventId)
     return { ok: false, message: '다른 곳에서 이미 처리된 신청입니다.' }
   }
 
@@ -106,16 +167,19 @@ export async function reviewLeaveRequest(
   const actionLabel = action === 'approve' ? '승인' : action === 'reject' ? '반려' : '취소'
   const summary = `${emoji} *${typeLabel} ${actionLabel}* — ${employeeName} · ${range} (${req.days}일)`
 
-  // 원본 Slack 메시지의 버튼을 결과로 교체
+  // 원본 Slack 메시지의 버튼을 결과 + 캘린더 상태로 교체
   if (req.slack_channel_id && req.slack_message_ts) {
-    await updateSlackMessage(req.slack_channel_id, req.slack_message_ts, summary, [
+    const contextText = [
+      `처리자: ${reviewer}`,
+      memo ? `사유: ${memo}` : null,
+      calendarNote,
+    ].filter(Boolean).join(' · ')
+
+    await updateMsg(req.slack_channel_id, req.slack_message_ts, summary, [
       { type: 'section', text: { type: 'mrkdwn', text: summary } },
       {
         type: 'context',
-        elements: [{
-          type: 'mrkdwn',
-          text: [`처리자: ${reviewer}`, memo ? `사유: ${memo}` : null].filter(Boolean).join(' · '),
-        }],
+        elements: [{ type: 'mrkdwn', text: contextText }],
       },
     ])
   }
@@ -125,11 +189,11 @@ export async function reviewLeaveRequest(
     // 처리 후 잔여를 함께 알려준다 (승인이면 차감된 값, 반려·취소면 되돌아온 값)
     let remainingLine = ''
     try {
-      const balance = await getLeaveBalance(admin, employee)
+      const balance = await fetchBalance(admin, employee)
       if (balance.period) remainingLine = `> 남은 연차: *${balance.remaining}일*`
     } catch { /* 잔여 계산 실패해도 알림 자체는 보낸다 */ }
 
-    await dmSlackUser(
+    await sendDm(
       employee.slack_user_id,
       [
         `${emoji} 신청하신 *${typeLabel}*가 *${actionLabel}*되었습니다.`,
@@ -146,5 +210,33 @@ export async function reviewLeaveRequest(
     )
   }
 
-  return { ok: true, message: summary }
+  // 캘린더 등록/삭제 실패(또는 미설정) 시 대표님께 알림 — 승인은 정상 진행됨을 명확히 안내
+  if (calendarStatus === 'failed' || calendarStatus === 'skipped') {
+    const alertText = action === 'approve'
+      ? [
+          '⚠️ *연차 캘린더 등록 실패*',
+          '연차 승인은 정상 완료되었지만 구글 캘린더에 등록하지 못했습니다.',
+          `> 직원: *${employeeName}* (${typeLabel})`,
+          `> 기간: ${range} (${req.days}일)`,
+          calendarReason ? `> 원인: ${calendarReason}` : '',
+        ].filter(Boolean).join('\n')
+      : [
+          '⚠️ *연차 캘린더 일정 삭제 실패*',
+          `연차 ${actionLabel}은 정상 처리되었지만 기존 캘린더 일정을 삭제하지 못했습니다. 캘린더에서 직접 확인해주세요.`,
+          `> 직원: *${employeeName}* (${typeLabel})`,
+          `> 기간: ${range} (${req.days}일)`,
+          req.calendar_event_id ? `> 이벤트 ID: \`${req.calendar_event_id}\`` : '',
+          calendarReason ? `> 원인: ${calendarReason}` : '',
+        ].filter(Boolean).join('\n')
+
+    for (const targetUserId of getCalendarFailureNotifyUserIds(deps?.failureNotifyUserIds)) {
+      try {
+        await sendDm(targetUserId, alertText)
+      } catch (e) {
+        console.error('[leave] 캘린더 실패 알림 DM 전송 실패:', e)
+      }
+    }
+  }
+
+  return { ok: true, message: summary, calendarStatus, calendarReason }
 }
