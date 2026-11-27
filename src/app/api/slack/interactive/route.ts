@@ -38,7 +38,7 @@ import {
 } from '@/lib/payments/revert'
 import { canEditPayment, getEditConstraints, editPayment } from '@/lib/payments/edit'
 import { fetchSheetRowBySyncId } from '@/lib/google-sheets'
-import { isPaidInFullStatus, toSheetStatus } from '@/lib/payments/status'
+import { isPaidInFullStatus, isUnpaidStatus, toSheetStatus } from '@/lib/payments/status'
 import { paymentOwnerOptions } from '@/lib/payments/owner-options'
 
 const admin = createAdminClient()
@@ -366,7 +366,7 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
 
       const emoji =
         input.status === '잔금 처리 요망' ? '⚠️' :
-        input.status === '미입금' ? '🔴' :
+        isUnpaidStatus(input.status) ? '🔴' :
         input.status === '추가계약' ? '🔁' : '✅'
 
       const text = [
@@ -768,7 +768,7 @@ async function handlePaymentEditSubmission(payload: InteractivePayload) {
       // 원본 메시지 업데이트
       const emoji =
         input.status === '잔금 처리 요망' ? '⚠️' :
-        input.status === '미입금' ? '🔴' :
+        isUnpaidStatus(input.status) ? '🔴' :
         input.status === '추가계약' ? '🔁' : '✅'
 
       const newText = [

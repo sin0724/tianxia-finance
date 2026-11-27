@@ -9,7 +9,7 @@ import {
 } from '@/lib/google-sheets'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { findOrCreateClient, findOrCreateProject, type ClientCache } from '@/lib/payments/project-match'
-import { toDbStatus } from '@/lib/payments/status'
+import { toDbStatus, toPaymentType } from '@/lib/payments/status'
 import { findDepositInNote, formatDepositNoteLine, removeAccountedLines } from '@/lib/payments/deposit-note'
 import { buildPaymentMemo } from '@/lib/payments/register'
 import { computeRemaining, pendingTotal } from '@/lib/payments/remaining'
@@ -382,9 +382,7 @@ async function runSheetSyncBody(supabase: Admin, opts: { trigger: SyncTrigger; f
       if (!matched) unmatched++
       if (isPending) pending++
 
-      const paymentType =
-        row.status === '잔금 처리 요망' ? '잔금' :
-        row.status === '미입금' ? '기타' : null
+      const paymentType = toPaymentType(row.status)
 
       const { error: insertErr } = await supabase.from('payments').insert({
         project_id: projectId,
