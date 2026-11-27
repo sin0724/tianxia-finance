@@ -178,6 +178,16 @@ test('CRM 입금상태 — 카드결제완료는 설정과 무관하게 완납',
   assert.deepEqual(paymentOf(onlyDeposit, crm({ status: '입금완료' })), { kind: 'full', paid: 3300000 })
 })
 
+test('CRM 입금상태 — 카드결제 미결제는 설정과 무관하게 미입금', () => {
+  // 설정에 실수로 들어가 있어도 완납이 되면 안 된다
+  const mistaken = { ...cfg, fullStatuses: ['입금완료', '카드결제 미결제'] }
+  assert.deepEqual(paymentOf(mistaken, crm({ status: '카드결제 미결제' })), { kind: 'unpaid', paid: 0 })
+  assert.deepEqual(paymentOf({ ...cfg, fullStatuses: [] }, crm({ status: '카드결제 미결제' })), { kind: 'unpaid', paid: 0 })
+  assert.deepEqual(paymentOf(cfg, crm({ status: '카드결제 미결제', paidRaw: 1000000 })), { kind: 'unpaid', paid: 0 })
+  // 카드결제완료는 그대로 완납
+  assert.deepEqual(paymentOf(mistaken, crm({ status: '카드결제완료' })), { kind: 'full', paid: 3300000 })
+})
+
 const existing = (over: Partial<ExistingLine>): ExistingLine => ({
   id: 'l1', year: 2026, month: 11, position: 1, sync_id: 'tx_a', sales: 3300000, paid: null, note: '', ...over,
 })

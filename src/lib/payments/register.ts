@@ -15,7 +15,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { appendSheetRow, makeSyncId, type PaymentStatus } from '@/lib/google-sheets'
 import { findOrCreateClient, findOrCreateProject } from '@/lib/payments/project-match'
-import { toDbStatus } from '@/lib/payments/status'
+import { invoiceForRegistration, toDbStatus, toPaymentType } from '@/lib/payments/status'
 
 type Admin = SupabaseClient<Database>
 
@@ -70,11 +70,16 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
   let warning: string | undefined
 
   try {
+    // 카드 결제는 세금계산서가 필요 없어 J열(계산서)에 '발행완료'를 같이 적는다 — 그 밖에는 J열을 건드리지 않는다
+    const invoice = invoiceForRegistration(status)
     const appended = await appendSheetRow({
-      date, clientName, representative, phone, manager, amount, memo, status,
+      date, clientName, representative, phone, manager, amount, memo, status, invoice,
     })
     syncId = appended.syncId
     sheetRow = appended.rowIndex
+    if (appended.invoiceError) {
+      warning = `시트 계산서(J열)에 "${invoice}"를 적지 못했습니다 (${appended.invoiceError}). 시트 ${sheetRow}행 J열을 직접 바꿔주세요.`
+    }
   } catch (e) {
     syncId = makeSyncId()
     warning = `시트 기재에 실패했습니다 (${e instanceof Error ? e.message : '알 수 없는 오류'}). 결제는 앱에 저장되었으니 시트에는 직접 적어주세요.`
@@ -92,7 +97,7 @@ export async function registerPayment(admin: Admin, input: PaymentInput): Promis
   const project = 'error' in projectResult ? null : projectResult
 
   // ── 3) 결제 저장 ────────────────────────────────────────────────
-  const paymentType = status === '잔금 처리 요망' ? '잔금' : status === '미입금' ? '기타' : null
+  const paymentType = toPaymentType(status)
 
   const { data: inserted, error: insertErr } = await admin.from('payments').insert({
     project_id: project?.id ?? null,

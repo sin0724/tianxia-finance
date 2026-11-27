@@ -422,7 +422,11 @@ export type PaymentKind = 'full' | 'partial' | 'unpaid'
 /** 설정(fullStatuses)과 상관없이 늘 완납인 입금상태 — 운영 설정이 ['입금완료']만 갖고 있어도 카드 완납이 잔금으로 남지 않게 */
 const ALWAYS_FULL_STATUSES = ['카드결제완료']
 
+/** 설정과 상관없이 늘 미입금인 입금상태 — '카드결제 미결제'(카드 승인 전)가 설정에 잘못 들어가 있어도 완납이 되지 않게 */
+const CARD_UNPAID_RE = /카드\s*결제\s*미\s*결제/
+
 export function paymentOf(cfg: IncentiveConfig, r: CrmRow): { kind: PaymentKind; paid: number | null } {
+  if (CARD_UNPAID_RE.test(r.status ?? '')) return { kind: 'unpaid', paid: 0 }
   if (cfg.fullStatuses.includes(r.status) || ALWAYS_FULL_STATUSES.includes(r.status)) {
     return { kind: 'full', paid: r.amount }
   }

@@ -2,8 +2,11 @@ import { google } from 'googleapis'
 import type { sheets_v4 } from 'googleapis'
 import { appendNoteLine, replaceNoteLine } from '@/lib/payments/deposit-note'
 
-/** '카드결제완료'는 카드로 완납한 건 — '입금완료'와 똑같이 확정으로 본다 (lib/payments/status.ts) */
-export type PaymentStatus = '입금완료' | '카드결제완료' | '잔금 처리 요망' | '미입금' | '추가계약'
+/**
+ * '카드결제완료'는 카드로 완납한 건 — '입금완료'와 똑같이 확정으로 본다.
+ * '카드결제 미결제'는 카드로 하기로 했지만 아직 승인 전인 건 — '미입금'과 똑같이 본다 (lib/payments/status.ts)
+ */
+export type PaymentStatus = '입금완료' | '카드결제완료' | '카드결제 미결제' | '잔금 처리 요망' | '미입금' | '추가계약'
 
 export type SheetRow = {
   rowIndex: number       // 시트 내 실제 행 번호 (1-based)
@@ -24,6 +27,8 @@ const SYNC_ID_COLUMN = 'M'
 const SYNC_ID_HEADER = '동기화ID (수정금지)'
 /** 입금상태 열 — 값은 드롭다운, 셀 메모에는 입금 기록 줄 */
 const STATUS_COLUMN = 'I'
+/** 계산서 열 — 드롭다운(미발행·부분발행·발행완료·-·취소). 앱은 카드 결제 등록 때만 값을 쓴다 */
+const INVOICE_COLUMN = 'J'
 
 function getSheetsClient(readonly: boolean): { sheets: sheets_v4.Sheets; sheetId: string; sheetName: string } {
   const credentialsRaw = process.env.GOOGLE_SHEETS_CREDENTIALS
@@ -47,7 +52,7 @@ function getSheetsClient(readonly: boolean): { sheets: sheets_v4.Sheets; sheetId
 
 /**
  * 시트 컬럼 구조: B=날짜 C=상호명 D=대표자 E=전화번호 F=담당자 G=금액 H=특이사항 I=입금상태 M=동기화ID(자동 기록)
- * A(체크박스)·J(계산서)·K(수기 메모)는 팀이 사용 중이므로 건드리지 않는다.
+ * A(체크박스)·J(계산서)·K(수기 메모)는 팀이 사용 중이므로 건드리지 않는다 (예외: 카드 결제 등록 시 J열 '발행완료' — appendSheetRow).
  * fromDate 이후 데이터만 반환. M열 ID는 앱이 write-back하며 사용자는 건드리지 않는다.
  */
 export async function fetchSheetRows(fromDate = '2026-04-01'): Promise<SheetRow[]> {
@@ -150,7 +155,8 @@ export function makeSyncId(): string {
  * ID를 함께 남기는 것이 핵심이다. 앱이 payments 에 external_id = syncId 로 저장해두면
  * 이후 sync-sheets 가 이 행을 읽어도 "이미 있는 건"으로 인식해 중복 생성하지 않는다.
  *
- * A(체크박스)·J(계산서)·K(메모)는 팀이 쓰는 열이라 건드리지 않고 B~I 만 쓴다.
+ * A(체크박스)·K(메모)는 팀이 쓰는 열이라 건드리지 않고 B~I 만 쓴다.
+ * J(계산서)는 invoice 가 있을 때만 그 값을 쓴다 (카드 결제 → '발행완료'). 드롭다운 규칙은 건드리지 않는다.
  * D(대표자)·E(전화번호)는 폼에서 받지 않으므로 빈 값으로 둔다.
  */
 export async function appendSheetRow(row: {
@@ -162,7 +168,8 @@ export async function appendSheetRow(row: {
   amount: number        // 금액 (G)
   memo: string          // 작업내용 및 특이사항 (H)
   status: PaymentStatus // 입금상태 (I)
-}): Promise<{ rowIndex: number; syncId: string }> {
+  invoice?: string      // 계산서 (J) — 있을 때만 쓴다
+}): Promise<{ rowIndex: number; syncId: string; invoiceError?: string }> {
   const { sheets, sheetId, sheetName } = getSheetsClient(false)
   const syncId = makeSyncId()
 
@@ -203,6 +210,23 @@ export async function appendSheetRow(row: {
 
   await writeBackSyncIds([{ rowIndex, syncId }])
 
+  // J열(계산서) — 행과 동기화 ID가 이미 기록된 뒤라 실패해도 throw 하지 않는다
+  // (throw 하면 등록 쪽이 시트 기재 실패로 보고 ID 없이 저장해 중복이 생길 수 있다)
+  let invoiceError: string | undefined
+  if (row.invoice) {
+    try {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${sheetName}!${INVOICE_COLUMN}${rowIndex}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[row.invoice]] },
+      })
+    } catch (err) {
+      console.error('[appendSheetRow] 계산서(J열) 기록 실패:', err)
+      invoiceError = err instanceof Error ? err.message : '알 수 없는 오류'
+    }
+  }
+
   // 미리 깔아둔 드롭다운 행이 바닥나면 새 행에 입금상태·계산서 드롭다운이 없다 — 위 행에서 복사해 온다.
   // 드롭다운은 부가 기능이라 실패해도 결제 등록 자체는 성공으로 둔다.
   try {
@@ -211,7 +235,7 @@ export async function appendSheetRow(row: {
     console.error('[appendSheetRow] 드롭다운 복사 실패:', err)
   }
 
-  return { rowIndex, syncId }
+  return { rowIndex, syncId, invoiceError }
 }
 
 /** 드롭다운을 유지해야 하는 열 — I(입금상태)·J(계산서) */
@@ -475,6 +499,8 @@ export async function updateSheetRowBySyncId(
 
 /** I열 드롭다운 값을 입금 상태로 정규화 */
 export function normalizeStatus(raw: string): PaymentStatus {
+  // 맨 먼저 본다 — 아래 어느 규칙에도 안 걸리면 기본값 '입금완료'가 되어 미입금 건이 완납으로 바뀐다
+  if (/카드\s*결제\s*미\s*결제/.test(raw)) return '카드결제 미결제'
   if (/미입금/.test(raw)) return '미입금'
   if (/잔금/.test(raw)) return '잔금 처리 요망'
   // '추가/재계약' — 진행 중인 업체라도 별도 계약 입금으로 처리 (새 프로젝트로 분리)
