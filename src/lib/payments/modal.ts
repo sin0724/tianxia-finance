@@ -25,7 +25,19 @@ export const FIELD = {
 /** 모든 입력 요소가 공유하는 action_id */
 export const ACTION = 'value'
 
-const STATUS_OPTIONS: PaymentStatus[] = ['입금완료', '카드결제완료', '카드결제 미결제', '잔금 처리 요망', '미입금', '추가계약']
+/**
+ * 모달에 노출하는 입금상태 선택지.
+ * '추가계약'은 헷갈린다는 이유로 선택지에서 뺐다 — 시트에 남은 값의 해석·동기화는 그대로 유지한다.
+ */
+const STATUS_OPTIONS: PaymentStatus[] = ['입금완료', '카드결제완료', '카드결제 미결제', '잔금 처리 요망', '미입금']
+
+/**
+ * 수정 모달용 선택지. 기존 값이 선택지에 없으면(예: 예전 '추가계약') 그 값을 덧붙인다.
+ * Slack 은 initial_option 이 options 에 없으면 모달 열기를 거부하기 때문.
+ */
+export function editStatusOptions(current: PaymentStatus): PaymentStatus[] {
+  return STATUS_OPTIONS.includes(current) ? STATUS_OPTIONS : [...STATUS_OPTIONS, current]
+}
 
 const plain = (text: string) => ({ type: 'plain_text', text, emoji: true })
 
@@ -461,7 +473,7 @@ export function buildPaymentEditModal(params: {
         type: 'static_select',
         action_id: ACTION,
         initial_option: statusOption(current.status),
-        options: STATUS_OPTIONS.map(statusOption),
+        options: editStatusOptions(current.status).map(statusOption),
       },
     },
     {
