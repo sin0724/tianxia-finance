@@ -2,7 +2,8 @@ import { google } from 'googleapis'
 import type { sheets_v4 } from 'googleapis'
 import { appendNoteLine, replaceNoteLine } from '@/lib/payments/deposit-note'
 
-export type PaymentStatus = '입금완료' | '잔금 처리 요망' | '미입금' | '추가계약'
+/** '카드결제완료'는 카드로 완납한 건 — '입금완료'와 똑같이 확정으로 본다 (lib/payments/status.ts) */
+export type PaymentStatus = '입금완료' | '카드결제완료' | '잔금 처리 요망' | '미입금' | '추가계약'
 
 export type SheetRow = {
   rowIndex: number       // 시트 내 실제 행 번호 (1-based)
@@ -473,11 +474,13 @@ export async function updateSheetRowBySyncId(
 }
 
 /** I열 드롭다운 값을 입금 상태로 정규화 */
-function normalizeStatus(raw: string): PaymentStatus {
+export function normalizeStatus(raw: string): PaymentStatus {
   if (/미입금/.test(raw)) return '미입금'
   if (/잔금/.test(raw)) return '잔금 처리 요망'
   // '추가/재계약' — 진행 중인 업체라도 별도 계약 입금으로 처리 (새 프로젝트로 분리)
   if (/추가|재계약/.test(raw)) return '추가계약'
+  // 아래 일반 '완료'에 걸려 '입금완료'로 뭉개지지 않게 먼저 본다 — 다시 쓸 때 시트 값을 지키려고
+  if (/카드\s*결제\s*완료/.test(raw)) return '카드결제완료'
   if (/입금완료|완료|완납/.test(raw)) return '입금완료'
   return '입금완료'
 }
