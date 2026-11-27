@@ -18,6 +18,7 @@ import {
 } from '@/lib/google-sheets'
 import { formatDepositNoteLine } from '@/lib/payments/deposit-note'
 import { adjustPendingByDelta, baseSyncId, isInSyncGroup, pendingTotal } from '@/lib/payments/remaining'
+import { isSameSheetStatus } from '@/lib/payments/status'
 
 type Admin = SupabaseClient<Database>
 type PaymentRow = Database['public']['Tables']['payments']['Row']
@@ -101,7 +102,12 @@ export async function recordDepositOnSheet(
     // 입금상태는 앱에 남은 수금 예정 금액으로 정한다 (보통 RPC 잔여분과 같다)
     const group = await loadSyncGroup(admin, base)
     const remainingPending = pendingTotal(group)
-    await updateSheetStatusByRowIndex(rowIndex, remainingPending <= 1 ? '입금완료' : '잔금 처리 요망')
+    const nextStatus = remainingPending <= 1 ? '입금완료' : '잔금 처리 요망'
+    // 시트가 이미 같은 상태(카드결제완료 포함 완납끼리)면 쓰지 않는다
+    const sheetRow = await fetchSheetRowByIndex(rowIndex)
+    if (!sheetRow || !isSameSheetStatus(sheetRow.status, nextStatus)) {
+      await updateSheetStatusByRowIndex(rowIndex, nextStatus)
+    }
     return {}
   } catch (e) {
     return { warning: `시트 수정에 실패했습니다 (${errMsg(e)}). ${FIX_HINT}` }
@@ -189,7 +195,8 @@ export async function updateConfirmedPayment(
       const sheetRow = await fetchSheetRowByIndex(rowIndex)
       if (!sheetRow) {
         warnings.push(`시트 행을 읽지 못해 입금상태를 확인하지 못했습니다. I열이 "${nextStatus}"인지 확인해주세요.`)
-      } else if (sheetRow.status !== nextStatus) {
+      } else if (!isSameSheetStatus(sheetRow.status, nextStatus)) {
+        // 완납끼리(입금완료·카드결제완료)는 같다고 본다 — 카드결제완료를 입금완료로 덮어쓰지 않게
         await updateSheetStatusByRowIndex(rowIndex, nextStatus)
       }
     }

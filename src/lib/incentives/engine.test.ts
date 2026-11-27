@@ -170,6 +170,14 @@ test('CRM 입금상태 해석 (paymentOf_)', () => {
   assert.deepEqual(paymentOf(cfg, crm({ status: '잔금 처리 요망', balanceRaw: 3300000 })), { kind: 'unpaid', paid: 0 })
 })
 
+test('CRM 입금상태 — 카드결제완료는 설정과 무관하게 완납', () => {
+  // 운영 설정이 ['입금완료']만 갖고 있어도 잔금으로 남지 않아야 한다
+  const onlyDeposit = { ...cfg, fullStatuses: ['입금완료'] }
+  assert.deepEqual(paymentOf(onlyDeposit, crm({ status: '카드결제완료', amount: 9778560 })), { kind: 'full', paid: 9778560 })
+  assert.deepEqual(paymentOf({ ...cfg, fullStatuses: [] }, crm({ status: '카드결제완료' })), { kind: 'full', paid: 3300000 })
+  assert.deepEqual(paymentOf(onlyDeposit, crm({ status: '입금완료' })), { kind: 'full', paid: 3300000 })
+})
+
 const existing = (over: Partial<ExistingLine>): ExistingLine => ({
   id: 'l1', year: 2026, month: 11, position: 1, sync_id: 'tx_a', sales: 3300000, paid: null, note: '', ...over,
 })

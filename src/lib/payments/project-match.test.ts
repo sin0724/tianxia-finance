@@ -30,6 +30,8 @@ test('isForceNewProject', () => {
   assert.equal(isForceNewProject('입금완료', '재 계약 건'), true)
   assert.equal(isForceNewProject('미입금', '추가계약분'), true)
   assert.equal(isForceNewProject('입금완료', '1차 결제'), false)
+  assert.equal(isForceNewProject('카드결제완료', ''), false)
+  assert.equal(isForceNewProject('카드결제완료', '추가계약분'), true)
 })
 
 test('sumPaidByProject: project_id 없는 건은 뺀다', () => {

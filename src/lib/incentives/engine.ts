@@ -419,8 +419,13 @@ export interface CrmRow {
 
 export type PaymentKind = 'full' | 'partial' | 'unpaid'
 
+/** 설정(fullStatuses)과 상관없이 늘 완납인 입금상태 — 운영 설정이 ['입금완료']만 갖고 있어도 카드 완납이 잔금으로 남지 않게 */
+const ALWAYS_FULL_STATUSES = ['카드결제완료']
+
 export function paymentOf(cfg: IncentiveConfig, r: CrmRow): { kind: PaymentKind; paid: number | null } {
-  if (cfg.fullStatuses.includes(r.status)) return { kind: 'full', paid: r.amount }
+  if (cfg.fullStatuses.includes(r.status) || ALWAYS_FULL_STATUSES.includes(r.status)) {
+    return { kind: 'full', paid: r.amount }
+  }
   if (!r.status || r.status.includes('미입금')) return { kind: 'unpaid', paid: 0 }
   let paid: number
   const paidRaw = r.paidRaw ?? 0

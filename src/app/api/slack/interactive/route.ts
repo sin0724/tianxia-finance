@@ -38,6 +38,7 @@ import {
 } from '@/lib/payments/revert'
 import { canEditPayment, getEditConstraints, editPayment } from '@/lib/payments/edit'
 import { fetchSheetRowBySyncId } from '@/lib/google-sheets'
+import { isPaidInFullStatus, toSheetStatus } from '@/lib/payments/status'
 import { paymentOwnerOptions } from '@/lib/payments/owner-options'
 
 const admin = createAdminClient()
@@ -383,7 +384,7 @@ async function handlePaymentSubmission(payload: InteractivePayload) {
       ].filter(Boolean).join('\n')
 
       // 모든 등록 메시지에 "수정" 버튼 추가 (입금 확정 건은 "되돌리기"도 함께)
-      const isConfirmed = input.status === '입금완료' || input.status === '추가계약'
+      const isConfirmed = isPaidInFullStatus(input.status) || input.status === '추가계약'
       
       // syncId는 registerPayment에서 생성/저장되므로 result에서 가져와야 함
       // 하지만 현재는 반환하지 않으므로 DB에서 조회
@@ -637,9 +638,6 @@ async function handlePaymentEditButton(payload: InteractivePayload) {
       ?.replace(/\s*\|\s*대표:[^|]+/, '')
       .replace(/\s*\|\s*연락처:[^|]+/, '')
       .trim() || ''
-
-    const toSheetStatus = (s: string): '입금완료' | '잔금 처리 요망' | '미입금' | '추가계약' =>
-      s === 'balance_due' ? '잔금 처리 요망' : s === 'unpaid' ? '미입금' : '입금완료'
 
     current = {
       rowIndex: -1,
